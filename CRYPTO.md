@@ -31,7 +31,7 @@ Explicit non-goals:
 | Purpose                     | Algorithm                  | Parameters                                           |
 |-----------------------------|----------------------------|------------------------------------------------------|
 | Password-authenticated AKE  | OPAQUE (RFC 9807)          | Ristretto255 ciphersuite, 3DH AKE                    |
-| Key stretching (in OPAQUE)  | Argon2id                   | m = 196608 KiB (192 MiB), t = 3, p = 4               |
+| Key stretching (in OPAQUE)  | Argon2id                   | m = 131072 KiB (128 MiB), t = 3, p = 4               |
 | Symmetric AEAD              | XChaCha20-Poly1305         | 24-byte nonces, 16-byte tags                         |
 | Key derivation              | HKDF-SHA-512               | Domain-separated `info`, zero salt                   |
 | Classical key agreement     | X25519                     | Sharing only                                         |
@@ -42,7 +42,7 @@ Explicit non-goals:
 **Rationale:**
 
 - **Ristretto255** over P-256: prime-order group, simpler hash-to-curve, better-maintained constant-time implementations in the Rust ecosystem.
-- **Argon2id 192 MiB / t=3 / p=4**: well above OWASP 2024 and industry baselines (Bitwarden, 1Password sit around 64 MiB), while staying below the ~256 MiB threshold where Safari iOS WASM allocations begin to fail. OPAQUE OPRF already neutralizes pre-computation attacks against the database; the Argon2id cost is a defense-in-depth layer for the case where `serverSetup` is also compromised. Frozen identical for all users on protocol version 1 — no per-user fallback, no heterogeneous parameters.
+- **Argon2id 128 MiB / t=3 / p=4**: above OWASP 2024 and industry baselines (Bitwarden, 1Password sit around 64 MiB), while staying below the ~256 MiB threshold where Safari iOS WASM allocations begin to fail. OPAQUE OPRF already neutralizes pre-computation attacks against the database; the Argon2id cost is a defense-in-depth layer for the case where `serverSetup` is also compromised. Frozen identical for all users on protocol version 1 — no per-user fallback, no heterogeneous parameters.
 - **XChaCha20-Poly1305** over AES-GCM: 24-byte nonces make random nonce generation safe without counters; constant-time on all platforms; no hardware AES dependency.
 - **HKDF-SHA-512**: matches the OPAQUE ciphersuite hash, universally available, larger output reservoir than SHA-256 with no performance penalty in this context.
 - **Hybrid X25519 + ML-KEM-768** for sharing: defense in depth against both classical and post-quantum cryptanalytic advances.
