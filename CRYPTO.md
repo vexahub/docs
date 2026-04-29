@@ -1,30 +1,30 @@
-# Vexahub — Cryptography Specification
+# VexaHub - Cryptography Specification
 
-**Document version:** 2
+**Document version:** 3
 **Protocol version:** 1
 **Status:** (Draft) pre-MVP
 
-This document is the single source of truth for all cryptographic decisions in Vexahub. Any change to the parameters, algorithms, derivation paths, or binary formats defined here is a breaking change for existing accounts and MUST bump the protocol version (see §13).
+This document is the single source of truth for all cryptographic decisions in VexaHub. Any change to the parameters, algorithms, derivation paths, or binary formats defined here is a breaking change for existing accounts and MUST bump the protocol version (see §13).
 
 ## 1. Overview
 
-Vexahub is a zero-knowledge end-to-end encrypted cloud storage service. The server never has access to user passwords, plaintext files, file names, or encryption keys capable of decrypting user data during normal operation.
+VexaHub is a **zero-knowledge end-to-end encrypted** cloud storage service. The server never has access to user passwords, plaintext files, file names, or encryption keys capable of decrypting user data during normal operation.
 
 Cryptographic goals:
 
-- The server cannot decrypt user files, even with full database access.
-- An attacker stealing only the database cannot mount offline password attacks (OPAQUE OPRF defense).
-- Password changes do not require re-encrypting user files.
-- File mutation is supported without nonce-reuse vulnerabilities.
-- Sharing is possible between users without the server learning shared content.
-- Post-quantum resistance for sharing key exchange.
-- Cross-platform consistency (web, desktop, future Android/iOS) via a single Rust implementation compiled to WASM, native, NAPI, and UniFFI targets.
+- The server **cannot** decrypt user files, even with full database access.
+- An attacker stealing only the database **cannot** mount offline password attacks **(OPAQUE OPRF defense)**.
+- Password changes **do not** require re-encrypting user files.
+- File mutation is supported **without** nonce-reuse vulnerabilities.
+- Sharing is possible between users **without** the server learning shared content.
+- **Post-quantum resistance** for *sharing key exchange*.
+- Cross-platform **consistency** (web, desktop, future Android/iOS) via a Rust implementation compiled to **WASM**, **native**, and **UniFFI** targets.
 
 Explicit non-goals:
 
-- Defense against a fully compromised server colluding with itself to attack a user during an active session. A persistent session (§9.2) opt-in widens this surface and is documented as such.
-- Defense against a malicious client update pushed via the normal distribution channel. Reproducible builds are tracked as future work (§18).
-- Defense against an attacker with physical control of the user's unlocked device.
+- Defense **against** a fully compromised server colluding with itself to **attack a user** during an active session. A **persistent** session (§9.2) opt-in widens this surface and is documented as such.
+- Defense **against** a **malicious client update** pushed via the normal distribution channel. **Reproducible** builds are tracked as future work (§18).
+- Defense **against** an **attacker** with physical control of the user's unlocked device.
 
 ## 2. Primitives
 
@@ -42,13 +42,13 @@ Explicit non-goals:
 
 **Rationale:**
 
-- **Ristretto255** over P-256: prime-order group, simpler hash-to-curve, better-maintained constant-time implementations in the Rust ecosystem.
-- **Argon2id 128 MiB / t=3 / p=4**: above OWASP 2024 and industry baselines (Bitwarden, 1Password sit around 64 MiB), while staying below the ~256 MiB threshold where Safari iOS WASM allocations begin to fail. OPAQUE OPRF already neutralizes pre-computation attacks against the database; the Argon2id cost is a defense-in-depth layer for the case where `serverSetup` is also compromised. Frozen identical for all users on protocol version 1. No per-user fallback, no heterogeneous parameters.
-- **XChaCha20-Poly1305** over AES-GCM: 24-byte nonces make random nonce generation safe without counters; constant-time on all platforms; no hardware AES dependency.
-- **HKDF-SHA-512**: matches the OPAQUE ciphersuite hash, universally available, larger output reservoir than SHA-256 with no performance penalty in this context.
-- **X-Wing** over manual ML-KEM-768 + X25519 combiner: formally proven IND-CCA secure construction (IACR 2024) with an optimized combiner that avoids hashing the ML-KEM ciphertext. Secure if either X25519 or ML-KEM-768 is secure. Eliminates a custom KDF combiner from our attack surface. Still an IETF Internet-Draft (draft-10) but the underlying algorithms are NIST-finalized and the wire format is stable.
-- **TripleDhKem** over standard TripleDH: the `opaque-ke` crate's `TripleDhKem` variant augments the OPAQUE 3DH key exchange by having the client send an ML-KEM-768 encapsulation key in KE1 and the server encapsulate to it in KE2. The ML-KEM shared secret is mixed into the key schedule alongside the three DH products. This closes the harvest-now-decrypt-later threat on login transcripts. An attacker recording OPAQUE flows today cannot derive session keys with a future CRQC. The Ristretto255 OPRF remains classical; a CRQC + database + `serverSetup` theft would allow offline password attacks, but Argon2id 128 MiB remains as the final barrier. This is the strongest hybrid OPAQUE available today; full PQ OPAQUE (draft-vos-cfrg-pqpake) is tracked as future work.
-- **ML-DSA-65** (NIST Level 3): matches the security level of ML-KEM-768 inside X-Wing. Without PQ signatures, a CRQC could forge share invitations, device registrations, and key rotations. Compromising the trust graph without ever breaking encryption. Signature sizes (~3.3 KB) and public keys (~1.95 KB) are larger than Ed25519 but acceptable for metadata-layer operations.
+- **Ristretto255** over **P-256**: prime-order group, simpler hash-to-curve, better-maintained **constant-time** implementations in the **Rust** ecosystem.
+- **Argon2id 128 MiB / t=3 / p=4**: above **OWASP 2024** and industry baselines (Bitwarden, 1Password sit around 64 MiB), while staying below the **~256 MiB** threshold where **Safari iOS WASM** allocations begin to fail. **OPAQUE OPRF** already neutralizes **pre-computation attacks** against the database; the **Argon2id** cost is a **defense-in-depth** layer for the case where `serverSetup` is also **compromised**. Frozen identical for all users on protocol version 1. No per-user fallback, no heterogeneous parameters.
+- **XChaCha20-Poly1305** over **AES-GCM**: 24-byte nonces make random nonce generation safe without counters; constant-time on all platforms; no hardware AES dependency.
+- **HKDF-SHA-512**: matches the **OPAQUE** ciphersuite hash, universally available, larger output reservoir than **SHA-256** with no performance penalty in this context.
+- **X-Wing** over manual **ML-KEM-768 + X25519** combiner: formally proven IND-CCA secure construction (IACR 2024) with an optimized combiner that avoids hashing the ML-KEM ciphertext. Secure if either **X25519** or **ML-KEM-768** is secure. Eliminates a custom KDF combiner from our attack surface. Still an **IETF Internet-Draft** ([draft-connolly-cfrg-xwing-kem](https://datatracker.ietf.org/doc/draft-connolly-cfrg-xwing-kem/)) but the underlying algorithms are **NIST-finalized** and the wire format is stable.
+- **TripleDhKem** over standard **TripleDH**: the `opaque-ke` crate's `TripleDhKem` variant augments the **OPAQUE 3DH** key exchange by having the client send an **ML-KEM-768** encapsulation key in **KE1** and the server encapsulate to it in **KE2**. The **ML-KEM** shared secret is mixed into the key schedule alongside the **three DH** products. This closes the **harvest-now-decrypt-later** threat on login transcripts. An **attacker** recording **OPAQUE** flows today **cannot** derive session keys with a future **CRQC**. The **Ristretto255** OPRF remains classical; a **CRQC** + database + `serverSetup` theft would allow offline password attacks, but Argon2id 128 MiB remains as the final barrier. This is the **strongest** hybrid OPAQUE available today; **full** PQ OPAQUE ([draft-vos-cfrg-pqpake](https://datatracker.ietf.org/doc/draft-vos-cfrg-pqpake/)) is tracked as **future** work.
+- **ML-DSA-65** (NIST Level 3): matches the security level of **ML-KEM-768** inside **X-Wing**. Without **PQ** signatures, a **CRQC** could forge share invitations, device registrations, and key rotations. Compromising the trust graph **without** ever breaking encryption. Signature sizes (~3.3 KB) and public keys (~1.95 KB) are larger than **Ed25519** but acceptable for metadata-layer operations.
 
 ## 3. Key Hierarchy
 
@@ -140,7 +140,7 @@ Signature algorithm IDs (new, for share records):
 
 - `0x10` > ML-DSA-65
 
-### 5.1 `VXWM` — Wrapped Master Key (password-derived)
+### 5.1 `VXWM` - Wrapped Master Key (password-derived)
 
 ```rs
 Offset  Size  Field
@@ -154,7 +154,7 @@ Offset  Size  Field
 Total: 78 bytes
 ```
 
-### 5.2 `VXRM` — Wrapped Master Key (recovery-phrase-derived)
+### 5.2 `VXRM` - Wrapped Master Key (recovery-phrase-derived)
 
 Identical structure to `VXWM`, distinct magic to prevent cross-use.
 
@@ -168,7 +168,7 @@ Offset  Size  Field
 Total: 78 bytes
 ```
 
-### 5.3 `VXFC` — File Content Segment
+### 5.3 `VXFC` - File Content Segment
 
 ```rs
 Offset  Size   Field
@@ -183,7 +183,7 @@ Offset  Size   Field
 
 The AAD bound to each segment is the 14-byte tuple `version || alg_id || generation || segment_index`. This binds every ciphertext to its position and generation, preventing reorder and rollback attacks within a file.
 
-### 5.4 `VXFM` — File Metadata
+### 5.4 `VXFM` - File Metadata
 
 ```rs
 Offset  Size   Field
@@ -210,7 +210,7 @@ CBOR schema for plaintext metadata (canonical CBOR, RFC 8949 §4.2.1):
 
 Unknown CBOR keys MUST be preserved on re-encryption to allow forward-compatible field additions.
 
-### 5.5 `VXPS` — Persistent Session Blob
+### 5.5 `VXPS` - Persistent Session Blob
 
 Stored in IndexedDB on the user's device when "Remember me" is enabled.
 
@@ -224,7 +224,7 @@ Offset  Size  Field
 Total: 78 bytes
 ```
 
-### 5.6 `VXSK` — Wrapped Sharing Keys
+### 5.6 `VXSK` - Wrapped Sharing Keys
 
 ```rs
 Offset  Size   Field
@@ -284,17 +284,17 @@ The `generation` field is 32 bits, providing 4 billion modifications per file. T
 
 ### 6.5 Content Identification and Resumable Upload Integration
 
-Vexahub uses the [tus 1.0.0](https://tus.io/protocols/resumable-upload/1-0-x) resumable upload protocol for all file transfers between clients and the server. This section specifies how the cryptographic design integrates with tus, and how the client identifies file content in a way that preserves the zero-knowledge guarantee.
+VexaHub uses the [tus 1.0.0](https://tus.io/protocols/resumable-upload/1-0-x) resumable upload protocol for all file transfers between clients and the server. This section specifies how the cryptographic design integrates with **tus**, and how the **client** identifies file content in a way that preserves the **zero-knowledge** guarantee.
 
 ### 6.5.1 Goals
 
-- Allow a client to detect that a previously interrupted upload exists on the server and resume it from the correct offset, without re-uploading already-transferred segments.
-- Allow a client to detect that the file the user is about to upload already exists in their account, and offer to skip, replace, or duplicate it.
-- Preserve the zero-knowledge property: the server MUST NOT be able to determine the plaintext content of a file from its content identifier, and MUST NOT be able to detect that two distinct users hold the same plaintext file.
+- Allow a **client** to detect that a previously interrupted upload exists on the server and resume it from the correct offset, **without** re-uploading already-transferred segments.
+- Allow a **client** to detect that the file the user is about to upload **already** exists in their account, and offer to skip, replace, or duplicate it.
+- Preserve the **zero-knowledge** property: the server **MUST NOT** be able to determine the plaintext content of a file from its content identifier, and **MUST NOT** be able to detect that two distinct users hold the same plaintext file.
 
 ### 6.5.2 Per-user content identifier
 
-For each file, the client computes a content identifier as a keyed hash bound to the user's `masterKey`:
+For **each** file, the **client** computes a content identifier as a keyed hash bound to the user's `masterKey`:
 
 ```rs
 contentIdKey = HKDF-SHA-512(
@@ -309,24 +309,26 @@ content_id = BLAKE3_keyed(contentIdKey, plaintext)   // 32 bytes
 
 Properties:
 
-- **Deterministic per user**: the same plaintext produces the same `content_id` for the same user, enabling reliable resume detection.
-- **Distinct across users**: two different users with the same plaintext produce different `content_id` values, because their `contentIdKey` differs.
-- **Not invertible**: the server cannot recover plaintext from `content_id`.
-- **Not testable against known content**: the server cannot pre-compute hashes of known files (leaks, public datasets, copyrighted material) and look them up in the database, because the keyed hash requires `contentIdKey` which the server never sees.
+- **Deterministic per user**: the same plaintext produces the same `content_id` for the **same** user, enabling **reliable** resume detection.
+- **Distinct across users**: two different **users** with the same plaintext produce different `content_id` values, because their `contentIdKey` differs.
+- **Not invertible**: the **server** cannot recover plaintext from `content_id`.
+- **Not testable against known content**: the **server** cannot pre-compute hashes of known files (leaks, public datasets, copyrighted material) and look them up in the **database**, because the keyed hash requires `contentIdKey` which the **server** never sees.
 
-The client transmits `content_id` to the server in the clear as part of upload lookup and creation requests. The server stores it indexed per user but cannot use it for any cross-user analysis.
+The **client** transmits `content_id` to the **server** in the clear as part of upload lookup and creation requests. The **server** stores it indexed **per user** but **cannot** use it for any **cross-user analysis**.
 
 ### 6.5.3 No cross-user deduplication
 
-By design, Vexahub does NOT perform cross-user deduplication of stored content. If two users upload the same file, two distinct ciphertext blobs are stored. This is a deliberate trade-off: cross-user deduplication is incompatible with strong zero-knowledge guarantees because it leaks the existence of duplicate content across accounts and creates an oracle for content presence.
+By design, **VexaHub** does **NOT** perform **cross-user deduplication** of stored content. If two **users** upload the same file, **two distinct ciphertext blobs** are **stored**.
+
+This is a deliberate **trade-off**: **cross-user deduplication** is **incompatible** with **strong zero-knowledge** guarantees because it **leaks** the existence of duplicate content across **accounts** and creates an **oracle** for content presence.
 
 ### 6.5.4 Streaming computation
 
-`BLAKE3_keyed` supports incremental hashing. The client MUST compute `content_id` in a streaming fashion as it reads the local file, never loading the full plaintext into memory. For very large files (multi-GiB), the client SHOULD display a "Preparing upload" progress indicator during this phase, since it precedes the actual upload.
+`BLAKE3_keyed` supports **incremental** hashing. The client **MUST** compute `content_id` in a **streaming** fashion as it reads the **local** file, never loading the **full** plaintext into **memory**. For **very** large files (multi-GiB), the client **SHOULD** display a **"Preparing upload"** progress indicator during this phase, since it **precedes** the actual upload.
 
 ### 6.5.5 tus integration
 
-Vexahub uses the tus 1.0.0 core protocol with the Creation and Termination extensions. The Checksum extension is NOT used: per-segment Poly1305 authentication tags already provide cryptographic integrity, and adding a tus-level checksum (md5/sha1/crc32) would be redundant and weaker.
+VexaHub uses the [tus 1.0.0](https://tus.io/protocols/resumable-upload/1-0-x) core protocol with the **Creation** and **Termination** extensions. The **Checksum** extension is **NOT** used: per-segment **Poly1305** authentication tags already provide **cryptographic** integrity, and adding a tus-level **checksum** (md5/sha1/crc32) would be **redundant** and **weaker**.
 
 **Upload-Length semantics**: the tus `Upload-Length` header carries the **ciphertext** length, not the plaintext length. The client computes the expected ciphertext length deterministically from the plaintext length:
 
@@ -347,11 +349,11 @@ last_segment_ciphertext               = (last_segment_plaintext > 0)
 ciphertext_length = full_segments × SEGMENT_CIPHERTEXT_SIZE_FULL + last_segment_ciphertext
 ```
 
-The plaintext size is never sent to the server. The server knows only the ciphertext size as `Upload-Length`.
+The **plaintext** size is **never** sent to the **server**. The **server** knows **only** the ciphertext size as `Upload-Length`.
 
 ### 6.5.6 Upload lookup flow
 
-Before creating a new tus upload, the client queries the server to detect a resumable upload or an existing committed file:
+Before **creating** a new tus upload, the **client** queries the **server** to detect a **resumable upload** or an **existing** committed file:
 
 ```rs
 GET /api/v1/uploads/lookup?content_id={hex}&collection_id={uuid}
@@ -360,15 +362,23 @@ Accept: application/vnd.vexahub.v1+json
 
 Server responses:
 
-- **404 Not Found** — no existing upload or committed file matches. The client MUST proceed with a fresh tus `POST /uploads` to create a new upload resource.
-- **200 OK** with `{ "kind": "incomplete", "tus_url": "...", "upload_offset": <int>, "generation": <int>, "expires_at": "..." }` — an incomplete upload exists for this user with this `content_id`. The client SHOULD send a tus `HEAD` to `tus_url` to confirm the offset, then resume with `PATCH` requests.
-- **200 OK** with `{ "kind": "committed", "file_id": "...", "generation": <int> }` — the file already exists fully committed in the user's account. The client MUST prompt the user to choose between skip, replace (creates generation+1), or duplicate (creates a new `file_id`).
+- **404 Not Found**: No existing upload or committed file matches.
+
+    The client MUST proceed with a fresh tus `POST /uploads` to create a new upload resource.
+
+- **200 OK** with `{ "kind": "incomplete", "tus_url": "...", "upload_offset": <int>, "generation": <int>, "expires_at": "..." }`:
+
+    An incomplete upload exists for this user with this `content_id`. The client SHOULD send a tus `HEAD` to `tus_url` to confirm the offset, then resume with `PATCH` requests.
+
+- **200 OK** with `{ "kind": "committed", "file_id": "...", "generation": <int> }`:
+
+    The file already exists fully committed in the user's account. The client MUST prompt the user to choose between skip, replace (creates generation+1), or duplicate (creates a new `file_id`).
 
 The server MUST scope the lookup to the authenticated user. Cross-user lookups by `content_id` MUST return 404 even if a match exists in another account.
 
 ### 6.5.7 Resume alignment
 
-A tus `PATCH` MAY contain any number of bytes, and may interrupt at any byte boundary. When an interrupted upload is resumed via `HEAD` followed by `PATCH`, the server-reported `Upload-Offset` may fall in the middle of a Vexahub crypto segment. The client MUST NOT submit ciphertext starting at that arbitrary offset, because XChaCha20-Poly1305 does not support partial AEAD writes — a segment is a single atomic encryption unit.
+A tus `PATCH` MAY contain any number of bytes, and may interrupt at any byte boundary. When an interrupted upload is resumed via `HEAD` followed by `PATCH`, the server-reported `Upload-Offset` may fall in the middle of a VexaHub crypto segment. The client MUST NOT submit ciphertext starting at that arbitrary offset, because XChaCha20-Poly1305 does not support partial AEAD writes. A segment is a single atomic encryption unit.
 
 Resume procedure:
 
@@ -386,7 +396,7 @@ POST /api/v1/uploads/{upload_id}/rewind
    The server MUST verify the requested offset is segment-aligned, truncate the underlying storage object, update `tus_uploads.upload_offset`, and respond 204.
 4. Client resumes with `PATCH` from `segment_start`, re-deriving each segment nonce from `(generation, segment_index)` as defined in §6.2.
 
-The rewind endpoint is NOT part of the tus standard. It is a Vexahub extension necessary because tus alone cannot express the constraint that uploads must be aligned to AEAD segment boundaries.
+The rewind endpoint is NOT part of the tus standard. It is a VexaHub extension necessary because tus alone cannot express the constraint that uploads must be aligned to AEAD segment boundaries.
 
 ### 6.5.8 Generation transitions during in-progress uploads
 
@@ -448,7 +458,7 @@ A scheduled job MUST periodically (recommended: hourly) remove rows from `tus_up
 
 ### 6.5.12 Threat model additions
 
-| Attacker capability                                          | Vexahub response                                                                  |
+| Attacker capability                                          | VexaHub response                                                                  |
 |--------------------------------------------------------------|-----------------------------------------------------------------------------------|
 | Server tries to test database for known plaintext via hash   | Blocked: `content_id` is keyed by per-user `contentIdKey`, never seen by server   |
 | Server tries cross-user deduplication to infer relationships | Blocked: distinct users produce distinct `content_id` for identical plaintext     |
@@ -460,12 +470,12 @@ A scheduled job MUST periodically (recommended: hourly) remove rows from `tus_up
 
 ### 7.1 Implementation
 
-Vexahub implements OPAQUE (RFC 9807) in a single Rust crate, `vexahub-protocol`, which serves as the cryptographic source of truth for all clients and the server. The crate is compiled to:
+VexaHub implements **OPAQUE** ([RFC 9807](https://www.rfc-editor.org/info/rfc9807)) in Rust crates, which serves as the cryptographic source of truth for all clients and the server. The crates are compiled to:
 
-- **WebAssembly** via `wasm-bindgen` for the SvelteKit webapp.
-- **Native** Rust linkage for the Tauri desktop application.
-- **NAPI-RS** bindings for the NestJS backend.
-- **UniFFI** bindings for future Android (Kotlin) and iOS (Swift) clients.
+- **WebAssembly** via `wasm-bindgen` for the **SvelteKit** webapp.
+- **Native** Rust linkage for the **Tauri** desktop application.
+- **NAPI-RS** bindings for the **backend**.
+- **UniFFI** bindings for future **Android (Kotlin)** and **iOS (Swift)** clients.
 
 A single implementation produces byte-for-byte identical outputs across all targets, verified by the cross-target test vectors in §14.
 
@@ -485,16 +495,16 @@ This ciphersuite is identical across every client and the server. Any change is 
 
 ### 7.3 Server setup
 
-At first deployment, the server generates a one-time `serverSetup` containing the OPRF secret key (the global pepper) and the server's static AKE keypair.
+At first deployment, the server generates a one-time `serverSetup` containing the **OPRF** secret key (the global pepper) and the server's static **AKE** keypair.
 
 **Storage requirements:**
 
-- Loaded into NestJS via the `OPAQUE_SERVER_SETUP` environment variable.
+- Loaded into SERVER via the `OPAQUE_SERVER_SETUP` environment variable.
 - NEVER committed to Git, NEVER logged, NEVER returned in any API response.
-- Backed up encrypted in at least two independent locations (Passbolt vault + offline encrypted backup on cold storage).
+- Backed up encrypted in at least two independent locations (Pass **vault** + offline encrypted **backup** on **cold storage**).
 - Rotation invalidates all existing accounts and is treated strictly as a disaster-recovery action.
 
-**Loss of `serverSetup` = permanent loss of all user accounts.** Backup discipline is non-negotiable.
+**Loss of `serverSetup` = permanent loss of all user accounts.** Backup discipline is **non-negotiable**.
 
 ### 7.4 Server static public key pinning
 
@@ -507,40 +517,40 @@ This defends against a substituted server, contingent on the client distribution
 ### 8.1 Registration
 
 1. Client: user enters email and password.
-2. Client: `opaque.client.startRegistration({ password })` → `{ clientRegistrationState, registrationRequest }`.
-3. Client → Server: `POST /auth/register/start { email, registrationRequest }`.
+2. Client: `opaque.client.startRegistration({ password })` ➜ `{ clientRegistrationState, registrationRequest }`.
+3. Client ➜ Server: `POST /auth/register/start { email, registrationRequest }`.
 4. Server: verifies email is not already registered.
-5. Server: `opaque.server.createRegistrationResponse({ serverSetup, userIdentifier: email, registrationRequest })` → `{ registrationResponse }`.
-6. Server → Client: `{ registrationResponse, continuationToken }`.
-7. Client: `opaque.client.finishRegistration(...)` → `{ registrationRecord, exportKey, serverStaticPublicKey }`.
+5. Server: `opaque.server.createRegistrationResponse({ serverSetup, userIdentifier: email, registrationRequest })` ➜ `{ registrationResponse }`.
+6. Server ➜ Client: `{ registrationResponse, continuationToken }`.
+7. Client: `opaque.client.finishRegistration(...)` ➜ `{ registrationRecord, exportKey, serverStaticPublicKey }`.
 8. Client: verifies `serverStaticPublicKey` matches the hardcoded pin; aborts on mismatch.
 9. Client: derives `masterKeyWrapper` from `exportKey`.
 10. Client: generates `masterKey` (32 random bytes from CSPRNG).
 11. Client: generates X-Wing keypair and ML-DSA-65 signing keypair.
-12. Client: wraps `masterKey` with `masterKeyWrapper` → `VXWM` blob.
-13. Client: wraps sharing private keys with `masterKey` → `VXSK` blob.
-14. Client: generates a 24-word BIP39 recovery phrase, derives `recoveryKey`, wraps `masterKey` → `VXRM` blob (see §12).
+12. Client: wraps `masterKey` with `masterKeyWrapper` ➜ `VXWM` blob.
+13. Client: wraps sharing private keys with `masterKey` ➜ `VXSK` blob.
+14. Client: generates a 24-word BIP39 recovery phrase, derives `recoveryKey`, wraps `masterKey` ➜ `VXRM` blob (see §12).
 15. Client: requires the user to confirm the recovery phrase by re-entering specific word positions.
-16. Client → Server: `POST /auth/register/finish { email, continuationToken, registrationRecord, vxwm, vxsk, vxrm, sharingPublicXwing, sharingPublicMldsa }`.
+16. Client ➜ Server: `POST /auth/register/finish { email, continuationToken, registrationRecord, vxwm, vxsk, vxrm, sharingPublicXwing, sharingPublicMldsa }`.
 17. Server: stores the user row atomically.
 18. Client: zeroizes `password`, `exportKey`, `masterKeyWrapper`, plaintext private keys, recovery phrase, `recoveryKey`. Keeps `masterKey` and sharing private keys live in the Crypto Worker.
 
 ### 8.2 Login
 
 1. Client: user enters email and password.
-2. Client: `opaque.client.startLogin({ password })` → `{ clientLoginState, startLoginRequest }`.
-3. Client → Server: `POST /auth/login/start { email, startLoginRequest }`.
+2. Client: `opaque.client.startLogin({ password })` ➜ `{ clientLoginState, startLoginRequest }`.
+3. Client ➜ Server: `POST /auth/login/start { email, startLoginRequest }`.
 4. Server: looks up the user, loads `registrationRecord`.
-5. Server: `opaque.server.startLogin(...)` → `{ loginResponse, serverLoginState }`.
+5. Server: `opaque.server.startLogin(...)` ➜ `{ loginResponse, serverLoginState }`.
 6. Server: stores `serverLoginState` in Valkey under a random `continuationToken` with a 60-second TTL.
-7. Server → Client: `{ loginResponse, continuationToken, vxwm, vxsk }`.
-8. Client: `opaque.client.finishLogin(...)` → `{ finishLoginRequest, sessionKey, exportKey, serverStaticPublicKey }`.
+7. Server ➜ Client: `{ loginResponse, continuationToken, vxwm, vxsk }`.
+8. Client: `opaque.client.finishLogin(...)` ➜ `{ finishLoginRequest, sessionKey, exportKey, serverStaticPublicKey }`.
 9. Client: verifies pinned key.
 10. Client: derives `masterKeyWrapper`, parses `VXWM`, decrypts `masterKey`.
 11. Client: parses `VXSK`, decrypts sharing private keys with `masterKey`.
-12. Client → Server: `POST /auth/login/finish { continuationToken, finishLoginRequest }`.
+12. Client ➜ Server: `POST /auth/login/finish { continuationToken, finishLoginRequest }`.
 13. Server: retrieves and immediately deletes `serverLoginState` from Valkey.
-14. Server: `opaque.server.finishLogin(...)` → `{ sessionKey }`.
+14. Server: `opaque.server.finishLogin(...)` ➜ `{ sessionKey }`.
 15. Server: derives an HTTP session token from `sessionKey`, stores a hashed session row in Postgres, returns `HttpOnly; Secure; SameSite=Strict` cookie.
 16. Client: zeroizes `password`, `exportKey`, `masterKeyWrapper`. `masterKey` and sharing private keys are loaded into the Crypto Web Worker.
 
@@ -562,7 +572,7 @@ A device-bound resume mechanism. NEVER enabled by default.
 Activation:
 
 1. Client generates `localKey` (32 random bytes).
-2. Client wraps `masterKey` with `localKey` → `VXPS` blob, stored in IndexedDB.
+2. Client wraps `masterKey` with `localKey` ➜ `VXPS` blob, stored in IndexedDB.
 3. Client uploads `localKey` to the server via `POST /auth/persistent-session/create { localKey, deviceLabel }`.
 4. Server stores `{ userId, localKey, cookieHash, deviceLabel, createdAt, expiresAt }` in `persistent_sessions`.
 5. Server issues a `PS-AUTH` cookie: `HttpOnly; Secure; SameSite=Strict; Max-Age=30d`.
@@ -578,9 +588,37 @@ Resume:
 
 **Trade-off (must be displayed at opt-in):**
 
-> Remember me stores an encrypted copy of your keys on this device. The key to unlock them is held by Vexahub servers. Under normal operation your data stays private, but an attacker who fully controls our servers AND captures your session cookie could decrypt this remembered session. For maximum security, leave this option off and sign in with your password each time.
+> Remember me stores an encrypted copy of your keys on this device. The key to unlock them is held by VexaHub servers. Under normal operation your data stays private, but an attacker who fully controls our servers AND captures your session cookie could decrypt this remembered session. For maximum security, leave this option off and sign in with your password each time.
+>
+> Users who require strict zero-knowledge guarantees on web should leave `Remember me` unchecked and authenticate with their password each session. Desktop and mobile clients achieve zero-knowledge persistent sessions via OS keychain. The server holds no key material in either case.
 
-Mandatory safeguards:
+#### Zero-knowledge tiers
+
+| Mode                                    | Zero-knowledge                    | Server holds         |
+|-----------------------------------------|-----------------------------------|----------------------|
+| Web (no `Remember me`)                  | ✅ True ZK                        | Nothing session-side |
+| Web (`Remember me`)                     | ⚠️ Trade-off (opt-in, documented) | `localKey`           |
+| Web (`Remember me` + `WebAuthn` PRF)    | ✅ True ZK                        | Nothing              |
+| Desktop / Mobile                        | ✅ True ZK                        | Nothing              |
+
+#### WebAuthn PRF (future, non-trivial)
+
+Browsers supporting the WebAuthn `prf` extension can derive a device-bound secret from a passkey or hardware authenticator that never leaves the device, replacing `localKey` entirely.
+
+Support as of early 2026 is now broad:
+
+- Chrome, Edge, Brave, and Samsung Internet via Google Password Manager passkeys (100% PRF-on-create success in Q1 2026 community testing)
+- Firefox 148+
+- Safari via Apple Passwords/iCloud Keychain
+- Windows Hello after the February 2026 update (KB5077181).
+
+> The main remaining gap is roaming authenticators (YubiKeys) on iOS/macOS
+>
+> Apple has acknowledged this but not yet shipped it.
+
+Implementation requires a registered passkey per device and a graceful fallback to the standard `localKey` model for unsupported combinations. Tracked in §18.
+
+#### Mandatory safeguards
 
 - Strict opt-in.
 - Settings page listing every persistent session with device label, creation time, last use, and a one-click revoke.
@@ -654,26 +692,26 @@ CREATE TABLE users (
 
 Send flow:
 
-1. Sender fetches recipient's X-Wing encapsulation key and ML-DSA-65 verification key from the server.
+1. Sender fetches recipient's **X-Wing** encapsulation key and **ML-DSA-65** verification key from the server.
 2. Sender encapsulates: `(ctXwing, sharedSecret) = X-Wing.Encaps(recipientPubXwing)`.
 3. Sender derives `shareWrapKey = HKDF-SHA-512(ikm = sharedSecret, info = "vexahub:v1:shareWrap:{share_uuid}", L = 32)`.
-4. Sender wraps the target key (collection or file) with `shareWrapKey` using XChaCha20-Poly1305 → `VXSH` blob.
+4. Sender wraps the target key (collection or file) with `shareWrapKey` using **XChaCha20-Poly1305** ➜ `VXSH` blob.
 5. Sender builds the **signed payload**: canonical CBOR encoding of `{ share_uuid, sender_id, recipient_id, ctXwing, vxsh, timestamp }`.
-6. Sender signs the payload with their ML-DSA-65 signing key → `signature`.
+6. Sender signs the payload with their **ML-DSA-65** signing key ➜ `signature`.
 7. Sender uploads `{ signedPayload, signature }` to the server.
 
 Receive flow:
 
 1. Recipient fetches the share record.
-2. Recipient fetches sender's ML-DSA-65 verification key **independently** from the server (not from the share record — prevents server substitution of both payload and key).
-3. Recipient verifies `signature` against sender's verification key. **Reject on failure — do not proceed to decryption.**
+2. Recipient fetches sender's **ML-DSA-65** verification key **independently** from the server (Not from the share record! Prevents server substitution of both payload and key).
+3. Recipient verifies `signature` against sender's verification key. **Reject on failure. Do not proceed to decryption.**
 4. Recipient decapsulates: `sharedSecret = X-Wing.Decaps(privXwing, ctXwing)`.
 5. Recipient derives `shareWrapKey` and unwraps `VXSH`.
 6. Recipient stores the shared key in their own scope.
 
 > Security degrades only if **both** X25519 and ML-KEM-768 are broken (X-Wing hybrid guarantee). Share authenticity degrades only if ML-DSA-65 is broken. The signature covers the entire invitation payload including `recipient_id` and `ctXwing`, preventing the server from redirecting shares to other users or swapping the encapsulated key material.
 >
-> **Critical design note:** The ML-DSA-65 signature sits **outside** the encrypted `VXSH` blob, at the transport layer. The recipient MUST verify the signature before trusting or decrypting the ciphertext. If the signature were inside the encrypted envelope, a malicious server could swap the entire `{ctXwing, vxsh}` package and the forgery would only be discovered after decryption — too late.
+> **Critical design note:** The ML-DSA-65 signature sits **outside** the encrypted `VXSH` blob, at the transport layer. The recipient MUST verify the signature before trusting or decrypting the ciphertext. If the signature were inside the encrypted envelope, a malicious server could swap the entire `{ctXwing, vxsh}` package and the forgery would only be discovered after decryption (And that's too late).
 
 `VXSH` blob format:
 
@@ -855,7 +893,7 @@ Violations POSTed to `https://reports.vexahub.com/csp`, rate-limited per IP, sto
 
 ## 17. Threat Model Summary
 
-| Attacker capability                                    | Vexahub response                                                                                                                                                                                                                                                                                                                   |
+| Attacker capability                                    | VexaHub response                                                                                                                                                                                                                                                                                                                   |
 |--------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Database snapshot                                      | No decryption possible; OPRF blocks offline password attacks                                                                                                                                                                                                                                                                       |
 | Full server compromise, no active sessions intercepted | Cannot decrypt existing data; can observe future ciphertext                                                                                                                                                                                                                                                                        |
@@ -866,7 +904,7 @@ Violations POSTed to `https://reports.vexahub.com/csp`, rate-limited per IP, sto
 | XSS in webapp                                          | Strict CSP (no `unsafe-inline`), Worker isolation, no eval beyond WASM                                                                                                                                                                                                                                                             |
 | Compromised `serverSetup`                              | Argon2id 128 MiB still imposes meaningful cost on offline dictionary attacks                                                                                                                                                                                                                                                       |
 | File rollback / segment reorder by malicious server    | Blocked by `generation` counter and per-segment AAD binding                                                                                                                                                                                                                                                                        |
-| CRQC (post-quantum adversary)                          | Sharing key exchange protected by X-Wing (ML-KEM-768 + X25519 hybrid); share authenticity protected by ML-DSA-65; login session keys protected by TripleDhKem (3DH + ML-KEM-768 hybrid); OPRF remains classical Ristretto255 — CRQC + database + `serverSetup` theft allows offline password attacks mitigated by Argon2id 128 MiB |
+| CRQC (post-quantum adversary)                          | Sharing key exchange protected by X-Wing (ML-KEM-768 + X25519 hybrid); share authenticity protected by ML-DSA-65; login session keys protected by TripleDhKem (3DH + ML-KEM-768 hybrid); OPRF remains classical Ristretto255 (CRQC + database + `serverSetup` theft allows offline password attacks mitigated by Argon2id 128 MiB) |
 
 ## 18. Open Questions and Future Work
 
@@ -876,6 +914,6 @@ Violations POSTed to `https://reports.vexahub.com/csp`, rate-limited per IP, sto
 - Argon2id parameter telemetry on real device distributions to validate the 128 MiB choice.
 - Argon2id experimental parameter for users to freely customize.
 - `serverSetup` compromise incident response runbook.
-- Independent third-party audit of `vexahub-protocol` once funding allows.
+- Possible independent third-party audit of `vexahub-protocol` once funding allows.
 - X-Wing RFC finalization tracking. If wire format changes before RFC, bump `VXSH` format version and KEM algorithm ID.
 - Hybrid signatures (Ed25519 + ML-DSA-65) evaluation for ANSSI/BSI compliance if regulatory requirements harden before 2030.
