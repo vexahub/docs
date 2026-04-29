@@ -263,7 +263,7 @@ CBOR schema for plaintext metadata (canonical CBOR, [RFC 8949 §4.2.1](https://w
 >
 > Implementors **MUST NOT** cache or reuse a previous `VXFM` nonce.
 >
-> **Segment count verification:** Before starting a download, the client **MUST** read `sc` from `VXFM` and verify that the number of segments received matches. A mismatch indicates truncation or tampering and the client **MUST** abort the download without surfacing partial content. This catches truncation before committing bandwidth, unlike the **BLAKE3** hash check in §6.5.9 which only runs after the full download.
+> **Segment count verification:** Before starting a download, the client **MUST** read `sc` from `VXFM` and verify that the number of segments received matches. A mismatch indicates truncation or tampering and the client **MUST** abort the download without surfacing partial content. This catches truncation before committing bandwidth, unlike the **BLAKE3** hash check in [§6.5.9](#659-final-integrity-verification) which only runs after the full download.
 
 Unknown CBOR keys MUST be preserved on re-encryption to allow forward-compatible field additions.
 
@@ -405,7 +405,7 @@ The `generation` field is 32 bits, providing 4 billion modifications per file. T
 
 > **Warning to implementors:** `fileMetadataKey` does **NOT** include `generation` in its derivation path. It is stable across all generations of a file. This is by design.
 >
-> Metadata key separation from content keys is the goal. However, this means every `VXFM` encryption **MUST** use a fresh random nonce. See §5.4 for the explicit nonce requirement.
+> Metadata key separation from content keys is the goal. However, this means every `VXFM` encryption **MUST** use a fresh random nonce. See [§5.4](#54-vxfm---file-metadata) for the explicit nonce requirement.
 
 ### 6.5 Content Identification and Resumable Upload Integration
 
