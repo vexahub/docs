@@ -4,7 +4,7 @@
 **Protocol version:** 1
 **Status:** (Draft) pre-MVP
 
-This document is the single source of truth for all cryptographic decisions in VexaHub. Any change to the parameters, algorithms, derivation paths, or binary formats defined here is a breaking change for existing accounts and MUST bump the protocol version (see §13).
+This document is the single source of truth for all cryptographic decisions in VexaHub. Any change to the parameters, algorithms, derivation paths, or binary formats defined here is a breaking change for existing accounts and MUST bump the protocol version (see [§13](#13-protocol-versioning-and-migration)).
 
 ## 1. Overview
 
@@ -22,8 +22,8 @@ Cryptographic goals:
 
 Explicit non-goals:
 
-- Defense **against** a fully compromised server colluding with itself to **attack a user** during an active session. A **persistent** session (§9.2) opt-in widens this surface and is documented as such.
-- Defense **against** a **malicious client update** pushed via the normal distribution channel. **Reproducible** builds are tracked as future work (§18).
+- Defense **against** a fully compromised server colluding with itself to **attack a user** during an active session. A **persistent** session ([§9.2](#92-persistent-sessions-remember-me-opt-in)) opt-in widens this surface and is documented as such.
+- Defense **against** a **malicious client update** pushed via the normal distribution channel. **Reproducible** builds are tracked as future work (See [§18](#18-open-questions-and-future-work)).
 - Defense **against** an **attacker** with physical control of the user's unlocked device.
 
 ## 2. Primitives
@@ -175,9 +175,9 @@ Offset  Size   Field
 0       4      Magic "VXFC"
 4       1      Format version (0x01)
 5       1      Algorithm ID (0x01)
-6       4      File generation (uint32 BE, see §6.3)
+6       4      File generation (uint32 BE)
 10      8      Segment index (uint64 BE)
-18      24    Nonce (derived deterministically, see §6.2)
+18      24     Nonce (derived deterministically)
 42      N+16   Ciphertext + tag
 ```
 
@@ -195,7 +195,7 @@ Offset  Size   Field
 34      N+16   Ciphertext (CBOR-encoded metadata) + tag
 ```
 
-CBOR schema for plaintext metadata (canonical CBOR, RFC 8949 §4.2.1):
+CBOR schema for plaintext metadata (canonical CBOR, [RFC 8949 §4.2.1](https://www.rfc-editor.org/rfc/rfc8949.html#name-core-deterministic-encoding)):
 
 ```rs
 {
@@ -335,7 +335,7 @@ VexaHub uses the [tus 1.0.0](https://tus.io/protocols/resumable-upload/1-0-x) co
 ```rs
 plaintext_size                        = N bytes
 SEGMENT_PLAINTEXT_SIZE                = 1 MiB = 1,048,576 bytes
-SEGMENT_HEADER_SIZE                   = 42 bytes (VXFC header, see §5.3)
+SEGMENT_HEADER_SIZE                   = 42 bytes (VXFC header)
 SEGMENT_TAG_SIZE                      = 16 bytes (Poly1305)
 SEGMENT_CIPHERTEXT_OVERHEAD           = SEGMENT_HEADER_SIZE + SEGMENT_TAG_SIZE = 58 bytes
 SEGMENT_CIPHERTEXT_SIZE_FULL          = SEGMENT_PLAINTEXT_SIZE + SEGMENT_TAG_SIZE + SEGMENT_HEADER_SIZE = 1,048,634 bytes
@@ -394,7 +394,7 @@ POST /api/v1/uploads/{upload_id}/rewind
 { "to_offset": <segment_start> }
         ```
    The server MUST verify the requested offset is segment-aligned, truncate the underlying storage object, update `tus_uploads.upload_offset`, and respond 204.
-4. Client resumes with `PATCH` from `segment_start`, re-deriving each segment nonce from `(generation, segment_index)` as defined in §6.2.
+4. Client resumes with `PATCH` from `segment_start`, re-deriving each segment nonce from `(generation, segment_index)` as defined in [§6.2](#62-per-segment-nonce-derivation).
 
 The rewind endpoint is NOT part of the tus standard. It is a VexaHub extension necessary because tus alone cannot express the constraint that uploads must be aligned to AEAD segment boundaries.
 
@@ -407,13 +407,13 @@ If the user modifies a file locally while an upload for that file is still in pr
 3. Increment the file's `generation` counter by 1.
 4. Create a new tus upload via `POST /uploads` with the new `content_id`, the new `Upload-Length`, and the incremented `generation` in the upload metadata.
 
-The server MUST NOT allow two concurrent uploads for the same `(user_id, file_id)` pair. The unique constraint defined in §6.5.10 enforces this.
+The server MUST NOT allow two concurrent uploads for the same `(user_id, file_id)` pair. The unique constraint defined in [§6.5.10](#6510-server-side-schema) enforces this.
 
 ### 6.5.9 Final integrity verification
 
-After a download completes, the client MUST recompute `BLAKE3(plaintext)` and compare it against the `h` field stored in the file's `VXFM` blob (see §5.4). A mismatch indicates corruption, truncation, or tampering, and the client MUST refuse to surface the file to the user, MUST log the incident, and SHOULD offer to retry the download.
+After a download completes, the client MUST recompute `BLAKE3(plaintext)` and compare it against the `h` field stored in the file's `VXFM` blob (see [§5.4](#54-vxfm---file-metadata)). A mismatch indicates corruption, truncation, or tampering, and the client MUST refuse to surface the file to the user, MUST log the incident, and SHOULD offer to retry the download.
 
-This BLAKE3 hash is the unkeyed plaintext hash and serves only as an integrity check on a reconstructed download. It is distinct from `content_id` in §6.5.2, which is keyed and serves as a per-user identifier for resume and duplicate detection.
+This BLAKE3 hash is the unkeyed plaintext hash and serves only as an integrity check on a reconstructed download. It is distinct from `content_id` in [§6.5.2](#652-per-user-content-identifier), which is keyed and serves as a per-user identifier for resume and duplicate detection.
 
 ### 6.5.10 Server-side schema
 
@@ -458,13 +458,13 @@ A scheduled job MUST periodically (recommended: hourly) remove rows from `tus_up
 
 ### 6.5.12 Threat model additions
 
-| Attacker capability                                          | VexaHub response                                                                  |
-|--------------------------------------------------------------|-----------------------------------------------------------------------------------|
-| Server tries to test database for known plaintext via hash   | Blocked: `content_id` is keyed by per-user `contentIdKey`, never seen by server   |
-| Server tries cross-user deduplication to infer relationships | Blocked: distinct users produce distinct `content_id` for identical plaintext     |
-| Server truncates an upload to inject a shorter file          | Detected at download via BLAKE3 plaintext hash in `VXFM` (§5.4, §6.5.9)           |
-| Server reorders segments within a generation                 | Blocked by per-segment AAD binding `(version, alg, generation, segment_index)`    |
-| Server rolls back to an older generation                     | Blocked by monotonic `generation` enforcement (§6.3) and client-side verification |
+| Attacker capability                                          | VexaHub response                                                                                                                         |
+|--------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------|
+| Server tries to test database for known plaintext via hash   | Blocked: `content_id` is keyed by per-user `contentIdKey`, never seen by server                                                          |
+| Server tries cross-user deduplication to infer relationships | Blocked: distinct users produce distinct `content_id` for identical plaintext                                                            |
+| Server truncates an upload to inject a shorter file          | Detected at download via BLAKE3 plaintext hash in `VXFM` ([§5.4](#54-vxfm---file-metadata), [§6.5.9](#659-final-integrity-verification)) |
+| Server reorders segments within a generation                 | Blocked by per-segment AAD binding `(version, alg, generation, segment_index)`                                                           |
+| Server rolls back to an older generation                     | Blocked by monotonic `generation` enforcement ([§6.3](#63-file-generation-counter-mutability)) and client-side verification              |
 
 ## 7. OPAQUE Protocol
 
@@ -477,7 +477,7 @@ VexaHub implements **OPAQUE** ([RFC 9807](https://www.rfc-editor.org/info/rfc980
 - **NAPI-RS** bindings for the **backend**.
 - **UniFFI** bindings for future **Android (Kotlin)** and **iOS (Swift)** clients.
 
-A single implementation produces byte-for-byte identical outputs across all targets, verified by the cross-target test vectors in §14.
+A **single** implementation produces **byte-for-byte** identical outputs across all targets, verified by the cross-target test vectors in [§14](#14-test-vectors).
 
 ### 7.2 Ciphersuite (frozen at protocol version 1)
 
@@ -485,13 +485,13 @@ A single implementation produces byte-for-byte identical outputs across all targ
 - KE group: Ristretto255
 - Hash: SHA-512
 - Key exchange: TripleDhKem (Triple Diffie-Hellman + ML-KEM-768 hybrid)
-- Key stretching function: Argon2id with the parameters in §2
+- Key stretching function: Argon2id with the parameters in [§2](#2-primitives)
 
 This ciphersuite is identical across every client and the server. Any change is a protocol version bump.
 
 > The `TripleDhKem` variant extends the standard OPAQUE 3DH key exchange with a post-quantum KEM hop. During KE1, the client generates an ephemeral ML-KEM-768 keypair and sends the encapsulation key alongside the standard DH ephemeral. In KE2, the server encapsulates to the client's ML-KEM-768 key and includes the ciphertext in the response. Both parties absorb the KEM ciphertext into the transcript hash and mix the ML-KEM shared secret with the three DH products when deriving session keys.
 >
-> This ensures session keys are quantum-resistant: an attacker must break both the Ristretto255 DH and ML-KEM-768 to recover a session key from a recorded login transcript. The OPRF (Ristretto255) remains classical. See §17 for the residual threat model.
+> This ensures session keys are quantum-resistant: an attacker must break both the Ristretto255 DH and ML-KEM-768 to recover a session key from a recorded login transcript. The OPRF (Ristretto255) remains classical. See [§17](#17-threat-model-summary) for the residual threat model.
 
 ### 7.3 Server setup
 
@@ -510,7 +510,7 @@ At first deployment, the server generates a one-time `serverSetup` containing th
 
 All clients pin the server's static public key, derived from `serverSetup` and hardcoded at build time. On every OPAQUE flow completion, the client compares the received `serverStaticPublicKey` against the pinned value. Mismatch MUST abort the flow and surface a security warning to the user.
 
-This defends against a substituted server, contingent on the client distribution channel not being compromised (see §17 and §18).
+This defends against a substituted server, contingent on the client distribution channel not being compromised (see [§17](#17-threat-model-summary) and [§18](#18-open-questions-and-future-work)).
 
 ## 8. Registration and Login Flows
 
@@ -529,7 +529,7 @@ This defends against a substituted server, contingent on the client distribution
 11. Client: generates X-Wing keypair and ML-DSA-65 signing keypair.
 12. Client: wraps `masterKey` with `masterKeyWrapper` ➜ `VXWM` blob.
 13. Client: wraps sharing private keys with `masterKey` ➜ `VXSK` blob.
-14. Client: generates a 24-word BIP39 recovery phrase, derives `recoveryKey`, wraps `masterKey` ➜ `VXRM` blob (see §12).
+14. Client: generates a 24-word BIP39 recovery phrase, derives `recoveryKey`, wraps `masterKey` ➜ `VXRM` blob (see [§12](#12-account-recovery)).
 15. Client: requires the user to confirm the recovery phrase by re-entering specific word positions.
 16. Client ➜ Server: `POST /auth/register/finish { email, continuationToken, registrationRecord, vxwm, vxsk, vxrm, sharingPublicXwing, sharingPublicMldsa }`.
 17. Server: stores the user row atomically.
@@ -563,7 +563,7 @@ This defends against a substituted server, contingent on the client distribution
 - Inactivity timeout: 30 minutes. On timeout, the Worker is terminated and all in-memory key material is zeroized; the user must re-authenticate.
 - Session cookie: 24-hour absolute lifetime, renewed on activity, `HttpOnly; Secure; SameSite=Strict`.
 - Closing the tab destroys the Worker and the `masterKey`. Without a persistent session, the next visit requires a fresh login.
-- Worker script is served same-origin under strict CSP (§16), no inline, no eval beyond `wasm-unsafe-eval`.
+- Worker script is served same-origin under strict CSP ([§16](#16-web-security-headers)), no inline, no eval beyond `wasm-unsafe-eval`.
 
 ### 9.2 Persistent sessions ("Remember me", opt-in)
 
@@ -594,12 +594,12 @@ Resume:
 
 #### Zero-knowledge tiers
 
-| Mode                                    | Zero-knowledge                    | Server holds         |
-|-----------------------------------------|-----------------------------------|----------------------|
-| Web (no `Remember me`)                  | ✅ True ZK                        | Nothing session-side |
-| Web (`Remember me`)                     | ⚠️ Trade-off (opt-in, documented) | `localKey`           |
-| Web (`Remember me` + `WebAuthn` PRF)    | ✅ True ZK                        | Nothing              |
-| Desktop / Mobile                        | ✅ True ZK                        | Nothing              |
+| Mode                                 | Zero-knowledge                     | Server holds         |
+|--------------------------------------|------------------------------------|----------------------|
+| Web (no `Remember me`)               | ✅ True ZK                         | Nothing session-side |
+| Web (`Remember me`)                  | ⚠️ Trade-off (opt-in, documented)  | `localKey`           |
+| Web (`Remember me` + `WebAuthn` PRF) | ✅ True ZK                         | Nothing              |
+| Desktop / Mobile                     | ✅ True ZK                         | Nothing              |
 
 #### WebAuthn PRF (future, non-trivial)
 
@@ -616,7 +616,7 @@ Support as of early 2026 is now broad:
 >
 > Apple has acknowledged this but not yet shipped it.
 
-Implementation requires a registered passkey per device and a graceful fallback to the standard `localKey` model for unsupported combinations. Tracked in §18.
+Implementation requires a registered passkey per device and a graceful fallback to the standard `localKey` model for unsupported combinations. Tracked in [§18](#18-open-questions-and-future-work).
 
 #### Mandatory safeguards
 
@@ -814,7 +814,7 @@ Cross-target consistency is verified by JSON test vectors in `crates/core/tests/
 
 Vector categories:
 
-1. HKDF derivations (every domain-separated path in §4)
+1. HKDF derivations (every domain-separated path in [§4](#4-hkdf-domain-separation))
 2. VXWM, VXRM, VXFC, VXFM, VXSK, VXPS, VXSH round-trips with fixed keys and nonces
 3. Segment nonce derivation across multiple generations and indices
 4. OPAQUE registration and login with deterministic test-only RNG seeds
@@ -897,9 +897,9 @@ Violations POSTed to `https://reports.vexahub.com/csp`, rate-limited per IP, sto
 |--------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Database snapshot                                      | No decryption possible; OPRF blocks offline password attacks                                                                                                                                                                                                                                                                       |
 | Full server compromise, no active sessions intercepted | Cannot decrypt existing data; can observe future ciphertext                                                                                                                                                                                                                                                                        |
-| Server compromise + active session cookie stolen       | Can decrypt that session's persistent blob if the user opted in (documented trade-off §9.2)                                                                                                                                                                                                                                        |
+| Server compromise + active session cookie stolen       | Can decrypt that session's persistent blob if the user opted in (documented trade-off [§9](#9-session-management).2)                                                                                                                                                                                                               |
 | Network MITM with valid TLS                            | Blocked by static public key pinning                                                                                                                                                                                                                                                                                               |
-| Malicious client update                                | Not defended; reproducible builds tracked in §18                                                                                                                                                                                                                                                                                   |
+| Malicious client update                                | Not defended; reproducible builds tracked in [§18](#18-open-questions-and-future-work)                                                                                                                                                                                                                                             |
 | Physical device compromise (unlocked)                  | Not defended beyond OS-level protections                                                                                                                                                                                                                                                                                           |
 | XSS in webapp                                          | Strict CSP (no `unsafe-inline`), Worker isolation, no eval beyond WASM                                                                                                                                                                                                                                                             |
 | Compromised `serverSetup`                              | Argon2id 128 MiB still imposes meaningful cost on offline dictionary attacks                                                                                                                                                                                                                                                       |
