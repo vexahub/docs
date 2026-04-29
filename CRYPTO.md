@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-**Document version:** 5
+**Document version:** 5.1
 **Protocol version:** 1
 **Status:** (Draft) pre-MVP
 
@@ -356,7 +356,7 @@ Offset  Size   Field
 6       24     Nonce (random)
 30      N+16   Ciphertext (CBOR { "k": bstr, "kind": "collection"|"file", "id": bstr }) + tag
 ------
-Total: 78 bytes
+Total: 112 bytes (file share) / 118 bytes (collection share)
 ```
 
 ```rs
@@ -667,6 +667,11 @@ This defends against a substituted server, contingent on the client distribution
 4. Server: verifies email is not already registered.
 5. Server: `opaque.server.createRegistrationResponse({ serverSetup, userIdentifier: email, registrationRequest })` ➜ `{ registrationResponse }`.
 6. Server ➜ Client: `{ registrationResponse, continuationToken }`.
+
+    > If the `continuationToken` expires (60-second TTL) before the client sends `finishLogin`, the server **MUST** return HTTP 410 Gone. The client **MUST** restart the registration flow from **step 1**.
+    >
+    > The **60-second** window accommodates **Argon2id** computation on low-end WASM targets (~3 seconds worst case) plus network latency. If telemetry shows the window is too tight, it can be increased server-side **without** a protocol version bump.
+
 7. Client: `opaque.client.finishRegistration(...)` ➜ `{ registrationRecord, exportKey, serverStaticPublicKey }`.
 8. Client: verifies `serverStaticPublicKey` matches the hardcoded pin; aborts on mismatch.
 9. Client: derives `masterKeyWrapper` from `exportKey`.
@@ -1143,9 +1148,13 @@ A vector mismatch is a release blocker.
 
 ## 15. Key Zeroization
 
-All key material is wrapped in `Zeroizing<T>` (Rust) and explicitly overwritten on JS/WASM boundaries via `Uint8Array.fill(0)` after use. GC-managed runtimes (JS, Kotlin, Swift) cannot guarantee complete erasure; this is an acknowledged limitation documented in the threat model.
+All key material is wrapped in `Zeroizing<T>` (Rust) and **explicitly** overwritten on JS/WASM boundaries via `Uint8Array.fill(0)` after use. GC-managed runtimes (JS, Kotlin, Swift) **cannot** guarantee complete erasure; this is an acknowledged limitation documented in the threat model.
 
-Mandatory zeroization points: after every OPAQUE flow (`password`, `exportKey`, `masterKeyWrapper`), on session timeout, on logout, on password change.
+**Mandatory** zeroization points: after every OPAQUE flow (`password`, `exportKey`, `masterKeyWrapper`), on session timeout, on logout, on password change.
+
+> `collectionKeyWrapKey` and `fileKeyWrapKey` are ephemeral.
+>
+> Derived inline for a single **wrap** or **unwrap** operation and **never** stored. `Zeroizing<T>` handles erasure **automatically** when they go out of scope in **Rust**.
 
 ## 16. Web Security Headers
 
@@ -1224,7 +1233,6 @@ Violations POSTed to `https://reports.vexahub.com/csp`, rate-limited per IP, sto
 | Compromised `serverSetup`                              | Argon2id 128 MiB still imposes meaningful cost on offline dictionary attacks                                                                                                                                                                                                                                                       |
 | File rollback / segment reorder by malicious server    | Blocked by `generation` counter and per-segment AAD binding                                                                                                                                                                                                                                                                        |
 | CRQC (post-quantum adversary)                          | Sharing key exchange protected by X-Wing (ML-KEM-768 + X25519 hybrid); share authenticity protected by ML-DSA-65; login session keys protected by TripleDhKem (3DH + ML-KEM-768 hybrid); OPRF remains classical Ristretto255 (CRQC + database + `serverSetup` theft allows offline password attacks mitigated by Argon2id 128 MiB) |
-| Share revocation by collection/file owner              | New content protected by rotated keys at both collection and file level; metadata immediately re-encrypted; old ciphertext unreachable via API + lazy re-encryption; already-downloaded content not recoverable (inherent E2EE limitation)                                                                                         |
 | Server swaps VXFM metadata blob between files          | Blocked by file_id AAD binding on VXFM                                                                                                                                                                                                                                                                                             |
 | Server swaps key-wrapping blobs between users          | Blocked by user_id AAD binding on VXWM, VXRM, VXPS, VXSK                                                                                                                                                                                                                                                                           |
 | Server serves stale VXFM from previous generation      | Detected by client verifying VXFM generation matches file row generation                                                                                                                                                                                                                                                           |
