@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-**Document version:** 4
+**Document version:** 5
 **Protocol version:** 1
 **Status:** (Draft) pre-MVP
 
@@ -119,21 +119,25 @@ For derivations where the IKM is uniformly random (e.g. `masterKey`, `exportKey`
 
 For `shareWrapKey`, the IKM is the X-Wing shared secret (output of a KEM combiner), not raw CSPRNG output. If the combiner ever produced biased output due to an implementation flaw or a weakness in one of the constituent KEMs, a random salt provides a meaningful extra defense layer. The salt is transmitted alongside the X-Wing ciphertext in the share record and does not need to be secret.
 
-| Derivation                                   | `info` string                                      | length                   |
-|----------------------------------------------|----------------------------------------------------|--------------------------|
-| masterKeyWrapper from exportKey              | `vexahub:v1:masterKeyWrapper`                      | 32                       |
-| collectionKeyWrap from masterKey             | `vexahub:v1:collectionKeyWrap:{collection_uuid}`   | 32                       |
-| fileKeyWrap from collectionKey               | `vexahub:v1:fileKeyWrap:{file_uuid}`               | 32                       |
-| contentIdKey from masterKey (per collection) | `vexahub:v1:contentIdKey:{collection_uuid}`        | 32                       |
-| fileContentKey from fileKey                  | `vexahub:v1:fileContentKey`                        | 32                       |
-| fileMetadataKey from fileKey                 | `vexahub:v1:fileMetadataKey`                       | 32                       |
-| segmentNonce from fileContentKey             | `vexahub:v1:segmentNonce:{generation}:{index}`     | 24                       |
-| recoveryKey from BIP39 seed                  | `vexahub:v1:recoveryKey:{user_uuid}`               | 32                       |
-| shareWrapKey from X-Wing shared secret       | `vexahub:v1:shareWrap:{share_uuid}`                | 32 (random 32-byte salt) |
+| Derivation                                   | `info` string                                                                 | length                |
+|----------------------------------------------|-------------------------------------------------------------------------------|-----------------------|
+| masterKeyWrapper from exportKey              | `vexahub:v1:masterKeyWrapper`                                                 | 32                    |
+| collectionKeyWrap from masterKey             | `vexahub:v1:collectionKeyWrap:{collection_uuid}`                              | 32                    |
+| fileKeyWrap from collectionKey               | `vexahub:v1:fileKeyWrap:{file_uuid}`                                          | 32                    |
+| contentIdKey from masterKey (per collection) | `vexahub:v1:contentIdKey:{collection_uuid}`                                   | 32                    |
+| fileContentKey from fileKey                  | `vexahub:v1:fileContentKey`                                                   | 32                    |
+| fileMetadataKey from fileKey                 | `vexahub:v1:fileMetadataKey`                                                  | 32                    |
+| segmentNonce from fileContentKey             | `vexahub:v1:segmentNonce:` ‖ uint32_be(generation) ‖ uint64_be(segment_index) | 24                    |
+| recoveryKey from BIP39 seed                  | `vexahub:v1:recoveryKey:{user_uuid}`                                          | 32                    |
+| shareWrapKey from X-Wing shared secret       | `vexahub:v1:shareWrap:{share_uuid}`                                           | 32 (RNG 32-byte salt) |
 
 > HKDF salts are not secrets; uniqueness is enforced exclusively by the `info` field.
 >
 > Zero salt simplifies cross-platform interoperability and has no security impact when `info` is unique per purpose.
+>
+> All UUIDs embedded in HKDF `info` strings MUST be encoded as **raw 16-byte big-endian binary**, not as hyphenated text.
+>
+> This eliminates formatting ambiguity across platforms and implementations. Example: UUID `550e8400-e29b-41d4-a716-446655440000` is encoded as 16 bytes `0x55 0x0e 0x84 ...`, not as 36-byte ASCII.
 
 The `collectionKeyWrapKey` and `fileKeyWrapKey` are derived solely to wrap/unwrap their respective stored keys:
 
@@ -180,6 +184,10 @@ Offset  Size  Field
 Total: 78 bytes
 ```
 
+```rs
+AAD: user_id (16 bytes, raw UUID)
+```
+
 ### 5.2 `VXRM` - Wrapped Master Key (recovery-phrase-derived)
 
 Identical structure to `VXWM`, distinct magic to prevent cross-use.
@@ -194,6 +202,10 @@ Offset  Size  Field
 Total: 78 bytes
 ```
 
+```rs
+AAD: user_id (16 bytes, raw UUID)
+```
+
 ### 5.3 `VXFC` - File Content Segment
 
 ```rs
@@ -201,13 +213,19 @@ Offset  Size   Field
 0       4      Magic "VXFC"
 4       1      Format version (0x01)
 5       1      Algorithm ID (0x01)
-6       4      File generation (uint32 BE)
-10      8      Segment index (uint64 BE)
-18      24     Nonce (derived deterministically)
-42      N+16   Ciphertext + tag
+6       16     File ID (UUID, raw bytes)
+22      4      File generation (uint32 BE)
+26      8      Segment index (uint64 BE)
+34      24     Nonce (derived deterministically)
+58      N+16   Ciphertext + tag
 ```
 
-The AAD bound to each segment is the 14-byte tuple `version || alg_id || generation || segment_index`. This binds every ciphertext to its position and generation, preventing reorder and rollback attacks within a file.
+```rs
+AAD = version ‖ alg_id ‖ file_id ‖ generation ‖ segment_index
+// 1 + 1 + 16 + 4 + 8 = 30 bytes
+```
+
+The **AAD** bound to each segment is the **30-byte** tuple `version ‖ alg_id ‖ file_id ‖ generation ‖ segment_index`. This binds every ciphertext to its position and generation, preventing reorder and rollback attacks within a file.
 
 ### 5.4 `VXFM` - File Metadata
 
@@ -216,9 +234,15 @@ Offset  Size   Field
 0       4      Magic "VXFM"
 4       1      Format version (0x01)
 5       1      Algorithm ID (0x01)
-6       4      File generation (uint32 BE)
-10      24     Nonce (random)
-34      N+16   Ciphertext (CBOR-encoded metadata) + tag
+6       16     File ID (UUID, raw bytes)
+22      4      File generation (uint32 BE)
+26      24     Nonce (random)
+50      N+16   Ciphertext (CBOR-encoded metadata) + tag
+```
+
+```rs
+AAD = version ‖ alg_id ‖ file_id ‖ generation
+// 1 + 1 + 16 + 4 = 22 bytes
 ```
 
 CBOR schema for plaintext metadata (canonical CBOR, [RFC 8949 §4.2.1](https://www.rfc-editor.org/rfc/rfc8949.html#name-core-deterministic-encoding)):
@@ -228,11 +252,18 @@ CBOR schema for plaintext metadata (canonical CBOR, [RFC 8949 §4.2.1](https://w
   "n":  tstr,           // filename
   "m":  tstr,           // mime type
   "s":  uint,           // plaintext size in bytes
+  "sc": uint,           // total segment count
   "ct": uint,           // creation time, unix seconds
   "mt": uint,           // modification time, unix seconds
   "h":  bstr .size 32,  // BLAKE3 hash of plaintext (integrity)
 }
 ```
+
+> **Nonce requirement:** A fresh random nonce **MUST** be generated for every `VXFM` encryption, including re-encryption on generation increment. `fileMetadataKey` is derived from `fileKey` without `generation` in the derivation path, meaning the metadata key is **stable across generations**. Nonce reuse under the same `fileMetadataKey` is catastrophic. It breaks **XChaCha20-Poly1305** confidentiality.
+>
+> Implementors **MUST NOT** cache or reuse a previous `VXFM` nonce.
+>
+> **Segment count verification:** Before starting a download, the client **MUST** read `sc` from `VXFM` and verify that the number of segments received matches. A mismatch indicates truncation or tampering and the client **MUST** abort the download without surfacing partial content. This catches truncation before committing bandwidth, unlike the **BLAKE3** hash check in §6.5.9 which only runs after the full download.
 
 Unknown CBOR keys MUST be preserved on re-encryption to allow forward-compatible field additions.
 
@@ -250,6 +281,10 @@ Offset  Size  Field
 Total: 78 bytes
 ```
 
+```rs
+AAD: user_id (16 bytes, raw UUID)
+```
+
 ### 5.6 `VXSK` - Wrapped Sharing Keys
 
 ```rs
@@ -261,6 +296,10 @@ Offset  Size   Field
 30      N+16   Ciphertext (CBOR object) + tag
 ```
 
+```rs
+AAD: user_id (16 bytes, raw UUID)
+```
+
 CBOR schema:
 
 ```asm
@@ -270,7 +309,7 @@ CBOR schema:
 }
 ```
 
-## 5.7 `VXCK` - Wrapped Collection Key (new section)
+### 5.7 `VXCK` - Wrapped Collection Key (new section)
 
 ```rs
 Offset  Size  Field
@@ -284,9 +323,11 @@ Offset  Size  Field
 Total: 78 bytes
 ```
 
----
+```rs
+AAD: user_id ‖ collection_id (32 bytes, both raw UUID)
+```
 
-## 5.8 `VXFK` - Wrapped File Key (new section)
+### 5.8 `VXFK` - Wrapped File Key (new section)
 
 ```rs
 Offset  Size  Field
@@ -299,6 +340,30 @@ Offset  Size  Field
 ------
 Total: 78 bytes
 ```
+
+```rs
+AAD: collection_id ‖ file_id (32 bytes, both raw UUID)
+```
+
+### 5.9 `VXSH` - Wrapped sharing key
+
+```rs
+Offset  Size   Field
+------  ----  ---------------------------------------
+0       4      Magic "VXSH"
+4       1      Format version (0x02)
+5       1      KEM algorithm ID (0x02 = X-Wing)
+6       24     Nonce (random)
+30      N+16   Ciphertext (CBOR { "k": bstr, "kind": "collection"|"file", "id": bstr }) + tag
+------
+Total: 78 bytes
+```
+
+```rs
+AAD: sender_id ‖ recipient_id (32 bytes, both raw UUID)
+```
+
+This is **defense-in-depth** alongside the **ML-DSA-65** signature. If a signature verification is **accidentally** skipped due to a bug, the **AAD** binding still **prevents** the server from redirecting shares between users.
 
 ## 6. File Encryption
 
@@ -314,7 +379,7 @@ Segment nonces are derived deterministically from the file generation and segmen
 nonce = HKDF-SHA-512(
     ikm  = fileContentKey,
     salt = 32 zero bytes,
-    info = "vexahub:v1:segmentNonce:" || uint32_be(generation) || ":" || uint64_be(segment_index),
+    info = "vexahub:v1:segmentNonce:" ‖ uint32_be(generation) ‖ uint64_be(segment_index),
     L    = 24
 )
 ```
@@ -337,6 +402,10 @@ The `generation` field is 32 bits, providing 4 billion modifications per file. T
 ### 6.4 Content vs metadata key separation
 
 `fileContentKey` and `fileMetadataKey` are derived from the same `fileKey` via distinct HKDF info strings. This prevents any cross-use of nonces between content segments and metadata blobs.
+
+> **Warning to implementors:** `fileMetadataKey` does **NOT** include `generation` in its derivation path. It is stable across all generations of a file. This is by design.
+>
+> Metadata key separation from content keys is the goal. However, this means every `VXFM` encryption **MUST** use a fresh random nonce. See §5.4 for the explicit nonce requirement.
 
 ### 6.5 Content Identification and Resumable Upload Integration
 
@@ -401,10 +470,10 @@ VexaHub uses the [tus 1.0.0](https://tus.io/protocols/resumable-upload/1-0-x) co
 ```rs
 plaintext_size                        = N bytes
 SEGMENT_PLAINTEXT_SIZE                = 1 MiB = 1,048,576 bytes
-SEGMENT_HEADER_SIZE                   = 42 bytes (VXFC header)
+SEGMENT_HEADER_SIZE                   = 58 bytes (VXFC header, includes file_id)
 SEGMENT_TAG_SIZE                      = 16 bytes (Poly1305)
-SEGMENT_CIPHERTEXT_OVERHEAD           = SEGMENT_HEADER_SIZE + SEGMENT_TAG_SIZE = 58 bytes
-SEGMENT_CIPHERTEXT_SIZE_FULL          = SEGMENT_PLAINTEXT_SIZE + SEGMENT_TAG_SIZE + SEGMENT_HEADER_SIZE = 1,048,634 bytes
+SEGMENT_CIPHERTEXT_OVERHEAD           = SEGMENT_HEADER_SIZE + SEGMENT_TAG_SIZE = 74 bytes
+SEGMENT_CIPHERTEXT_SIZE_FULL          = SEGMENT_PLAINTEXT_SIZE + SEGMENT_CIPHERTEXT_OVERHEAD = 1,048,650 bytes
 
 full_segments                         = floor(N / SEGMENT_PLAINTEXT_SIZE)
 last_segment_plaintext                = N mod SEGMENT_PLAINTEXT_SIZE
@@ -486,6 +555,7 @@ This BLAKE3 hash is the unkeyed plaintext hash and serves only as an integrity c
 ```sql
 CREATE TABLE tus_uploads (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    crypto_version SMALLINT NOT NULL DEFAULT 1,
     user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     file_id       UUID,                       -- NULL until commit
     collection_id UUID NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
@@ -518,6 +588,10 @@ CREATE INDEX tus_uploads_user_collection
     ON tus_uploads (user_id, collection_id);
 ```
 
+> The `crypto_version` on a tus upload **MUST** match the `crypto_version` that will be committed to the `files` table.
+>
+> If a client upgrades crypto version mid-upload (e.g. during a protocol migration), the in-progress upload **MUST** be discarded and restarted under the new version.
+
 ### 6.5.11 Abandoned upload garbage collection
 
 A scheduled job MUST periodically (recommended: hourly) remove rows from `tus_uploads` where `completed_at IS NULL AND expires_at < now()`, and MUST delete the corresponding object at `storage_path` from the object storage backend. The default TTL for an incomplete upload is **7 days** from `created_at`, refreshed to 7 days on each successful `PATCH`. Long-running uploads of very large files therefore stay alive as long as the user is making progress, but truly abandoned uploads are reaped within a week.
@@ -529,7 +603,10 @@ A scheduled job MUST periodically (recommended: hourly) remove rows from `tus_up
 | Server tries to test database for known plaintext via hash                   | Blocked: `content_id` is keyed by per-user `contentIdKey`, never seen by server                                                                                |
 | Server tries cross-user deduplication to infer relationships                 | Blocked: distinct users produce distinct `content_id` for identical plaintext                                                                                  |
 | Server truncates an upload to inject a shorter file                          | Detected at download via BLAKE3 plaintext hash in `VXFM` ([§5.4](#54-vxfm---file-metadata), [§6.5.9](#659-final-integrity-verification))                       |
-| Server reorders segments within a generation                                 | Blocked by per-segment AAD binding `(version, alg, generation, segment_index)`                                                                                 |
+| Server reorders segments within a generation                                 | Blocked by per-segment AAD binding `(version, alg, file_id, generation, segment_index)`                                                                        |
+| Server swaps VXFM metadata between files                                     | Blocked by AAD binding `(version, alg, file_id, generation)` on VXFM                                                                                           |
+| Server swaps key-wrapping blobs between users                                | Blocked by user_id AAD binding on VXWM, VXRM, VXPS, VXSK                                                                                                       |
+| Server truncates download (drops trailing segments)                          | Detected by segment count `sc` in VXFM before full download completes                                                                                          |
 | Server rolls back to an older generation                                     | Blocked by monotonic `generation` enforcement ([§6.3](#63-file-generation-counter-mutability)) and client-side verification                                    |
 | Server tries to correlate files across collections for the same user         | Blocked: `contentIdKey` is per-collection, same plaintext produces different `content_id` in different collections                                             |
 | Server observes unchanged `content_id` values after `collectionKey` rotation | Accepted: minor metadata leak (file set unchanged), negligible over what server already knows (file count, ciphertext sizes). Content remains fully protected. |
@@ -611,16 +688,28 @@ This defends against a substituted server, contingent on the client distribution
 4. Server: looks up the user, loads `registrationRecord`.
 5. Server: `opaque.server.startLogin(...)` ➜ `{ loginResponse, serverLoginState }`.
 6. Server: stores `serverLoginState` in Valkey under a random `continuationToken` with a 60-second TTL.
+
+    > If the `continuationToken` expires (60-second TTL) before the client sends `finishLogin`, the server **MUST** return HTTP 410 Gone. The client **MUST** restart the login flow from **step 1**.
+    >
+    > The **60-second** window accommodates **Argon2id** computation on low-end WASM targets (~3 seconds worst case) plus network latency. If telemetry shows the window is too tight, it can be increased server-side **without** a protocol version bump.
+
 7. Server ➜ Client: `{ loginResponse, continuationToken, vxwm, vxsk }`.
 8. Client: `opaque.client.finishLogin(...)` ➜ `{ finishLoginRequest, sessionKey, exportKey, serverStaticPublicKey }`.
 9. Client: verifies pinned key.
 10. Client: derives `masterKeyWrapper`, parses `VXWM`, decrypts `masterKey`.
+
+    > 10a. On every file access, the client **MUST** verify that the `generation` field inside the decrypted `VXFM` blob matches the `generation` stored in the server's file metadata response. A **mismatch** indicates the server is serving a stale metadata blob from a previous generation and the client **MUST** reject the file.
+
 11. Client: parses `VXSK`, decrypts sharing private keys with `masterKey`.
 12. Client ➜ Server: `POST /auth/login/finish { continuationToken, finishLoginRequest }`.
 13. Server: retrieves and immediately deletes `serverLoginState` from Valkey.
 14. Server: `opaque.server.finishLogin(...)` ➜ `{ sessionKey }`.
 15. Server: derives an HTTP session token from `sessionKey`, stores a hashed session row in Postgres, returns `HttpOnly; Secure; SameSite=Strict` cookie.
 16. Client: zeroizes `password`, `exportKey`, `masterKeyWrapper`. `masterKey` and sharing private keys are loaded into the Crypto Web Worker.
+
+> **Password change note:** `VXSK` is wrapped under `masterKey`, not `masterKeyWrapper`. Since password changes re-wrap `masterKey` under a new `masterKeyWrapper` but do not change `masterKey` itself, the existing `VXSK` blob remains valid and does not need re-wrapping.
+>
+> The server **MUST** continue to return the existing `VXSK` after a password change.
 
 ## 9. Session Management
 
@@ -748,7 +837,38 @@ CREATE TABLE users (
 );
 ```
 
-### 10.2 File and collection keys table
+### 10.2 File and collection table
+
+```sql
+CREATE TABLE collections (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    parent_id       UUID REFERENCES collections(id) ON DELETE CASCADE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX ON collections (user_id);
+CREATE INDEX ON collections (parent_id);
+
+CREATE TABLE files (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id               UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    collection_id         UUID NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    generation            INTEGER NOT NULL DEFAULT 0,
+    content_id            BYTEA,                    -- 32 bytes, BLAKE3_keyed
+    upload_length         BIGINT,                   -- ciphertext bytes, NULL until first upload completes
+    crypto_version        SMALLINT NOT NULL DEFAULT 1,
+    pending_key_rotation  BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX ON files (user_id, collection_id);
+CREATE INDEX ON files (collection_id) WHERE pending_key_rotation = TRUE;
+```
+
+### 10.3 File and collection keys table
 
 ```sql
 CREATE TABLE collection_keys (
@@ -778,7 +898,7 @@ CREATE UNIQUE INDEX file_keys_active
     ON file_keys (file_id, key_generation);
 ```
 
-### 10.3 What the server knows vs does not know
+### 10.4 What the server knows vs does not know
 
 **Knows:** email, `registrationRecord` (opaque envelope), wrapped key blobs, public sharing keys, file existence and ciphertext size, file/collection UUIDs, hierarchy, timestamps, locale, `localKey` for any active persistent sessions only.
 
@@ -822,17 +942,6 @@ Receive flow:
 > **Critical design note:** The ML-DSA-65 signature sits **outside** the encrypted `VXSH` blob, at the transport layer. The recipient MUST verify the signature before trusting or decrypting the ciphertext. If the signature were inside the encrypted envelope, a malicious server could swap the entire `{ctXwing, vxsh}` package and the forgery would only be discovered after decryption (And that's too late).
 >
 > When sharing a **collection**, the `VXSH` blob wraps the `collectionKey`. The recipient stores their own `VXCK` blob wrapped by their `masterKey`. When sharing a **file**, the `VXSH` blob wraps the `fileKey`. The recipient stores their own `VXFK` blob wrapped by a `collectionKey` in their scope.
-
-`VXSH` blob format:
-
-```bash
-Offset  Size   Field
-0       4      Magic "VXSH"
-4       1      Format version (0x02)
-5       1      KEM algorithm ID (0x02 = X-Wing)
-6       24     Nonce (random)
-30      N+16   Ciphertext (CBOR { "k": bstr, "kind": "collection"|"file", "id": bstr }) + tag
-```
 
 The signature is not part of the `VXSH` blob. It is stored alongside it in the share database record:
 
@@ -944,7 +1053,13 @@ The phrase is shown once, never persisted client-side, never transmitted to the 
 Recovery flow (forgotten password, phrase available):
 
 1. User enters email and recovery phrase.
-2. Client fetches `vxrm` and `user_uuid` from a rate-limited unauthenticated endpoint.
+
+2. Client sends email to `POST /auth/recovery/lookup`. The server **MUST** respond in **constant time** regardless of whether the email is registered:
+    - **Registered:** returns `{ vxrm, user_uuid }`.
+    - **Not registered:** returns a **deterministic fake** `{ vxrm, user_uuid }` derived from `HMAC-SHA-256(recovery_enumeration_secret, email)`. The fake `vxrm` is a valid-looking **78-byte** blob that will fail decryption **silently**. The fake `user_uuid` is similarly derived. This prevents email enumeration via timing or response shape differences.
+
+    > The `recovery_enumeration_secret` is a separate **32-byte** random value generated at first deployment and stored alongside `serverSetup`. It **MUST NOT** be derived from `serverSetup` or any other key material.
+
 3. Client re-derives `recoveryKey`, unwraps `masterKey`.
 4. User chooses a new password.
 5. Client performs a fresh OPAQUE registration.
@@ -960,7 +1075,14 @@ Recovery flow (forgotten password, phrase available):
 
 ### 12.2 Destructive reset
 
-Available when both password and phrase are lost. Triggered by email-confirmed link, displays an unambiguous data-loss warning, then atomically wipes all files and rotates all key material under a new `reset_generation`.
+> Available when **both** password and phrase are lost. Triggered by **email-confirmed** link, displays an unambiguous data-loss **warning**, then atomically:
+>
+> 1. Deletes **all** files, collections, collection keys, file keys, and shares for the user.
+> 2. Increments `reset_generation` on the user row. This value is returned to clients on login and **MUST** be checked against the locally cached value by clients with persistent local state (desktop, mobile, web with "Remember me"). A mismatch indicates a **destructive** reset occurred on another device and the client **MUST** clear all local caches and key material. Web clients without persistent sessions are unaffected. They start **fresh** on every login.
+>
+> 3. Generates new `masterKey`, new sharing keypairs, new `VXWM`, `VXSK`, `VXRM` under a new **OPAQUE** registration.
+>
+> The user starts fresh with an **empty** account.
 
 ### 12.3 Phrase rotation
 
@@ -989,6 +1111,12 @@ Migration model: new and old protocol versions coexist in the codebase. On next 
 
 What CANNOT be changed without re-encrypting user data: `masterKey` itself, file generation derivation paths, segment nonce derivation. `serverSetup` rotation invalidates all accounts.
 
+> The `crypto_version` field on the `files` table tracks which protocol **version** was used to encrypt each file.
+>
+> This allows files encrypted under different protocol **versions** to coexist during a **migration** window. The blob `format version` byte describes the binary layout; `crypto_version` describes which key derivation scheme and parameters were used.
+>
+> For protocol **version 1**, these are effectively the same. They diverge only during a **migration** from **version N** to **version N+1**, where old files retain `crypto_version = N` until re-encrypted.
+
 ## 14. Test Vectors
 
 Cross-target consistency is verified by JSON test vectors in `crates/core/tests/vectors/`, executed by:
@@ -1006,6 +1134,10 @@ Vector categories:
 3. Segment nonce derivation across multiple generations and indices
 4. OPAQUE registration and login with deterministic test-only RNG seeds
 5. ML-KEM-768 encapsulation/decapsulation against FIPS 203 known-answer tests
+6. AAD construction vectors for VXFC (with file_id) and VXFM (with file_id)
+7. AAD construction vectors for key-wrapping blobs (VXWM, VXRM, VXPS, VXSK, VXCK, VXFK) with user_id/collection_id/file_id binding
+8. content_id derivation vectors with collection_uuid bound in the HKDF info
+9. Segment count verification (VXFM sc field vs actual segment count)
 
 A vector mismatch is a release blocker.
 
@@ -1080,19 +1212,25 @@ Violations POSTed to `https://reports.vexahub.com/csp`, rate-limited per IP, sto
 
 ## 17. Threat Model Summary
 
-| Attacker capability                                    | VexaHub response                                                                                                                                                                                                                                                                                                                     |
-|--------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Database snapshot                                      | No decryption possible; OPRF blocks offline password attacks                                                                                                                                                                                                                                                                         |
-| Full server compromise, no active sessions intercepted | Cannot decrypt existing data; can observe future ciphertext                                                                                                                                                                                                                                                                          |
-| Server compromise + active session cookie stolen       | Can decrypt that session's persistent blob if the user opted in (documented trade-off [§9](#9-session-management).2)                                                                                                                                                                                                                 |
-| Network MITM with valid TLS                            | Blocked by static public key pinning                                                                                                                                                                                                                                                                                                 |
-| Malicious client update                                | Not defended; reproducible builds tracked in [§18](#18-open-questions-and-future-work)                                                                                                                                                                                                                                               |
-| Physical device compromise (unlocked)                  | Not defended beyond OS-level protections                                                                                                                                                                                                                                                                                             |
-| XSS in webapp                                          | Strict CSP (no `unsafe-inline`), Worker isolation, no eval beyond WASM                                                                                                                                                                                                                                                               |
-| Compromised `serverSetup`                              | Argon2id 128 MiB still imposes meaningful cost on offline dictionary attacks                                                                                                                                                                                                                                                         |
-| File rollback / segment reorder by malicious server    | Blocked by `generation` counter and per-segment AAD binding                                                                                                                                                                                                                                                                          |
-| CRQC (post-quantum adversary)                          | Sharing key exchange protected by X-Wing (ML-KEM-768 + X25519 hybrid); share authenticity protected by ML-DSA-65; login session keys protected by TripleDhKem (3DH + ML-KEM-768 hybrid); OPRF remains classical Ristretto255 (CRQC + database + `serverSetup` theft allows offline password attacks mitigated by Argon2id 128 MiB)   |
-| Share revocation by collection/file owner              | New content protected by rotated keys at both collection and file level; metadata immediately re-encrypted; old ciphertext unreachable via API + lazy re-encryption; already-downloaded content not recoverable (inherent E2EE limitation)                                                                                           |
+| Attacker capability                                    | VexaHub response                                                                                                                                                                                                                                                                                                                   |
+|--------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Database snapshot                                      | No decryption possible; OPRF blocks offline password attacks                                                                                                                                                                                                                                                                       |
+| Full server compromise, no active sessions intercepted | Cannot decrypt existing data; can observe future ciphertext                                                                                                                                                                                                                                                                        |
+| Server compromise + active session cookie stolen       | Can decrypt that session's persistent blob if the user opted in (documented trade-off [§9](#9-session-management).2)                                                                                                                                                                                                               |
+| Network MITM with valid TLS                            | Blocked by static public key pinning                                                                                                                                                                                                                                                                                               |
+| Malicious client update                                | Not defended; reproducible builds tracked in [§18](#18-open-questions-and-future-work)                                                                                                                                                                                                                                             |
+| Physical device compromise (unlocked)                  | Not defended beyond OS-level protections                                                                                                                                                                                                                                                                                           |
+| XSS in webapp                                          | Strict CSP (no `unsafe-inline`), Worker isolation, no eval beyond WASM                                                                                                                                                                                                                                                             |
+| Compromised `serverSetup`                              | Argon2id 128 MiB still imposes meaningful cost on offline dictionary attacks                                                                                                                                                                                                                                                       |
+| File rollback / segment reorder by malicious server    | Blocked by `generation` counter and per-segment AAD binding                                                                                                                                                                                                                                                                        |
+| CRQC (post-quantum adversary)                          | Sharing key exchange protected by X-Wing (ML-KEM-768 + X25519 hybrid); share authenticity protected by ML-DSA-65; login session keys protected by TripleDhKem (3DH + ML-KEM-768 hybrid); OPRF remains classical Ristretto255 (CRQC + database + `serverSetup` theft allows offline password attacks mitigated by Argon2id 128 MiB) |
+| Share revocation by collection/file owner              | New content protected by rotated keys at both collection and file level; metadata immediately re-encrypted; old ciphertext unreachable via API + lazy re-encryption; already-downloaded content not recoverable (inherent E2EE limitation)                                                                                         |
+| Server swaps VXFM metadata blob between files          | Blocked by file_id AAD binding on VXFM                                                                                                                                                                                                                                                                                             |
+| Server swaps key-wrapping blobs between users          | Blocked by user_id AAD binding on VXWM, VXRM, VXPS, VXSK                                                                                                                                                                                                                                                                           |
+| Server serves stale VXFM from previous generation      | Detected by client verifying VXFM generation matches file row generation                                                                                                                                                                                                                                                           |
+| Server truncates download (drops trailing segments)    | Detected by segment count in VXFM before full download                                                                                                                                                                                                                                                                             |
+| Email enumeration via recovery endpoint                | Blocked by constant-time fake response for unknown emails                                                                                                                                                                                                                                                                          |
+| Share revocation by collection/file owner              | New content protected by rotated keys; metadata re-encrypted immediately; old ciphertext unreachable via API + lazy re-encryption; already-downloaded content not recoverable (E2EE limitation)                                                                                                                                    |
 
 ## 18. Open Questions and Future Work
 
