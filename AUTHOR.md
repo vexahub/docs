@@ -2,9 +2,9 @@
 
 This document is the product of **many** hours of careful thought, research, and back-and-forth decision-making. **Every** parameter, **every** algorithm choice, **every** byte in the blob formats was weighed against **real-world** constraints.
 
-## Our values
+What protects users against **realistic** threats, what stays usable for normal people, what can be audited by security researchers, and what will still make sense **five years** from now.
 
->What protects users against realistic threats, what stays usable for normal people, what can be audited by security researchers, and what will still make sense five years from now.
+## Our values
 
 **VexaHub** is built on a **fundamental** belief. We believe that **privacy** should not be a premium feature, and **"trust us"** is not a security model. The only encryption worth calling **end-to-end** is the kind where the people running the servers genuinely **cannot** read your files, not because they promise not to, but because the math **does not** allow it.
 
