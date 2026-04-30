@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-**Document version:** 5.1
+**Document version:** 6
 **Protocol version:** 1
 **Status:** (Draft) pre-MVP
 
@@ -267,6 +267,8 @@ CBOR schema for plaintext metadata (canonical CBOR, [RFC 8949 §4.2.1](https://w
 
 Unknown CBOR keys MUST be preserved on re-encryption to allow forward-compatible field additions.
 
+> Parsers **MUST** reject non-canonical **CBOR** input. Any blob or payload that does not conform to [RFC 8949 §4.2.1](https://www.rfc-editor.org/rfc/rfc8949.html#section-4.2.1) deterministic encoding **MUST** cause a hard error, **never** silent acceptance or re-canonicalization.
+
 ### 5.5 `VXPS` - Persistent Session Blob
 
 Stored in IndexedDB on the user's device when "Remember me" is enabled.
@@ -308,6 +310,8 @@ CBOR schema:
   "ds": bstr .size 32,    // ML-DSA-65 seed (not expanded signing key)
 }
 ```
+
+> Parsers **MUST** reject non-canonical **CBOR** input. Any blob or payload that does not conform to [RFC 8949 §4.2.1](https://www.rfc-editor.org/rfc/rfc8949.html#section-4.2.1) deterministic encoding **MUST** cause a hard error, **never** silent acceptance or re-canonicalization.
 
 ### 5.7 `VXCK` - Wrapped Collection Key (new section)
 
@@ -365,11 +369,15 @@ AAD: sender_id ‖ recipient_id (32 bytes, both raw UUID)
 
 This is **defense-in-depth** alongside the **ML-DSA-65** signature. If a signature verification is **accidentally** skipped due to a bug, the **AAD** binding still **prevents** the server from redirecting shares between users.
 
+> Parsers **MUST** reject non-canonical **CBOR** input. Any blob or payload that does not conform to [RFC 8949 §4.2.1](https://www.rfc-editor.org/rfc/rfc8949.html#section-4.2.1) deterministic encoding **MUST** cause a hard error, **never** silent acceptance or re-canonicalization.
+
 ## 6. File Encryption
 
 ### 6.1 Segmentation
 
 Files are split into fixed-size plaintext segments. MVP segment size: **1 MiB** (1,048,576 bytes). The last segment may be shorter. Fixed segment size enables byte-precise Range requests on ciphertext, resumable uploads via `tus`, and parallel processing.
+
+Zero-byte files are **supported**. A file with N=0 plaintext bytes produces zero segments, `ciphertext_length = 0`, and `VXFM.sc = 0`. The segment count verification check **MUST** pass for `sc = 0` with **zero** segments received. The **BLAKE3** integrity hash in `VXFM` **MUST** be computed over empty input.
 
 ### 6.2 Per-segment nonce derivation
 
@@ -947,6 +955,8 @@ Receive flow:
 > **Critical design note:** The ML-DSA-65 signature sits **outside** the encrypted `VXSH` blob, at the transport layer. The recipient MUST verify the signature before trusting or decrypting the ciphertext. If the signature were inside the encrypted envelope, a malicious server could swap the entire `{ctXwing, vxsh}` package and the forgery would only be discovered after decryption (And that's too late).
 >
 > When sharing a **collection**, the `VXSH` blob wraps the `collectionKey`. The recipient stores their own `VXCK` blob wrapped by their `masterKey`. When sharing a **file**, the `VXSH` blob wraps the `fileKey`. The recipient stores their own `VXFK` blob wrapped by a `collectionKey` in their scope.
+>
+> Parsers **MUST** reject non-canonical **CBOR** input. Any blob or payload that does not conform to [RFC 8949 §4.2.1](https://www.rfc-editor.org/rfc/rfc8949.html#section-4.2.1) deterministic encoding **MUST** cause a hard error, **never** silent acceptance or re-canonicalization.
 
 The signature is not part of the `VXSH` blob. It is stored alongside it in the share database record:
 
@@ -1034,6 +1044,22 @@ The `timestamp` field in the signed share payload is a Unix epoch in seconds (UT
 
 - The 5-minute window accommodates typical NTP drift across consumer devices. Tighter windows risk false rejections on mobile clients with poor time sync.
 - The window applies symmetrically: `|timestamp - server_time| <= 300` seconds at upload, `|timestamp - created_at| <= 300` seconds at verification.
+
+### 11.3 Sharing Keypair Rotation
+
+An authenticated user **MAY** rotate their sharing keypairs at **any** time, for example if they suspect their signing key has been **observed**.
+
+1. Client generates new **X-Wing** keypair and **ML-DSA-65** keypair.
+2. Client wraps new private keys under `masterKey` → new `VXSK` blob.
+3. Client ➜ Server: `POST /auth/sharing-keys/rotate { vxsk, sharingPublicXwing, sharingPublicMldsa }`.
+4. Server atomically replaces `vxsk`, `sharing_public_xwing`, `sharing_public_mldsa`, and sets `revoked_at = now()` on **all outgoing** pending shares for this user.
+5. Client **re-shares** any collections or files with affected recipients using the new signing key.
+
+> Already-accepted incoming shares stored by recipients are unaffected. The recipient unwrapped and stored the key locally at accept time.
+>
+> Password change does NOT automatically trigger sharing keypair rotation.
+>
+> Rotation is an explicit user action available from security settings.
 
 ## 12. Account Recovery
 
@@ -1134,17 +1160,18 @@ Cross-target consistency is verified by JSON test vectors in `crates/core/tests/
 
 Vector categories:
 
-1. HKDF derivations (every domain-separated path in [§4](#4-hkdf-domain-separation))
+1. **HKDF** derivations (every domain-separated path in [§4](#4-hkdf-domain-separation))
 2. VXWM, VXRM, VXFC, VXFM, VXSK, VXPS, VXSH round-trips with fixed keys and nonces
 3. Segment nonce derivation across multiple generations and indices
-4. OPAQUE registration and login with deterministic test-only RNG seeds
-5. ML-KEM-768 encapsulation/decapsulation against FIPS 203 known-answer tests
-6. AAD construction vectors for VXFC (with file_id) and VXFM (with file_id)
-7. AAD construction vectors for key-wrapping blobs (VXWM, VXRM, VXPS, VXSK, VXCK, VXFK) with user_id/collection_id/file_id binding
-8. content_id derivation vectors with collection_uuid bound in the HKDF info
-9. Segment count verification (VXFM sc field vs actual segment count)
+4. **OPAQUE** registration and login with deterministic test-only RNG seeds
+5. **ML-KEM-768** encapsulation/decapsulation against **FIPS 203** known-answer tests
+6. **AAD** construction vectors for VXFC (with `file_id`) and VXFM (with `file_id`)
+7. **AAD** construction vectors for key-wrapping blobs (VXWM, VXRM, VXPS, VXSK, VXCK, VXFK) with user_id/collection_id/file_id binding
+8. `content_id` derivation vectors with `collection_uuid` bound in the HKDF info
+9. Segment count **verification** (VXFM `sc` field vs actual segment count), including the zero-byte file case (`sc = 0`, zero segments, **BLAKE3** hash over empty input).
+10. **ML-DSA-65** deterministic signing vectors: fixed `(signing_seed, message, context string "vexahub:v1:share")` tuple with expected signature output. Verifies both determinism and correct context string usage. A mismatch indicates the implementation is using a randomized signing API or incorrect context binding.
 
-A vector mismatch is a release blocker.
+A vector **mismatch** is a release **blocker**.
 
 ## 15. Key Zeroization
 
@@ -1196,7 +1223,9 @@ Cross-Origin-Resource-Policy: same-origin
 X-Frame-Options: DENY
 ```
 
-`COOP: same-origin` + `COEP: require-corp` enable cross-origin isolation, which is REQUIRED for `SharedArrayBuffer` and therefore for Argon2id `parallelism > 1` in WASM. Without these headers the parallelism degrades silently to 1, weakening the KSF below the spec parameters. Verification of cross-origin isolation status (`crossOriginIsolated === true`) MUST be checked at app bootstrap and surfaced as an error if false.
+`COOP: same-origin` + `COEP: require-corp` enable cross-origin isolation, which is **REQUIRED** for `SharedArrayBuffer` and therefore for **Argon2id** `parallelism > 1` in WASM. Without these headers the **parallelism** degrades silently to 1, weakening the **KSF** below the spec parameters. Verification of cross-origin isolation status (`crossOriginIsolated === true`) **MUST** be checked at app bootstrap and surfaced as an error if false.
+
+If `crossOriginIsolated === false`, the app **MUST** block entirely and refuse to proceed. Silent degradation to `parallelism = 1` is not acceptable; the user must not be able to authenticate under weakened parameters **without** explicit acknowledgement.
 
 ### 16.3 Cookies
 
@@ -1239,6 +1268,7 @@ Violations POSTed to `https://reports.vexahub.com/csp`, rate-limited per IP, sto
 | Server truncates download (drops trailing segments)    | Detected by segment count in VXFM before full download                                                                                                                                                                                                                                                                             |
 | Email enumeration via recovery endpoint                | Blocked by constant-time fake response for unknown emails                                                                                                                                                                                                                                                                          |
 | Share revocation by collection/file owner              | New content protected by rotated keys; metadata re-encrypted immediately; old ciphertext unreachable via API + lazy re-encryption; already-downloaded content not recoverable (E2EE limitation)                                                                                                                                    |
+| ML-DSA-65 signing key observed by attacker             | Mitigated by explicit sharing keypair rotation (§11.3), which invalidates all pending outgoing shares and replaces public keys server-side                                                                                                                                                                                         |
 
 ## 18. Open Questions and Future Work
 
@@ -1251,3 +1281,4 @@ Violations POSTed to `https://reports.vexahub.com/csp`, rate-limited per IP, sto
 - Possible independent third-party audit of `vexahub-protocol` once funding allows.
 - X-Wing RFC finalization tracking. If wire format changes before RFC, bump `VXSH` format version and KEM algorithm ID.
 - Hybrid signatures (Ed25519 + ML-DSA-65) evaluation for ANSSI/BSI compliance if regulatory requirements harden before 2030.
+- UX flow for sharing keypair rotation notification to recipients whose pending shares were invalidated.
