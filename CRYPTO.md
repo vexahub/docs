@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-**Document version:** 6
+**Document version:** 7
 **Protocol version:** 1
 **Status:** (Draft) pre-MVP
 
@@ -74,13 +74,14 @@ masterKey (32 bytes, generated once at registration via CSPRNG)
     └──► wraps collectionKey(s)
           │
           collectionKey (32 bytes, CSPRNG, per collection, wrapped by masterKey)
-                 │
-                 └──► wraps fileKey(s)
-                        │
-                        fileKey (32 bytes, CSPRNG, per file, wrapped by collectionKey)
-                               │
-                               ├──► fileContentKey  = HKDF(fileKey, "...fileContentKey")
-                               └──► fileMetadataKey = HKDF(fileKey, "...fileMetadataKey")
+            │
+            ├──► collectionMetadataKey = HKDF(collectionKey, "...collectionMetadataKey")
+            └──► wraps fileKey(s)
+                    │
+                    fileKey (32 bytes, CSPRNG, per file, wrapped by collectionKey)
+                            │
+                            ├──► fileContentKey  = HKDF(fileKey, "...fileContentKey")
+                            └──► fileMetadataKey = HKDF(fileKey, "...fileMetadataKey")
 
 
 sharingKeyPair (generated at registration)
@@ -127,6 +128,7 @@ For `shareWrapKey`, the IKM is the X-Wing shared secret (output of a KEM combine
 | contentIdKey from masterKey (per collection) | `vexahub:v1:contentIdKey:{collection_uuid}`                                   | 32                    |
 | fileContentKey from fileKey                  | `vexahub:v1:fileContentKey`                                                   | 32                    |
 | fileMetadataKey from fileKey                 | `vexahub:v1:fileMetadataKey`                                                  | 32                    |
+| collectionMetadataKey from collectionKey     | `vexahub:v1:collectionMetadataKey`                                            | 32                    |
 | segmentNonce from fileContentKey             | `vexahub:v1:segmentNonce:` ‖ uint32_be(generation) ‖ uint64_be(segment_index) | 24                    |
 | recoveryKey from BIP39 seed                  | `vexahub:v1:recoveryKey:{user_uuid}`                                          | 32                    |
 | shareWrapKey from X-Wing shared secret       | `vexahub:v1:shareWrap:{share_uuid}`                                           | 32 (RNG 32-byte salt) |
@@ -138,6 +140,17 @@ For `shareWrapKey`, the IKM is the X-Wing shared secret (output of a KEM combine
 > All UUIDs embedded in HKDF `info` strings MUST be encoded as **raw 16-byte big-endian binary**, not as hyphenated text.
 >
 > This eliminates formatting ambiguity across platforms and implementations. Example: UUID `550e8400-e29b-41d4-a716-446655440000` is encoded as 16 bytes `0x55 0x0e 0x84 ...`, not as 36-byte ASCII.
+
+The `collectionKey` in `collectionMetadataKey` is unique per collection, so no `collection_uuid` is needed in the `info` string.
+
+```rs
+collectionMetadataKey = HKDF-SHA-512(
+    ikm  = collectionKey,
+    salt = 32 zero bytes,
+    info = "vexahub:v1:collectionMetadataKey",
+    L    = 32
+)
+```
 
 The `collectionKeyWrapKey` and `fileKeyWrapKey` are derived solely to wrap/unwrap their respective stored keys:
 
@@ -269,7 +282,34 @@ Unknown CBOR keys MUST be preserved on re-encryption to allow forward-compatible
 
 > Parsers **MUST** reject non-canonical **CBOR** input. Any blob or payload that does not conform to [RFC 8949 §4.2.1](https://www.rfc-editor.org/rfc/rfc8949.html#section-4.2.1) deterministic encoding **MUST** cause a hard error, **never** silent acceptance or re-canonicalization.
 
-### 5.5 `VXPS` - Persistent Session Blob
+### 5.5 `VXCM` - Collection Metadata
+
+```rs
+Offset  Size  Field
+------  ----  ---------------------------------------
+0       4     Magic "VXCM"
+4       1     Format version (0x01)
+5       1     Algorithm ID (0x01)
+6       16    Collection ID (UUID, raw bytes)
+22      24    Nonce (random, fresh on every write)
+46      N+16  Ciphertext (CBOR-encoded metadata) + tag
+```
+
+```rs
+AAD = version ‖ alg_id ‖ collection_id
+```
+
+CBOR schema:
+
+```asm
+{
+  "n": tstr,   // collection name
+  "ct": uint,  // creation time
+  "mt": uint,  // modification time
+}
+```
+
+### 5.6 `VXPS` - Persistent Session Blob
 
 Stored in IndexedDB on the user's device when "Remember me" is enabled.
 
@@ -287,7 +327,7 @@ Total: 78 bytes
 AAD: user_id (16 bytes, raw UUID)
 ```
 
-### 5.6 `VXSK` - Wrapped Sharing Keys
+### 5.7 `VXSK` - Wrapped Sharing Keys
 
 ```rs
 Offset  Size   Field
@@ -313,7 +353,7 @@ CBOR schema:
 
 > Parsers **MUST** reject non-canonical **CBOR** input. Any blob or payload that does not conform to [RFC 8949 §4.2.1](https://www.rfc-editor.org/rfc/rfc8949.html#section-4.2.1) deterministic encoding **MUST** cause a hard error, **never** silent acceptance or re-canonicalization.
 
-### 5.7 `VXCK` - Wrapped Collection Key (new section)
+### 5.8 `VXCK` - Wrapped Collection Key (new section)
 
 ```rs
 Offset  Size  Field
@@ -331,7 +371,7 @@ Total: 78 bytes
 AAD: user_id ‖ collection_id (32 bytes, both raw UUID)
 ```
 
-### 5.8 `VXFK` - Wrapped File Key (new section)
+### 5.9 `VXFK` - Wrapped File Key (new section)
 
 ```rs
 Offset  Size  Field
@@ -349,7 +389,7 @@ Total: 78 bytes
 AAD: collection_id ‖ file_id (32 bytes, both raw UUID)
 ```
 
-### 5.9 `VXSH` - Wrapped sharing key
+### 5.10 `VXSH` - Wrapped sharing key
 
 ```rs
 Offset  Size   Field
@@ -735,6 +775,12 @@ This defends against a substituted server, contingent on the client distribution
 - Closing the tab destroys the Worker and the `masterKey`. Without a persistent session, the next visit requires a fresh login.
 - Worker script is served same-origin under strict CSP ([§16](#16-web-security-headers)), no inline, no eval beyond `wasm-unsafe-eval`.
 
+> **Activity definition:** The inactivity timer is reset by any of the following events:
+    >- Any user interaction that triggers an authenticated **API** request (file list, collection browse, metadata fetch, upload, download).
+    >- Any message sent to the Crypto Worker (encrypt, decrypt, wrap, unwrap).
+>
+> The main thread is responsible for signalling the Worker on **API** activity. The Worker **MUST** expose a `resetInactivityTimer()` message that the main thread calls on every authenticated API response. The Worker's timer runs independently and is not accessible to the main thread beyond this signal.
+
 ### 9.2 Persistent sessions ("Remember me", opt-in)
 
 A device-bound resume mechanism. NEVER enabled by default.
@@ -762,7 +808,7 @@ Resume:
 >
 > Users who require strict zero-knowledge guarantees on web should leave `Remember me` unchecked and authenticate with their password each session. Desktop and mobile clients achieve zero-knowledge persistent sessions via OS keychain. The server holds no key material in either case.
 
-#### Zero-knowledge tiers
+#### 9.2.1 Zero-knowledge tiers
 
 | Mode                                 | Zero-knowledge                     | Server holds         |
 |--------------------------------------|------------------------------------|----------------------|
@@ -771,7 +817,7 @@ Resume:
 | Web (`Remember me` + `WebAuthn` PRF) | ✅ True ZK                         | Nothing              |
 | Desktop / Mobile                     | ✅ True ZK                         | Nothing              |
 
-#### WebAuthn PRF (future, non-trivial)
+#### 9.2.2 WebAuthn PRF (future, non-trivial)
 
 Browsers supporting the WebAuthn `prf` extension can derive a device-bound secret from a passkey or hardware authenticator that never leaves the device, replacing `localKey` entirely.
 
@@ -788,7 +834,7 @@ Support as of early 2026 is now broad:
 
 Implementation requires a registered passkey per device and a graceful fallback to the standard `localKey` model for unsupported combinations. Tracked in [§18](#18-open-questions-and-future-work).
 
-#### Mandatory safeguards
+#### 9.2.3 Mandatory safeguards
 
 - Strict opt-in.
 - Settings page listing every persistent session with device label, creation time, last use, and a one-click revoke.
@@ -828,6 +874,171 @@ CREATE INDEX ON sessions (user_id) WHERE revoked_at IS NULL;
 CREATE INDEX ON persistent_sessions (user_id) WHERE revoked_at IS NULL;
 ```
 
+### 9.4 Client-side Key Caching in the Crypto Worker
+
+The Crypto Worker holds `masterKey` and sharing private keys for the duration of a session. `collectionKey` and `fileKey` values are unwrapped on demand and cached inside the Worker with a bounded eviction policy. This section defines that policy.
+
+#### 9.4.1 Cache structure
+
+The Worker maintains two separate LRU caches:
+
+- **Collection key cache**: keyed by `collection_id`, holds unwrapped `collectionKey` values.
+- **File key cache**: keyed by `file_id`, holds unwrapped `fileKey` values.
+
+Both caches are held exclusively in Worker memory. They are never serialized, never written to IndexedDB, and never passed to the main thread.
+
+Maximum cache sizes are implementation-defined per platform. Implementations MUST define a fixed upper bound for each cache to prevent unbounded accumulation of key material in memory. The chosen bounds SHOULD reflect realistic concurrent working sets for the target platform (desktop, mobile, web) and MUST be documented in the platform-specific implementation notes.
+
+#### 9.4.2 Key fetch and unwrap on demand
+
+When the Worker receives an operation request for a `file_id` or `collection_id` it does not currently hold in cache, it proceeds as follows.
+
+The main thread maintains a network-level cache of encrypted blobs (`VXCK`, `VXFK`) received from the server. This cache holds ciphertext only. The main thread never sees plaintext key material. When the Worker needs a blob it signals the main thread, which either returns the blob from its network cache or fetches it from the server.
+
+**For a `collectionKey`:**
+
+1. Worker signals main thread to provide the `VXCK` blob for `collection_id`.
+2. Main thread returns the blob (from network cache or a fresh server fetch).
+3. Worker derives `collectionKeyWrapKey` from `masterKey` and `collection_id`.
+4. Worker unwraps `collectionKey` and stores it in the collection key LRU cache.
+5. `collectionKeyWrapKey` is zeroized immediately after unwrap.
+
+**For a `fileKey`:**
+
+1. Worker first ensures the parent `collectionKey` is in cache, fetching it per the above if needed.
+2. Worker signals main thread to provide the `VXFK` blob for `file_id`.
+3. Main thread returns the blob (from network cache or a fresh server fetch).
+4. Worker derives `fileKeyWrapKey` from `collectionKey` and `file_id`.
+5. Worker unwraps `fileKey` and stores it in the file key LRU cache.
+6. `fileKeyWrapKey` is zeroized immediately after unwrap.
+
+The main thread is never told which key is being derived or for what operation. It only sees blob fetch requests and blob responses.
+
+#### 9.4.3 Cache eviction
+
+Both caches use LRU eviction. When a cache reaches its maximum size and a new entry must be added, the least recently used entry is evicted and its key material is explicitly zeroized before the memory is released.
+
+Keys are also evicted immediately in the following situations:
+
+- Session timeout (30-minute inactivity): entire cache is cleared and Worker is terminated.
+- Logout: entire cache is cleared before Worker termination.
+- Password change: entire cache is cleared. The user re-authenticates and keys are re-fetched on demand in the new session.
+- Share revocation received from server on sync: the affected `collection_id` or `file_id` is evicted immediately from whichever cache holds it.
+- `reset_generation` mismatch detected on login: entire cache is cleared before the Worker processes any further requests.
+
+#### 9.4.4 Concurrency within the Worker
+
+The Worker processes one unwrap operation at a time per key. Concurrent operation requests for the same `(collection_id, file_id)` pair are queued and resolved against the same cached value once it is available. The Worker never initiates two concurrent unwrap operations for the same key.
+
+### 9.5 Key Fetch Ordering on Login and First File Access
+
+Login (§8.2) unwraps `masterKey` and sharing private keys eagerly. All other key material is fetched lazily on first access.
+
+#### 9.5.1 Lazy fetch model
+
+No `collectionKey` or `fileKey` is unwrapped at login time. The Worker holds only `masterKey` and sharing keys after login completes. This keeps login fast regardless of how many collections and files the user has, and avoids loading key material for collections the user may never visit in that session.
+
+#### 9.5.2 First file access flow
+
+When the user opens a file for the first time in a session:
+
+1. Main thread sends a decrypt request to the Worker including `file_id` and `collection_id`.
+2. Worker checks file key cache. On miss, Worker checks collection key cache.
+3. On collection key cache miss, Worker signals main thread to fetch `VXCK` blob from server.
+4. Main thread fetches `VXCK` and passes it to Worker. Main thread never sees the plaintext key.
+5. Worker unwraps `collectionKey` and caches it.
+6. Worker signals main thread to fetch `VXFK` blob from server.
+7. Main thread fetches `VXFK` and passes it to Worker.
+8. Worker unwraps `fileKey` and caches it.
+9. Worker proceeds with the decrypt operation and returns only the operation result to the main thread.
+
+On subsequent access to the same file within the session, steps 2 through 8 are skipped entirely if both keys are still in cache.
+
+#### 9.5.3 Collection prefetch hint
+
+The main thread MAY send a prefetch hint to the Worker when the user navigates into a collection, to warm the collection key cache before any file is opened. A prefetch hint causes the Worker to unwrap and cache the `collectionKey` for that collection only. It does NOT trigger unwrapping of any `fileKey` values within the collection, since the user has not yet accessed any specific file.
+
+Prefetch hints are a performance optimisation only. The Worker treats a prefetch hint identically to a collection key cache miss triggered by a real operation. Prefetch hints MUST NOT be sent for collections the user has not explicitly navigated to.
+
+### 9.6 Offline and Desktop Behavior
+
+#### 9.6.1 Web clients
+
+Web clients have no persistent local storage of plaintext key material or plaintext file content. When a web client goes offline mid-session:
+
+- The Worker continues to hold `masterKey`, sharing keys, and any cached `collectionKey` and `fileKey` values in memory.
+- Operations on already-cached keys continue to function for content whose ciphertext has already been downloaded to the browser.
+- Operations requiring a server fetch will fail with a network error. The client MUST surface this to the user as an offline error, not a decryption failure.
+- The inactivity timeout continues to run. If the user is offline for 30 minutes, the Worker is terminated and key material is zeroized on timeout as normal. Re-authentication requires network access.
+
+Web clients MUST NOT attempt to cache plaintext file content or unwrapped key material in IndexedDB, localStorage, or any other browser storage. The only persistent browser storage used by VexaHub is the `VXPS` blob (§5.6) for persistent sessions and the session cookie.
+
+#### 9.6.2 Desktop clients (Tauri)
+
+Desktop clients use the OS keychain to store `masterKey` between sessions, achieving true zero-knowledge persistent sessions without server involvement. The keychain entry is created at first login and updated on password change.
+
+**Keychain entry:**
+
+```rs
+service:  "vexahub"
+account:  user_id
+secret:   masterKey (32 raw bytes)
+```
+
+The keychain entry is protected by the OS and accessible only to the VexaHub process. It is never written to disk by VexaHub directly.
+
+**Session resume on desktop:**
+
+1. App launches and reads `masterKey` from OS keychain.
+2. App sends a request to the server using the stored session cookie to fetch `vxsk`.
+3. If the server returns 401 (session expired or revoked), the app MUST discard the cached cookie, prompt the user to re-enter their password, and run the full OPAQUE login flow (§8.2). The keychain entry for `masterKey` remains valid and does not need to be replaced unless the password change flow is triggered.
+4. On successful fetch, app decrypts `VXSK` using `masterKey` to recover sharing private keys.
+5. Worker is initialised with `masterKey` and sharing keys. No password entry required.
+
+If the keychain entry is missing (first install, or after the user manually cleared it), the user is prompted to authenticate with their password regardless of cookie state.
+
+**Offline operation on desktop:**
+
+Desktop clients MAY maintain an encrypted local cache of file content and metadata for offline access. If a local cache is implemented:
+
+- File content MUST be stored as the original `VXFC` ciphertext segments, not as plaintext. Decryption happens in the Worker at access time.
+- File metadata MUST be stored as the original `VXFM` blob, not as plaintext CBOR.
+- The local cache index (which files are cached, their sizes and generations) MAY be stored in plaintext, as this information is already known to the server.
+- On reconnection, the client MUST fetch current `generation` values for all cached files and evict any whose cached generation is behind the server's current generation. Stale ciphertext MUST NOT be served to the user.
+- The local cache MUST be fully deleted on logout and on `reset_generation` mismatch.
+
+> **Argon2id parallelism on Tauri:**
+>
+> **Tauri**'s webview context does not use browser-origin isolation headers. `crossOriginIsolated` as checked via `window.crossOriginIsolated` is not applicable in the Tauri renderer.
+>
+> **Tauri** achieves **Argon2id** parallelism via native threads in the **Rust** backend, not via `SharedArrayBuffer`. The WASM **Argon2id** path (used in the browser) is **NOT** used on **Tauri**. The native Rust **Argon2id** implementation runs with `p = 4` as specified in [§2](#2-primitives) without any dependency on cross-origin isolation.
+>
+> The `crossOriginIsolated` bootstrap check ([§16.2](#162-other-headers)) **MUST** be skipped on **Tauri** targets. **Tauri** builds **MUST** instead verify at startup that the native **Argon2id** implementation is active and that the parallelism parameter matches the spec value.
+
+### 9.7 Multi-tab Behavior on Web
+
+Multiple browser tabs for the same origin do not share Web Workers. Each tab spawns its own Crypto Worker, holds its own copy of `masterKey` in Worker memory, and manages its own key caches independently.
+
+#### 9.7.1 Implications
+
+- `masterKey` may exist in memory in multiple Workers simultaneously when the user has multiple tabs open. This is an accepted consequence of the web security model. The number of in-memory copies is bounded by the number of open tabs.
+- Each Worker's inactivity timeout runs independently. A tab left idle for 30 minutes will terminate its Worker and zeroize its key material, even if other tabs remain active.
+- There is no cross-tab communication of key material. Tabs MUST NOT use `BroadcastChannel`, `SharedArrayBuffer`, or any other cross-tab mechanism to pass key material between Workers.
+
+#### 9.7.2 Session invalidation across tabs
+
+The session cookie is shared across all tabs automatically by the browser. When a user explicitly logs out in one tab, the client MUST:
+
+1. Call the server logout endpoint to invalidate the session row in Postgres.
+2. Terminate its own Worker and zeroize its key material.
+3. Broadcast a logout signal to other tabs via `BroadcastChannel` (channel name: `"vexahub:session"`).
+
+Other tabs listening on `"vexahub:session"` MUST terminate their Workers and zeroize their key material immediately on receiving the logout signal, then redirect to the login screen.
+
+Tabs that miss the broadcast (for example, a tab opened in a different browser window without shared `BroadcastChannel` access) will encounter a 401 on their next API request due to the invalidated session cookie. On receiving a 401 response to any authenticated API request, a tab MUST terminate its Worker, zeroize key material, and redirect to the login screen.
+
+A 401 received during normal operation (not following a logout broadcast) should be treated the same way: the session has expired or been revoked server-side, and the client must re-authenticate.
+
 ## 10. Server-side Storage
 
 ### 10.1 Users table
@@ -857,6 +1068,7 @@ CREATE TABLE collections (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     parent_id       UUID REFERENCES collections(id) ON DELETE CASCADE,
+    vxcm            BYTEA NOT NULL,             -- encrypted collection metadata (VXCM blob)
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -1061,6 +1273,170 @@ An authenticated user **MAY** rotate their sharing keypairs at **any** time, for
 >
 > Rotation is an explicit user action available from security settings.
 
+### 11.4 File Move Between Collections
+
+Moving a file between collections requires re-wrapping the `fileKey` under the destination collection's key hierarchy. A simple `collection_id` update on the file row is **not sufficient**.
+
+The `VXFK` blob remains wrapped under the source `collectionKey` and would be inaccessible to recipients of the destination collection and still accessible to revoked recipients of the source collection.
+
+**Move flow:**
+
+1. Client fetches the source `VXFK` blob, unwraps `fileKey` using `fileKeyWrapKey` derived from source `collectionKey`.
+2. Client derives `fileKeyWrapKey` from the destination `collectionKey`:
+
+   ```rust
+   fileKeyWrapKey = HKDF-SHA-512(
+       ikm  = destinationCollectionKey,
+       salt = 32 zero bytes,
+       info = "vexahub:v1:fileKeyWrap:" || file_uuid,
+       L    = 32
+   )
+   ```
+
+3. Client wraps the same `fileKey` under the new `fileKeyWrapKey` ➜ new `VXFK` blob.
+4. Client → Server: `POST /api/v1/files/{file_id}/move`:
+
+   ```json
+   {
+     "destination_collection_id": "...",
+     "vxfk": "<new VXFK blob>"
+   }
+   ```
+
+5. Server atomically:
+   - Updates `files.collection_id` to `destination_collection_id`.
+   - Replaces the `file_keys` row with the new `VXFK` blob, incrementing `key_generation`.
+   - Sets `files.updated_at = now()`.
+
+**The server MUST verify before committing:**
+
+- The authenticated user owns both the source and destination collections.
+- The destination collection exists and is not the same as the source collection.
+- The new `VXFK` blob is well-formed (correct magic, format version, algorithm ID).
+
+**Sharing implications:**
+
+Moving a file does not automatically re-share it with recipients of the destination collection. The file exists in the destination collection but only the owner can decrypt it until explicitly shared. This is the correct behavior. It is automatically inheriting destination collection shares would be a surprise to both the owner and existing recipients.
+
+If the file was previously shared with recipients of the source collection, those shares remain in the `shares` table but the `fileKey` they unwrapped at accept time is still valid.
+
+The `fileKey` itself did not change, only its wrapping. Recipients who already accepted the share retain access to content they already have. This is consistent with the E2EE limitation acknowledged in [§11.1](#111-share-revocation).
+
+If the owner wants to revoke source collection recipients' access after a move, they must explicitly rotate the `fileKey` per [§11.1](#111-share-revocation).
+
+**Guarantees:**
+
+| Property                                                                 | Status                                                                     |
+|--------------------------------------------------------------------------|----------------------------------------------------------------------------|
+| Destination collection recipients can access file after move             | ❌ Not automatic (**explicit** share required)                             |
+| Source collection recipients lose API access after move                  | ✅ Server enforces `collection_id` scoping on all file requests            |
+| Source collection recipients who already accepted share retain key       | ⚠️ Inherent E2EE limitation, consistent with [§11.1](#111-share-revocation)|
+| `VXFK` is correctly wrapped under destination `collectionKey`            | ✅ Client re-wraps before move commit                                      |
+| Move is atomic. No window where file is accessible under wrong wrapping  | ✅ Server commits `collection_id` and new `VXFK` in a single transaction   |
+
+**Schema:** No schema changes required. The existing `file_keys` table with `key_generation` handles the new `VXFK` blob naturally.
+
+### 11.5 Concurrent Modification from Two Devices
+
+[§6.5.8](#658-generation-transitions-during-in-progress-uploads) covers the case where a user modifies a file while an upload is in progress on the **same device**. This section covers **concurrent** modification from **two separate devices**.
+
+The server's monotonic `generation` enforcement ([§6.3](#63-file-generation-counter-mutability)) already **prevents** nonce reuse: if **two** devices both start from `generation = N` and **both** attempt to upload `generation = N+1`, whichever arrives second is **rejected** with `HTTP 409 Conflict`. No ciphertext **corruption** or nonce **reuse** is possible. The gap is purely what the rejected device does next.
+
+#### 11.5.1 Detection
+
+When a **client** receives `HTTP 409` on a generation upload, it **MUST** treat this as a concurrent modification signal and enter the conflict resolution flow below.
+
+The client **MUST NOT** silently retry with an incremented generation. Because, doing so would **overwrite** the winning device's changes without the user's knowledge.
+
+#### 11.5.2 Resolution Flow
+
+The client has two paths depending on whether the local version is newer than the server's committed version, which it cannot determine cryptographically (both are valid generations from the server's perspective). The client MUST therefore always surface a conflict to the user and let them decide.
+
+**Conflict resolution procedure:**
+
+1. Client receives HTTP 409 on upload of `generation = N+1`.
+2. Client fetches current file metadata from server: `GET /api/v1/files/{file_id}` → `{ generation: N+1, ... }` (the winning device's committed generation).
+3. Client fetches and decrypts the winning `VXFM` to get the committed filename.
+4. Client presents the user with a conflict dialog:
+
+   ```sh
+   This file was modified on another device.
+
+   Server version:  "report.pdf"  - saved just now
+   Your version:    "report.pdf"  - unsaved local changes
+
+   [ Keep server version ]   [ Keep my version ]   [ Keep both ]
+   ```
+
+5. User chooses one of three outcomes:
+
+   **Keep server version:**
+   - Client discards local changes.
+   - Client sends `DELETE {tus_url}` to discard the in-progress upload.
+   - No crypto operations required.
+
+   **Keep my version (overwrite):**
+   - Client sends `DELETE {tus_url}` to discard the failed upload.
+   - Client fetches current `generation` from server (now `N+1`).
+   - Client increments to `N+2`, re-encrypts local content under new generation nonce space.
+   - Client creates new tus upload and proceeds normally.
+   - The winning device's changes are overwritten. The user explicitly chose this.
+
+   **Keep both (conflicted copy):**
+   - Client sends `DELETE {tus_url}` to discard the failed upload.
+   - Client creates a **new file** from the local version:
+     - Generates new `file_id` via server: `POST /api/v1/files` in the same collection.
+     - Server generates new `file_id`, client generates new `fileKey` via CSPRNG.
+     - Client wraps new `fileKey` → new `VXFK` blob under destination `collectionKey`.
+     - Client constructs `VXFM` for the conflicted copy with a modified filename:
+
+       ```sh
+       "{original_name} (conflicted copy - {device_label} - {date})"
+       ```
+
+       The filename is encrypted inside `VXFM` so the server never sees it.
+     - Client uploads the conflicted copy as `generation = 0` under the new `file_id`.
+   - The user now has two files: the server's committed version and their local version as a new file. Both are fully accessible and independently modifiable going forward.
+
+#### 11.5.3 Crypto properties of the conflicted copy
+
+A conflicted copy is a first-class new file. It has:
+
+- Its own `file_id` (new UUID).
+- Its own `fileKey` (CSPRNG, independent of the original file's key).
+- Its own `VXFK` blob wrapped under the collection's `collectionKey`.
+- `generation = 0`.
+- Its own `content_id` computed with the collection-scoped `contentIdKey`.
+
+No key material is shared between the original file and the conflicted copy. They are cryptographically independent from the moment of creation.
+
+#### 11.5.4 Server-side enforcement
+
+The server **MUST**:
+
+- Return `HTTP 409 Conflict` when a client uploads a generation ≤ the currently stored generation, with a response body identifying the conflict:
+
+  ```json
+  {
+    "error": "generation_conflict",
+    "current_generation": 4
+  }
+  ```
+
+- **Never** silently accept an **out-of-order** generation. The monotonic invariant from [§6.3](#63-file-generation-counter-mutability) is absolute.
+- Allow the client to create a new file in the same collection without any special conflict flag. A conflicted copy is just a new file from the server's perspective.
+
+#### 11.5.5 Guarantees
+
+| Property                                               | Status                                                        |
+|--------------------------------------------------------|---------------------------------------------------------------|
+| Nonce reuse impossible across concurrent modifications | ✅ Monotonic generation enforcement rejects the second writer |
+| Losing device is notified of conflict                  | ✅ HTTP 409 with current generation returned                  |
+| User data is never silently discarded                  | ✅ Conflict dialog required before any destructive choice     |
+| Conflicted copy is cryptographically independent       | ✅ New `file_id`, new `fileKey`, new `VXFK`                   |
+| Server learns the conflict filename                    | ❌ Never  (filename is inside encrypted `VXFM`)               |
+| Automatic last-write-wins                              | ❌ Explicitly prohibited (always surfaces to user)            |
+
 ## 12. Account Recovery
 
 ### 12.1 Recovery phrase (non-destructive)
@@ -1092,6 +1468,11 @@ Recovery flow (forgotten password, phrase available):
     > The `recovery_enumeration_secret` is a separate **32-byte** random value generated at first deployment and stored alongside `serverSetup`. It **MUST NOT** be derived from `serverSetup` or any other key material.
 
 3. Client re-derives `recoveryKey`, unwraps `masterKey`.
+
+    > **On AEAD authentication failure:** the client **MUST** display a single generic message such as "Incorrect recovery phrase" regardless of the underlying cause.
+    >
+    > The client **MUST NOT** show distinct messages for "email not found" vs "wrong phrase". Both are indistinguishable at this layer and the error text must reflect that.
+
 4. User chooses a new password.
 5. Client performs a fresh OPAQUE registration.
 6. Client re-wraps the same `masterKey` with the new `masterKeyWrapper`.
@@ -1140,6 +1521,12 @@ Breaking changes (any of the following) require a version bump:
 
 Migration model: new and old protocol versions coexist in the codebase. On next login under the old version, the client prompts the user, runs a fresh OPAQUE registration under the new params, re-wraps `masterKey`, and atomically updates the user row. Users who never log back in remain on the old version until a forced migration window is announced.
 
+> **Cross-version blob handling:**
+>
+> A **v1** client **MUST NOT** re-encrypt any blob whose `format version` byte indicates a version higher than it implements. In that case, the client **MUST** refuse the operation and prompt the user to upgrade before proceeding.
+>
+> The unknown **CBOR** key preservation rule from [§5.4](#54-vxfm---file-metadata) applies across protocol versions: when a lower-version client re-encrypts a blob it can parse, it **MUST** preserve any unknown **CBOR** keys verbatim in the re-encrypted output.
+
 What CANNOT be changed without re-encrypting user data: `masterKey` itself, file generation derivation paths, segment nonce derivation. `serverSetup` rotation invalidates all accounts.
 
 > The `crypto_version` field on the `files` table tracks which protocol **version** was used to encrypt each file.
@@ -1161,7 +1548,7 @@ Cross-target consistency is verified by JSON test vectors in `crates/core/tests/
 Vector categories:
 
 1. **HKDF** derivations (every domain-separated path in [§4](#4-hkdf-domain-separation))
-2. VXWM, VXRM, VXFC, VXFM, VXSK, VXPS, VXSH round-trips with fixed keys and nonces
+2. VXWM, VXRM, VXFC, VXFM, VXSK, VXPS, VXSH, VXCM, VXCK, VXFK round-trips with fixed keys and nonces
 3. Segment nonce derivation across multiple generations and indices
 4. **OPAQUE** registration and login with deterministic test-only RNG seeds
 5. **ML-KEM-768** encapsulation/decapsulation against **FIPS 203** known-answer tests
@@ -1248,6 +1635,14 @@ None. Self-host every asset including fonts, icons, and analytics (Umami).
 
 Violations POSTed to `https://reports.vexahub.com/csp`, rate-limited per IP, stored in Bugsink, never exposed to unauthenticated reads.
 
+### 16.7 SharedArrayBuffer Usage Restrictions
+
+`SharedArrayBuffer` is available under cross-origin isolation ([§16.2](#162-other-headers)) and is used for Argon2id parallelism during the OPAQUE flow.
+
+`SharedArrayBuffer` **MUST NOT** be used to share key material between tabs, between Workers, or between the main thread and a Worker beyond the scope of a single Argon2id computation. After the OPAQUE flow completes, any `SharedArrayBuffer` used to hold password material, `exportKey`, or `masterKeyWrapper` MUST be zeroed and the reference released before any other code can observe it.
+
+The Argon2id implementation **MUST** zero all intermediate state in the `SharedArrayBuffer` before signalling completion to the calling code, not after.
+
 ## 17. Threat Model Summary
 
 | Attacker capability                                    | VexaHub response                                                                                                                                                                                                                                                                                                                   |
@@ -1282,3 +1677,188 @@ Violations POSTed to `https://reports.vexahub.com/csp`, rate-limited per IP, sto
 - X-Wing RFC finalization tracking. If wire format changes before RFC, bump `VXSH` format version and KEM algorithm ID.
 - Hybrid signatures (Ed25519 + ML-DSA-65) evaluation for ANSSI/BSI compliance if regulatory requirements harden before 2030.
 - UX flow for sharing keypair rotation notification to recipients whose pending shares were invalidated.
+
+## 19 Deletion
+
+### 19.1 File deletion
+
+Files are moved to a per-user trash before permanent deletion. This gives users a grace period to recover accidentally deleted files.
+
+**Trash flow:**
+
+1. Client sends `DELETE /api/v1/files/{file_id}`.
+2. Server sets `files.trashed_at = now()`. The file is no longer visible in normal collection listings but all ciphertext, `VXFM`, `VXFK`, and `shares` rows remain intact.
+3. Server responds 204.
+
+**Permanent deletion (hard delete):**
+
+Triggered either by the user explicitly emptying trash, or automatically after the trash TTL (recommended: 30 days).
+
+1. Client sends `DELETE /api/v1/files/{file_id}/permanent` (or the server's scheduled job triggers for expired trash items).
+2. Server atomically:
+   - Deletes the `files` row.
+   - Deletes all `file_keys` rows for that `file_id`.
+   - Deletes all `shares` rows where the shared resource is this `file_id`.
+   - Cancels any in-progress `tus_uploads` rows for this `file_id` and schedules their storage objects for deletion.
+   - Schedules deletion of all object storage blobs at the file's storage paths. Blob deletion MAY be asynchronous as long as the file row is removed atomically and the blobs become unreachable to any API request immediately.
+3. Server responds 204.
+
+**Schema addition:**
+
+```sql
+ALTER TABLE files ADD COLUMN trashed_at TIMESTAMPTZ;
+CREATE INDEX ON files (user_id) WHERE trashed_at IS NOT NULL;
+```
+
+The client MUST evict the `fileKey` from its Worker cache after a successful permanent deletion response. Trashing alone does not require cache eviction.
+
+**Server MUST NOT** serve trashed files in normal collection listing responses. A trashed file is only accessible via an explicit trash listing endpoint.
+
+**On the question of a malicious server retaining deleted content:**
+
+A server that retains ciphertext after deletion cannot usefully serve it without also retaining the `VXFK` blob. The server does not hold the plaintext `fileKey`. If the server re-inserted a deleted file row and served the retained `VXFK`, the client would fetch and unwrap it, making the content accessible again.
+
+This is an inherent limitation of a system where the server stores wrapped key blobs: deletion of the key blob is what makes deletion meaningful at the crypto layer, and the server controls that blob's persistence.
+
+The spec requires the server to delete `file_keys` rows atomically with the `files` row on permanent deletion. Trashed files retain their `VXFK` blobs by design until permanently deleted.
+
+A compliant server **cannot** re-surface deleted content. An adversarial server that retains both blobs and ciphertext can re-surface it. This threat is in the same category as a fully compromised server and is acknowledged in [§17](#17-threat-model-summary).
+
+### 19.2 Collection deletion
+
+The `files` table references `collections` with `ON DELETE RESTRICT` (not CASCADE). This is intentional: cascading deletes would orphan object storage blobs since there is no file-level delete hook in a database cascade. The client is responsible for deleting all files before deleting the collection, giving the server the opportunity to schedule blob cleanup per file.
+
+**Deletion flow:**
+
+1. Client iterates all files in the collection and deletes each per §19.1.
+2. Client iterates all child collections recursively (depth-first) and deletes each per this section.
+3. Client sends `DELETE /api/v1/collections/{collection_id}`.
+4. Server verifies the collection has no remaining `files` rows and no remaining child collections with this `parent_id`. If either check fails, the server MUST return HTTP 409 and the client MUST NOT retry without resolving the remaining children.
+5. Server atomically:
+   - Deletes the `collections` row.
+   - Deletes all `collection_keys` rows for that `collection_id`.
+   - Deletes all `shares` rows where the shared resource is this `collection_id`.
+   - Deletes the `VXCM` blob associated with the collection.
+6. Server responds 204.
+
+The client MUST evict the `collectionKey` from its Worker cache after a successful deletion response.
+
+**Schema note:** The foreign key on `files.collection_id` and `collections.parent_id` MUST use `ON DELETE RESTRICT`, not `ON DELETE CASCADE`:
+
+```sql
+-- Corrected from the schema in §10.2
+collection_id UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
+parent_id     UUID REFERENCES collections(id) ON DELETE RESTRICT,
+```
+
+### 19.3 Account deletion
+
+Account deletion permanently removes the user and all associated data.
+
+**Deletion flow:**
+
+1. User initiates account deletion from settings.
+2. Server sends a confirmation email containing a single-use token with a 15-minute TTL.
+3. User clicks the confirmation link.
+4. Server atomically:
+   - Deletes all files and their object storage blobs (scheduled asynchronously).
+   - Deletes all `file_keys`, `collection_keys`, `tus_uploads`, and `shares` rows for this user.
+   - Deletes all `collections` rows for this user.
+   - Deletes all `sessions` and `persistent_sessions` rows for this user.
+   - Deletes the `VXWM`, `VXRM`, `VXSK`, and `registration_record` from the `users` row.
+   - Deletes the `users` row.
+5. All active session cookies for this user become invalid immediately on the next request.
+6. Server responds 204 to the deletion confirmation request.
+
+The email address is retained in a suppression table for an operator-configurable period after deletion. This prevents immediate re-registration with the same address, which could be used to abuse sharing or invitation flows that reference the old account by email. After the suppression period the address is permanently purged.
+
+## 20 Audit Log
+
+### 20.1 Purpose
+
+The audit log gives users a record of security-sensitive actions taken on their account. It serves two purposes: allowing users to detect actions they did not take (such as shares created by a compromised client), and providing a forensic record for incident response.
+
+The audit log does not provide cryptographic proof of authenticity. A compromised server can forge or delete log entries. It is a transparency mechanism, not a security enforcement mechanism.
+
+### 20.2 Logged events
+
+The following events MUST be logged:
+
+| Event                      | Logged fields                                                                             |
+|----------------------------|-------------------------------------------------------------------------------------------|
+| Login (successful)         | `timestamp`, `ip_network`, `user_agent`, `session_id`                                     |
+| Login (failed)             | `timestamp`, `ip_network`, `user_agent`                                                   |
+| Registration               | `timestamp`, `ip_network`, `user_agent`                                                   |
+| Password change            | `timestamp`, `ip_network`, `session_id`                                                   |
+| Recovery phrase rotation   | `timestamp`, `session_id`                                                                 |
+| Sharing keypair rotation   | `timestamp`, `session_id`                                                                 |
+| Share created (outgoing)   | `timestamp`, `session_id`, `recipient_id`, `share_id`, `share_kind`                       |
+| Share accepted (incoming)  | `timestamp`, `session_id`, `sender_id`, `share_id`                                        |
+| Share revoked              | `timestamp`, `session_id`, `share_id`                                                     |
+| Persistent session created | `timestamp`, `device_label`, `session_id`                                                 |
+| Persistent session revoked | `timestamp`, `device_label`                                                               |
+| File move                  | `timestamp`, `session_id`, `file_id`, `source_collection_id`, `destination_collection_id` |
+| Destructive reset          | `timestamp`, `ip_network`                                                                 |
+| Account deletion initiated | `timestamp`, `ip_network`                                                                 |
+
+File and collection names are NEVER logged. They are encrypted inside `VXFM` and `VXCM` blobs and the server never sees them. `share_kind` indicates whether a collection or a file was shared, but not its name or content.
+
+### 20.3 Storage
+
+Audit log entries are stored in a dedicated `audit_log` table with append-only access enforced at the database privilege level:
+
+```sql
+CREATE TABLE audit_log (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    event       TEXT NOT NULL,
+    metadata    JSONB NOT NULL DEFAULT '{}',
+    ip_network  INET,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX ON audit_log (user_id, created_at DESC);
+```
+
+The application database role MUST hold INSERT and SELECT privileges on `audit_log` only. UPDATE and DELETE MUST NOT be granted to the application role. A separate privileged role (not used by the application) handles retention purges. This means the application cannot modify or delete log entries even under compromise, unless the attacker escalates beyond the application database role.
+
+Retention period is operator-configurable. Entries are purged by a scheduled job running under the privileged role, not the application role.
+
+### 20.4 User-facing access
+
+Users can retrieve their own audit log via:
+
+```s
+GET /api/v1/account/audit-log?limit=50&before={cursor}
+
+← {
+    "entries": [
+      {
+        "id": "...",
+        "event": "share_created",
+        "metadata": { "recipient_id": "...", "share_kind": "collection" },
+        "ip_network": "192.168.1.0/24",
+        "created_at": "2026-04-30T12:00:00Z"
+      }
+    ],
+    "next_cursor": "..."
+  }
+```
+
+The response uses cursor-based pagination. `ip_network` is coarsened to a /24 (IPv4) or /48 (IPv6) prefix before storage and before display, so precise client IP addresses are never retained or returned.
+
+`recipient_id` and `sender_id` in share events are returned as UUIDs. The client resolves these to display names using the existing user lookup endpoint. The server does not store or return usernames or emails in the audit log.
+
+### 20.5 Limitations
+
+- A compromised server can suppress or fabricate log entries. The audit log is a best-effort transparency tool, not a cryptographic guarantee.
+- Actions taken by a compromised client appear legitimate in the log. The log records that a share was created from the user's session, but cannot distinguish between the user and malicious code running in the same session context.
+- The log does not record file content access (download events). Recording every download would produce high-volume noise and leak access patterns to anyone who can read the log. Users who need download audit trails should treat any share creation as implying potential access by the recipient.
+
+### 20.6 Threat model addition
+
+| Attacker capability                                      | VexaHub response                                                                                     |
+|----------------------------------------------------------|------------------------------------------------------------------------------------------------------|
+| Compromised client creates shares without user knowledge | Detectable via `share_created` entries in the audit log visible to the user on next login            |
+| Server suppresses or forges audit log entries            | Not preventable at the crypto layer; acknowledged limitation documented in [§20.5](#205-limitations) |
+| Attacker reads another user's audit log                  | Blocked: the audit log endpoint is scoped to the authenticated user; cross-user access returns 403   |

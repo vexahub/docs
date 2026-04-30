@@ -1,7 +1,7 @@
 # VexaHub - Authentication & Key Material Reference
 
-**Protocol version:** 1  
-**Status:** Draft - Pre-MVP
+**Protocol version:** 1
+**Status:** (Draft) Pre-MVP
 
 > This document covers the authentication system: the OPAQUE protocol, what gets created at registration, what gets reconstructed at login, and how sessions are managed. For the full cryptographic specification see the [master crypto spec](CRYPTO.md).
 
@@ -25,11 +25,19 @@ It cannot perform offline dictionary attacks even with full database access.
 
 ### Why OPAQUE instead of SRP or bcrypt?
 
-Standard password hashing (bcrypt, Argon2id on the server) is vulnerable to offline cracking if the database is stolen. The attacker gets the hash and can brute-force it at their own pace.
+With standard password hashing `(e.g. bcrypt or Argon2id on the server)`, if the database is **compromised**, an attacker obtains password hashes and can perform offline brute-force **attacks**. The cost is bounded only by the hash parameters (memory/time), which helps but **does not** prevent large-scale guessing.
 
-SRP is better but still leaks a password verifier.
+**Argon2id** does support additional inputs (like a secret `pepper`), which can improve security if it is stored separately. However, this shifts the problem to protecting that server-side secret. If both the **database** and the **secret** are **compromised**, offline attacks become **possible** again.
 
-OPAQUE's OPRF means the server contribution to the key derivation is blinded: without the server's secret key (`serverSetup`), a stolen database is useless for offline attacks.
+**SRP** ([RFC 2945](https://www.rfc-editor.org/info/rfc2945)) improves on this by **avoiding** sending the password directly and **resisting** passive eavesdropping, but it still stores a password-derived verifier. If the verifier database is **stolen**, attackers can mount offline dictionary attacks **against** it.
+
+**OPAQUE** ([RFC 9807](https://www.rfc-editor.org/info/rfc9807)) goes **further**. It uses an **OPRF** `(Oblivious Pseudorandom Function)` so that the server **never** sees the raw password or a directly usable verifier. The stored data is **hardened** by a server-side secret key (`serverSetup`). Without that key, a database dump alone **is not** sufficient to test password guesses offline.
+
+**OPAQUE** is also designed to **resist** pre-computation attacks and to hide the password even during registration, while providing forward secrecy.
+
+That said, if both the **server's secret key** and the **database** are **compromised**, **OPAQUE** falls back to the security level of a strong password hashing scheme. Its main **advantage** is defense-in-depth: it removes the single point of failure where a database leak alone enables **offline** cracking.
+
+For a **zero-knowledge**, **end-to-end encrypted** cloud storage system, this property is **especially** important. The server **cannot** efficiently test password guesses or craft responses that help it learn the user's password-derived key material. This reduces the risk of active or offline attacks by the server itself and better aligns with a **"zero knowledge"** design, where the server **should not** be able to derive or recover user encryption keys.
 
 ### Ciphersuite (frozen at protocol version 1)
 
