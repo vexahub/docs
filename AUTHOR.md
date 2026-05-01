@@ -11,11 +11,11 @@ What protects users against **realistic** threats, what stays usable for normal 
 > Everything in this specification follows from that belief.
 >
 > - **OPAQUE** means the server never sees passwords.
-> 
+>
 > - **Argon2id** at 128 MiB means offline attacks is hard to overcome.
-> 
+>
 > - **XChaCha20-Poly1305** means no nonce reuse footguns.
-> 
+>
 > - **X-Wing** means sharing survives the arrival of quantum computers.
 >
 > A single Rust crate as the **cryptographic** source of truth means every VexaHub client (web, desktop, mobile) speaks exactly the same language down to the last byte.
