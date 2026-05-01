@@ -5,6 +5,8 @@ export default defineConfig({
   title: "VexaHub",
   description: "Documentation for VexaHub to follow best practices.",
   head: [["link", { rel: "icon", href: "/favicon.ico" }]],
+  lastUpdated: true,
+  cleanUrls: false,
   themeConfig: {
     nav: [{ text: "Home", link: "/" }],
     logo: "/logo.svg",
