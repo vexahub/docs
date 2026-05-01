@@ -1,13 +1,17 @@
 // @ts-nocheck
 import { defineConfig } from 'vitepress';
 export default defineConfig({
-  lang: 'en-US',
+  lang: 'en-GB',
   title: 'VexaHub',
   description: 'Documentation for VexaHub to follow best practices.',
   themeConfig: {
     nav: [
       { text: 'Home', link: '/' },
     ],
+    outline: {
+      level: [2, 3],
+      label: 'On this page',
+    },
     sidebar: [
       {
         text: 'Documentation',
