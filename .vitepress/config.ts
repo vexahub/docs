@@ -6,12 +6,8 @@ export default defineConfig({
   description: "Documentation for VexaHub to follow best practices.",
   head: [["link", { rel: "icon", href: "/favicon.ico" }]],
   vite: {
-    build: {
-      rolldownOptions: {
-        output: {
-          minify: true,
-        },
-      },
+    optimizeDeps: {
+      exclude: ["@vueuse/core"],
     },
   },
   themeConfig: {
@@ -35,8 +31,8 @@ export default defineConfig({
       },
     ],
     footer: {
-      message: 'Released under the AGPL-3.0-or-later License.',
-      copyright: 'Copyright © 2026-present VexaHub'
-    }
+      message: "Released under the AGPL-3.0-or-later License.",
+      copyright: "Copyright © 2026-present VexaHub",
+    },
   },
 });
