@@ -17,14 +17,14 @@ features:
     details: Authentication protocols and best practices for VexaHub, including OPAQUE rationale and crypto spec guidelines.
     link: /AUTHENTICATION
     linkText: Read more
-  - icon: ✍️
-    title: Author
-    details: Authorship guidelines, contributor information, and documentation style standards.
-    link: /AUTHOR
-    linkText: Read more
   - icon: 🔒
     title: Cryptography
     details: Cryptographic specifications and standards used across VexaHub services and infrastructure.
     link: /CRYPTO
+    linkText: Read more
+  - icon: ✍️
+    title: Author
+    details: Authorship guidelines, contributor information, and documentation style standards.
+    link: /AUTHOR
     linkText: Read more
 ---

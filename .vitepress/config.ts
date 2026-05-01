@@ -13,8 +13,13 @@ export default defineConfig({
         text: 'Documentation',
         items: [
           { text: 'Authentication', link: '/AUTHENTICATION' },
-          { text: 'Author', link: '/AUTHOR' },
           { text: 'Cryptography', link: '/CRYPTO' },
+        ],
+      },
+      {
+        text: 'Project',
+        items: [
+          { text: 'Author', link: '/AUTHOR' },
         ],
       },
     ],
