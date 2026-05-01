@@ -6,7 +6,7 @@
 *{box-sizing:border-box}
 body{background-color:var(--bg);color:var(--text);max-width:var(--max-screen);margin-inline:auto}
 .custom-block,.vp-code-group,.vp-doc :not(pre)>code,.vp-doc div[class*=language-]{border-radius:var(--border-radius)!important}
-.vp-doc a{color:var(--grad-secondary)}
+.vp-doc a{color:#a855f7}
 .vp-doc a:hover{color:var(--texthov)}
 .vp-doc :not(pre)>code{background-color:var(--tag-bg);color:#c084fc;border:1px solid var(--border-low);padding:2px 6px;border-radius:4px}
 .dark .vp-doc :not(pre)>code{background-color:#2a1040;color:#d8b4fe;border-color:#4a1d7a55}
@@ -17,3 +17,5 @@ body{background-color:var(--bg);color:var(--text);max-width:var(--max-screen);ma
 .custom-block.tip{border-color:var(--yeah);background:color-mix(in srgb,var(--yeah) 8%,transparent)}
 .custom-block.warning{background:var(--soon-bg);border-color:var(--soon-border);color:var(--soon-text)}
 .custom-block.danger{background:color-mix(in srgb,var(--fail) 8%,transparent);border-color:var(--fail)}
+.VPDocAsideOutline a,.outline-link{color:var(--text2)!important}
+.VPDocAsideOutline a.active,.VPDocAsideOutline a:hover,.outline-link.active,.outline-link:hover{color:#a855f7!important}
