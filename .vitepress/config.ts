@@ -6,9 +6,29 @@ export default defineConfig({
   description: "Documentation for VexaHub to follow best practices.",
   head: [["link", { rel: "icon", href: "/favicon.ico" }]],
   vite: {
-    optimizeDeps: {
-      exclude: ["@vueuse/core"],
-    },
+    plugins: [
+      {
+        name: "fix-circular-chunks",
+        config() {
+          return {
+            build: {
+              rolldownOptions: {
+                output: {
+                  manualChunks(id: string) {
+                    if (
+                      id.includes("@vueuse/core") ||
+                      id.includes("@vueuse/shared")
+                    ) {
+                      return "vueuse";
+                    }
+                  },
+                },
+              },
+            },
+          };
+        },
+      },
+    ],
   },
   themeConfig: {
     nav: [{ text: "Home", link: "/" }],
