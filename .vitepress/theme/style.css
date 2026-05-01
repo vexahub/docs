@@ -8,7 +8,7 @@ body{background-color:var(--bg);color:var(--text);max-width:var(--max-screen);ma
 .custom-block,.vp-code-group,.vp-doc :not(pre)>code,.vp-doc div[class*=language-]{border-radius:var(--border-radius)!important}
 .vp-doc a{color:#a855f7}
 .vp-doc a:hover{color:var(--texthov)}
-.vp-doc :not(pre)>code{background-color:var(--tag-bg);color:#c084fc;border:1px solid var(--border-low);padding:2px 6px;border-radius:4px}
+.vp-doc :not(pre)>code{background-color:#f3e8ff;color:#7e22ce;border:1px solid #d8b4fe55;padding:2px 6px;border-radius:4px}
 .dark .vp-doc :not(pre)>code{background-color:#2a1040;color:#d8b4fe;border-color:#4a1d7a55}
 .VPNav{border-bottom:1px solid var(--border-low)!important;background:var(--bgh)!important;backdrop-filter:blur(12px)}
 .VPSidebar{background:var(--bg2)!important;border-right:1px solid var(--border-low)}
