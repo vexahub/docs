@@ -34,5 +34,9 @@ export default defineConfig({
         items: [{ text: "Author", link: "/AUTHOR" }],
       },
     ],
+    footer: {
+      message: 'Released under the AGPL-3.0-or-later License.',
+      copyright: 'Copyright © 2026-present VexaHub'
+    }
   },
 });
