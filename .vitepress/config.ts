@@ -7,6 +7,7 @@ export default defineConfig({
   head: [["link", { rel: "icon", href: "/favicon.ico" }]],
   themeConfig: {
     nav: [{ text: "Home", link: "/" }],
+    aside: true,
     outline: {
       level: [2, 3],
       label: "On this page",
