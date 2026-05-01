@@ -776,8 +776,9 @@ This defends against a substituted server, contingent on the client distribution
 - Worker script is served same-origin under strict CSP ([§16](#16-web-security-headers)), no inline, no eval beyond `wasm-unsafe-eval`.
 
 > **Activity definition:** The inactivity timer is reset by any of the following events:
-        > - Any user interaction that triggers an authenticated **API** request (file list, collection browse, metadata fetch, upload, download).
-        > - Any message sent to the Crypto Worker (encrypt, decrypt, wrap, unwrap).
+>
+> - Any user interaction that triggers an authenticated **API** request (file list, collection browse, metadata fetch, upload, download).
+> - Any message sent to the Crypto Worker (encrypt, decrypt, wrap, unwrap).
 >
 > The main thread is responsible for signalling the Worker on **API** activity. The Worker **MUST** expose a `resetInactivityTimer()` message that the main thread calls on every authenticated API response. The Worker's timer runs independently and is not accessible to the main thread beyond this signal.
 
