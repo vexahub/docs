@@ -1829,7 +1829,7 @@ Retention period is operator-configurable. Entries are purged by a scheduled job
 
 Users can retrieve their own audit log via:
 
-```s
+```rs
 GET /api/v1/account/audit-log?limit=50&before={cursor}
 
 ← {
