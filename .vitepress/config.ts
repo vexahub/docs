@@ -1,26 +1,26 @@
 // @ts-nocheck
 import { defineConfig } from "vitepress";
 export default defineConfig({
-  lang: "en-GB",
+  lang: "en",
   title: "VexaHub",
   description: "Documentation for VexaHub to follow best practices.",
   head: [["link", { rel: "icon", href: "/favicon.ico" }]],
   vite: {
     build: {
-      rollupOptions: {
+      rolldownOptions: {
         output: {
-          manualChunks: undefined,
+          minify: true,
         },
       },
     },
   },
   themeConfig: {
     nav: [{ text: "Home", link: "/" }],
-    aside: true,
+    logo: "/logo.svg",
     outline: {
       level: [2, 3],
-      label: "On this page",
     },
+    socialLinks: [{ icon: "github", link: "https://github.com/vexahub" }],
     sidebar: [
       {
         text: "Documentation",
