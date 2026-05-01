@@ -5,6 +5,15 @@ export default defineConfig({
   title: "VexaHub",
   description: "Documentation for VexaHub to follow best practices.",
   head: [["link", { rel: "icon", href: "/favicon.ico" }]],
+  vite: {
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: undefined,
+        },
+      },
+    },
+  },
   themeConfig: {
     nav: [{ text: "Home", link: "/" }],
     aside: true,
