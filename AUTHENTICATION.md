@@ -1,8 +1,7 @@
 # VexaHub - Authentication & Key Material Reference
 
-**Protocol version:** 1
-**Status:** (Draft) Pre-MVP
-
+> **Status:** (Draft) Proposed
+>
 > This document covers the authentication system: the OPAQUE protocol, what gets created at registration, what gets reconstructed at login, and how sessions are managed. For the full cryptographic specification see the [master crypto spec](CRYPTO.md).
 
 ## Table of Contents
@@ -17,11 +16,11 @@
 
 ## 1. Authentication Overview
 
-VexaHub uses **OPAQUE** (RFC 9807) as its password-authenticated key exchange. OPAQUE is a zero-knowledge protocol: the server never sees the user's password, not even a hash of it. Instead, the password is used client-side to participate in an Oblivious Pseudo-Random Function (OPRF) with the server, producing a stable `exportKey` that only the correct password can derive.
+VexaHub uses **OPAQUE** ([RFC 9807](https://www.rfc-editor.org/info/rfc9807)) as its password-authenticated key exchange. **OPAQUE** is a zero-knowledge protocol: the server never sees the user's password, not even a hash of it. Instead, the password is used **client-side** to participate in an **Oblivious Pseudo-Random Function (OPRF)** with the server, producing a stable `exportKey` that only the correct password can derive.
 
 This `exportKey` is the root of all client-side key material for a session. The server stores only an opaque registration envelope.
 
-It cannot perform offline dictionary attacks even with full database access.
+It **cannot** perform offline dictionary attacks even with full database access.
 
 ### Why OPAQUE instead of SRP or bcrypt?
 
@@ -73,7 +72,7 @@ OPAQUE produces two outputs from a successful exchange:
 - **`exportKey`** (64 bytes) client-only, stable across every login for the same password. Never sent to the server. The root from which `masterKeyWrapper` is derived.
 - **`sessionKey`** (64 bytes)  negotiated with the server and used to mint the API session cookie. The server derives the cookie token from this; the raw `sessionKey` is zeroized afterward.
 
-Both are derived from the password + OPRF interaction and the three-DH key exchange. Neither can be reconstructed without the correct password and the server's `serverSetup`.
+Both are derived from the password + **OPRF** interaction and the three-DH key exchange. Neither can be reconstructed without the correct password and the server's `serverSetup`.
 
 ## 3. Registration
 
