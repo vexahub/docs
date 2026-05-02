@@ -1,8 +1,10 @@
 # VexaHub - Cryptography Specification | **Addendum**
 
-**Document version:** 1
+> **Document version:** 1
+>
+> **Status:** (Draft) Proposed
+
 **Parent document:** [VexaHub - Cryptography Specification](CRYPTO.md)
-**Status:** (Draft) Proposed
 
 ## 20 Audit Log
 

@@ -1,8 +1,10 @@
 # VexaHub - Cryptography Specification
 
-**Document version:** 8
-**Protocol version:** 1
-**Status:** (Draft) Accepted
+> **Document version:** 8
+>
+> **Protocol version:** 1
+>
+> **Status:** (Draft) Accepted
 
 **See also:** [Cryptography Specification | Addendum](CRYPTO_ADDENDUM.md)
 
