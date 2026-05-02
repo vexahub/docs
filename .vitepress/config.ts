@@ -6,7 +6,7 @@ export default defineConfig({
   description: "Documentation for VexaHub to follow best practices.",
   head: [["link", { rel: "icon", href: "/favicon.ico" }]],
   lastUpdated: true,
-  cleanUrls: false,
+  cleanUrls: true,
   themeConfig: {
     nav: [{ text: "Home", link: "/" }],
     logo: "/logo.svg",
@@ -19,7 +19,14 @@ export default defineConfig({
         text: "Documentation",
         items: [
           { text: "Authentication", link: "/AUTHENTICATION" },
-          { text: "Cryptography", link: "/CRYPTO" },
+          {
+            text: "Cryptography",
+            collapsed: false,
+            items: [
+              { text: "Specification", link: "/CRYPTO" },
+              { text: "Addendum", link: "/CRYPTO_ADDENDUM" },
+            ],
+          },
         ],
       },
       {

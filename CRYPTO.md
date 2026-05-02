@@ -1,8 +1,10 @@
 # VexaHub - Cryptography Specification
 
-**Document version:** 7
+**Document version:** 8
 **Protocol version:** 1
-**Status:** (Draft) pre-MVP
+**Status:** (Draft) Accepted
+
+**See also:** [Cryptography Specification | Addendum](CRYPTO_ADDENDUM.md)
 
 This document is the single source of truth for all cryptographic decisions in VexaHub. Any change to the parameters, algorithms, derivation paths, or binary formats defined here is a breaking change for existing accounts and **MUST** bump the protocol version (see [§13](#13-protocol-versioning-and-migration)).
 
@@ -404,12 +406,55 @@ Offset  Size   Field
 6       24     Nonce (random)
 30      N+16   Ciphertext (CBOR { "k": bstr, "kind": "collection"|"file", "id": bstr }) + tag
 ------
-Total: 112 bytes (file share) / 118 bytes (collection share)
+Total: 113 bytes (file share) / 119 bytes (collection share)
 ```
 
 ```rs
 AAD: sender_id ‖ recipient_id (32 bytes, both raw UUID)
 ```
+
+```json
+// Inner CBOR object (canonical, RFC 8949 §4.2.1):
+
+{
+  "k":    bstr .size 32,    // wrapped key (collectionKey OR fileKey)
+  "id":   bstr .size 16,    // collection_id or file_id, raw 16-byte UUID
+  "kind": tstr ("collection" | "file"),
+}
+
+// RFC 8949 §4.2.1 deterministic encoding orders map keys by the bytewise
+// lexicographic order of their canonical CBOR encoding, which for
+// text-string keys reduces to length-then-lexicographic. The keys here
+// encode as:
+
+  "k"    -> 0x61 0x6b              (2 bytes)
+  "id"   -> 0x62 0x69 0x64         (3 bytes)
+  "kind" -> 0x64 0x6b 0x69 0x6e 0x64 (5 bytes)
+
+Canonical order is therefore: "k" -> "id" -> "kind".
+
+Layout:
+
+  Map header (3 entries, 0xa3)                          : 1 byte
+  "k" key (0x61 0x6b)                                   : 2 bytes
+  "k" value: bstr(32) header (0x58 0x20) + 32 data      : 2 + 32 = 34 bytes
+  "id" key (0x62 0x69 0x64)                             : 3 bytes
+  "id" value: bstr(16) header (0x50) + 16 data          : 1 + 16 = 17 bytes
+  "kind" key (0x64 0x6b 0x69 0x6e 0x64)                 : 5 bytes
+  "kind" value: tstr "collection" (0x6a + 10 bytes)     : 1 + 10 = 11 bytes
+  "kind" value: tstr "file"        (0x64 + 4 bytes)     : 1 +  4 =  5 bytes
+
+CBOR plaintext (collection share):
+  1 + 2 + 34 + 3 + 17 + 5 + 11 = 73 bytes
+CBOR plaintext (file share):
+  1 + 2 + 34 + 3 + 17 + 5 +  5 = 67 bytes
+
+Encrypted blob total:
+  Collection share: 6 (header) + 24 (nonce) + 73 (plaintext) + 16 (tag) = 119 bytes
+  File share:       6 (header) + 24 (nonce) + 67 (plaintext) + 16 (tag) = 113 bytes
+```
+
+The order in which the encoder *receives* the fields does not matter; what matters is that the **canonical-CBOR** encoder emits them in length-then-lexicographic order. Both `serde_cbor` (with deterministic option) and `cbor4ii` (with the `canonical` feature) produce this ordering. Test vectors in [§14](#14-test-vectors) **MUST** verify byte-identical output across implementations.
 
 This is **defense-in-depth** alongside the **ML-DSA-65** signature. If a signature verification is **accidentally** skipped due to a bug, the **AAD** binding still **prevents** the server from redirecting shares between users.
 
@@ -644,6 +689,19 @@ CREATE INDEX tus_uploads_user_collection
 >
 > If a client upgrades crypto version mid-upload (e.g. during a protocol migration), the in-progress upload **MUST** be discarded and restarted under the new version.
 
+The `tus_uploads` table gains an optional `expected_current_generation` column:
+
+```sql
+ALTER TABLE tus_uploads ADD COLUMN expected_current_generation INTEGER;
+```
+
+Semantics:
+
+- `NULL` for normal first-upload flows (file does not exist yet) and for normal modify flows where the client did not request optimistic concurrency.
+- Set to a non-NULL `M` only when the client requested overwrite-with-CAS via the conflict resolution flow.
+- When non-NULL, the server's commit logic verifies `files.generation = expected_current_generation` inside the same transaction that updates `files.generation` and the ciphertext. Mismatch → HTTP 409 with the current generation, upload discarded.
+- Checked at commit only, not on every `PATCH`.
+
 ### 6.5.11 Abandoned upload garbage collection
 
 A scheduled job MUST periodically (recommended: hourly) remove rows from `tus_uploads` where `completed_at IS NULL AND expires_at < now()`, and MUST delete the corresponding object at `storage_path` from the object storage backend. The default TTL for an incomplete upload is **7 days** from `created_at`, refreshed to 7 days on each successful `PATCH`. Long-running uploads of very large files therefore stay alive as long as the user is making progress, but truly abandoned uploads are reaped within a week.
@@ -720,7 +778,7 @@ This defends against a substituted server, contingent on the client distribution
 5. Server: `opaque.server.createRegistrationResponse({ serverSetup, userIdentifier: email, registrationRequest })` ➜ `{ registrationResponse }`.
 6. Server ➜ Client: `{ registrationResponse, continuationToken }`.
 
-    > If the `continuationToken` expires (60-second TTL) before the client sends `finishLogin`, the server **MUST** return HTTP 410 Gone. The client **MUST** restart the registration flow from **step 1**.
+    > If the `continuationToken` expires (60-second TTL) before the client sends `finishRegistration`, the server **MUST** return HTTP 410 Gone. The client **MUST** restart the registration flow from **step 1**.
     >
     > The **60-second** window accommodates **Argon2id** computation on low-end WASM targets (~3 seconds worst case) plus network latency. If telemetry shows the window is too tight, it can be increased server-side **without** a protocol version bump.
 
@@ -860,7 +918,7 @@ CREATE TABLE sessions (
     expires_at   TIMESTAMPTZ NOT NULL,
     revoked_at   TIMESTAMPTZ,
     user_agent   TEXT,
-    ip_network   INET
+    ip_network   CIDR
 );
 
 CREATE TABLE persistent_sessions (
@@ -890,9 +948,28 @@ The Worker maintains two separate LRU caches:
 - **Collection key cache**: keyed by `collection_id`, holds unwrapped `collectionKey` values.
 - **File key cache**: keyed by `file_id`, holds unwrapped `fileKey` values.
 
-Both caches are held exclusively in Worker memory. They are never serialized, never written to IndexedDB, and never passed to the main thread.
+Both caches are held exclusively in **Worker** memory. They are never serialized, never written to **IndexedDB**, never passed to the main thread.
 
-Maximum cache sizes are implementation-defined per platform. Implementations MUST define a fixed upper bound for each cache to prevent unbounded accumulation of key material in memory. The chosen bounds SHOULD reflect realistic concurrent working sets for the target platform (desktop, mobile, web) and MUST be documented in the platform-specific implementation notes.
+#### Default bounds (SHOULD)
+
+| Platform        | Collection cache | File cache | Rationale                                                              |
+|-----------------|------------------|------------|------------------------------------------------------------------------|
+| Web (browser)   | 32               | 128        | Constrained tab memory; weakest zeroization story                      |
+| Mobile (UniFFI) | 64               | 256        | Constrained device memory; native zeroization is reliable              |
+| Desktop (Tauri) | 128              | 512        | Larger working sets; native zeroization; less memory pressure          |
+
+Implementations **MAY** override these defaults for UX reasons (e.g., a desktop client with thousands of files would thrash on 128 collections). Overrides **MUST** be documented in the platform's security model. Implementations **MUST NOT** make caches unbounded. Implementations **MUST NOT** raise bounds purely to avoid implementing eviction logic.
+
+#### MUST requirements regardless of platform
+
+- Both caches **MUST** have an explicit upper bound enforced by LRU eviction.
+- The Worker **MUST** run an idle-eviction timer in addition to the session inactivity timeout. **After 60 seconds of cache inactivity** (no encrypt/decrypt/wrap/unwrap operations touching that cache), the Worker **MUST** evict the entire cache and zeroize all entries in a single operation. The security goal is to minimize how long key material lives in heap during idle periods.
+- Idle eviction is independent of the 30-minute session inactivity timeout. The session timeout terminates the Worker and zeroizes everything; idle eviction proactively trims the working set during a live session.
+- Eviction **MUST** zeroize the key material (`Uint8Array.fill(0)` on web, `Zeroizing<T>` drop on native) before releasing the reference.
+
+#### Why idle eviction matters on web
+
+JavaScript GC may have already copied key bytes to other heap regions before any explicit `fill(0)` runs. The actual zeroization mechanism on web is **Worker termination**, which deallocates the Worker's heap. Idle eviction reduces the population of keys exposed to GC copying during a live session. This is defense-in-depth, not a guarantee. The threat model in §17 acknowledges this.
 
 #### 9.4.2 Key fetch and unwrap on demand
 
@@ -1071,40 +1148,47 @@ CREATE TABLE users (
 ```sql
 CREATE TABLE collections (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    parent_id       UUID REFERENCES collections(id) ON DELETE CASCADE,
-    vxcm            BYTEA NOT NULL,             -- encrypted collection metadata (VXCM blob)
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    parent_id       UUID REFERENCES collections(id) ON DELETE RESTRICT,
+    vxcm            BYTEA NOT NULL,
+    trashed_at      TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX ON collections (user_id);
-CREATE INDEX ON collections (parent_id);
+CREATE INDEX ON collections (user_id) WHERE trashed_at IS NULL;
+CREATE INDEX ON collections (parent_id) WHERE trashed_at IS NULL;
+CREATE INDEX ON collections (user_id) WHERE trashed_at IS NOT NULL;
 
 CREATE TABLE files (
-    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id               UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    collection_id         UUID NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
-    generation            INTEGER NOT NULL DEFAULT 0,
-    content_id            BYTEA,                    -- 32 bytes, BLAKE3_keyed
-    upload_length         BIGINT,                   -- ciphertext bytes, NULL until first upload completes
-    crypto_version        SMALLINT NOT NULL DEFAULT 1,
-    pending_key_rotation  BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id                 UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    collection_id           UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
+    generation              INTEGER NOT NULL DEFAULT 0,
+    content_id              BYTEA,
+    upload_length           BIGINT,
+    crypto_version          SMALLINT NOT NULL DEFAULT 1,
+    content_key_generation  INTEGER NOT NULL DEFAULT 0,
+    pending_key_rotation    BOOLEAN NOT NULL DEFAULT FALSE,
+    trashed_at              TIMESTAMPTZ,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX ON files (user_id, collection_id);
+CREATE INDEX ON files (user_id, collection_id) WHERE trashed_at IS NULL;
 CREATE INDEX ON files (collection_id) WHERE pending_key_rotation = TRUE;
+CREATE INDEX ON files (user_id) WHERE trashed_at IS NOT NULL;
 ```
+
+> **Note on `trashed_at`:** **v8** introduces `trashed_at` on both `files` and `collections` for symmetric trash UX. See [§19.1](#191-file-deletion) (**file trash**) and [§19.2](#192-collection-deletion) (**collection trash**).
 
 ### 10.3 File and collection keys table
 
 ```sql
 CREATE TABLE collection_keys (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    collection_id   UUID NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
-    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    collection_id   UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     vxck            BYTEA NOT NULL,
     key_generation  INTEGER NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1114,10 +1198,13 @@ CREATE TABLE collection_keys (
 CREATE UNIQUE INDEX collection_keys_active
     ON collection_keys (collection_id, user_id, key_generation);
 
+CREATE INDEX collection_keys_owner_active
+    ON collection_keys (collection_id, user_id, key_generation DESC);
+
 CREATE TABLE file_keys (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    file_id         UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-    collection_id   UUID NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    file_id         UUID NOT NULL REFERENCES files(id) ON DELETE RESTRICT,
+    collection_id   UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
     vxfk            BYTEA NOT NULL,
     key_generation  INTEGER NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1126,7 +1213,12 @@ CREATE TABLE file_keys (
 
 CREATE UNIQUE INDEX file_keys_active
     ON file_keys (file_id, key_generation);
+
+CREATE INDEX file_keys_lookup
+    ON file_keys (file_id, key_generation DESC);
 ```
+
+> **Multiple `file_keys` rows per file:** This introduces a model where multiple `file_keys` rows coexist for the same `file_id` during the window between key rotation and content re-encryption. The `key_generation DESC` index supports the "latest key" lookup. Server-side GC of old rows is described in [§11.1.1].
 
 ### 10.4 What the server knows vs does not know
 
@@ -1199,13 +1291,35 @@ Revocation removes a recipient's access and rotates keys so new content is crypt
 **Collection share revocation:**
 
 1. Sender calls `DELETE /api/v1/shares/{share_id}`.
+
 2. Server sets `revoked_at = now()`. Revoked recipient gets 403 immediately.
+
 3. Sender generates a new `collectionKey` via CSPRNG, increments `key_generation`.
+
 4. Sender re-wraps the new `collectionKey` with `collectionKeyWrapKey` ➜ new `VXCK` blob.
-5. Sender generates new `fileKey` via CSPRNG for each file in the collection, wraps each with new `fileKeyWrapKey` derived from new `collectionKey` ➜ new `VXFK` blobs.
-6. Sender re-encrypts all `VXFM` metadata blobs under new `fileMetadataKey` values. Metadata is small, this is immediate.
-7. Sender re-shares the new `collectionKey` with all remaining recipients via fresh X-Wing + ML-DSA-65 invitations.
-8. File content re-encryption is **lazy**: files are marked `pending_key_rotation`. Content is re-encrypted when next accessed or modified, or by a background client-side task during idle time.
+
+5. Sender generates new `fileKey` via CSPRNG for each file in the
+   collection. The new `fileKey` is wrapped under the new
+   `fileKeyWrapKey` (derived from the new collectionKey) and stored
+   as a new `VXFK` row in file_keys with key_generation = M+1
+   (where M was the current key_generation before revocation).
+   Old `VXFK` rows at `key_generation` <= `M` are **RETAINED** indefinitely
+   unless the owner opts into content re-encryption (§11.1.1).
+   Retention lets the owner decrypt existing content under the old
+   `fileKey`; without re-encryption, the old `VXFK` row is permanent.
+
+6. Sender re-encrypts all `VXFM` metadata blobs under new
+   `fileMetadataKey` values (derived from new `fileKey` via the standard
+   HKDF info string). Metadata is small, this is synchronous.
+
+7. Sender re-shares the new `collectionKey` with all remaining
+   recipients via fresh `X-Wing` + `ML-DSA-65` invitations.
+
+8. File content is NOT re-encrypted by default. Files are marked
+   pending_key_rotation = TRUE. The file `generation` counter is
+   NOT incremented (it tracks user modifications, not key rotations).
+   The actual `fileKey` used for content remains the old one until
+   the owner explicitly opts into re-encryption (§11.1.1).
 
 **File share revocation:**
 
@@ -1215,18 +1329,25 @@ Revocation removes a recipient's access and rotates keys so new content is crypt
 4. Sender re-wraps the new `fileKey` with `fileKeyWrapKey` ➜ new `VXFK` blob.
 5. Sender re-encrypts the `VXFM` metadata blob under new `fileMetadataKey`. Immediate.
 6. Sender re-shares with remaining recipients via fresh invitations.
-7. File content re-encryption is **lazy**, same as above.
+7. File content is **NOT** re-encrypted by default. The file is marked
+   `pending_key_rotation = TRUE`; old `VXFK` rows at `key_generation` <= `M`
+   are retained alongside the new `VXFK` at `key_generation` = `M+1`.
+   The file `generation` counter is **NOT** incremented. Re-encryption
+   happens only when the owner **opts in** (§11.1.1).
 
 **Guarantees and limitations:**
 
-| Property                                                          | Status                                                            |
-|-------------------------------------------------------------------|-------------------------------------------------------------------|
-| Revoked user cannot access content via the API                    | ✅ Immediate, server-enforced                                     |
-| New content after rotation uses fresh keys                        | ✅ Both collection and file level                                 |
-| Metadata re-encrypted immediately                                 | ✅ Small blobs, synchronous                                       |
-| File content re-encrypted lazily                                  | ⚠️ Old ciphertext remains until rotated, but unreachable via API  |
-| File-level revocation without affecting other files in collection | ✅ Independent `fileKey` rotation                                 |
-| Revoked user cannot decrypt already-downloaded content            | ❌ Inherent E2EE limitation                                       |
+| Property                                                                       | Status                                                            |
+|--------------------------------------------------------------------------------|-------------------------------------------------------------------|
+| Revoked user cannot access content via the API                                 | ✅ Immediate, server-enforced                                     |
+| New content after rotation uses fresh keys                                     | ✅ Both collection and file level                                 |
+| Metadata re-encrypted immediately                                              | ✅ Small blobs, synchronous                                       |
+| File content re-encrypted by default                                           | ❌ Off by default, opt-in per §11.1.1                             |
+| File content re-encrypted when opted in                                        | ✅ Progressive, user-pausable, with progress UI                   |
+| File-level revocation without affecting other files in collection              | ✅ Independent fileKey rotation                                   |
+| Revoked user cannot decrypt already-downloaded content                         | ❌ Inherent E2EE limitation                                       |
+| Revoked user cannot decrypt cold-storage exfiltration if they kept old keys    | ⚠️ Only when re-encryption setting is enabled and completed       |
+| File `generation` counter is preserved across key rotation                     | ✅ Generation is a mutation counter, not a rotation counter       |
 
 **Mandatory safeguards:**
 
@@ -1243,6 +1364,96 @@ CREATE INDEX ON shares (recipient_id) WHERE revoked_at IS NULL;
 ALTER TABLE files ADD COLUMN pending_key_rotation BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX ON files (collection_id) WHERE pending_key_rotation = TRUE;
 ```
+
+#### 11.1.1 Optional content re-encryption after revocation
+
+The default behavior on revocation is **key rotation only**: `collectionKey` and per-file `fileKey` values rotate, metadata blobs re-encrypt immediately, but file content remains encrypted under the previous `fileKey`. The owner retains old `VXFK` rows so they can still read existing content; revoked recipients lose access at the **API** layer.
+
+This protects against future server compromise on the **strong assumption** that the revoked recipient did not retain a local copy of the old key. Recipients who kept local copies of files cannot have those copies retroactively invalidated; this is an inherent **E2EE** limitation.
+
+The owner **MAY** opt into full content re-encryption via a setting:
+
+> **Re-encrypt files after sharing revocation** *(off by default)*
+>
+> When you revoke access, also re-encrypt the file contents under new keys. This means a *potential* breach of our servers cannot expose old file contents to people you previously shared with, even if they kept a copy of their old encryption key. This requires re-uploading the affected files and may take a long time for large collections.
+
+#### Trigger points
+
+The opt-in re-encryption can be activated in two ways:
+
+1. **Setting ON (account-wide, persistent):** in user settings under *Security → Re-encrypt files after sharing revocation*. When ON, every future revocation automatically schedules re-encryption for the affected collection. Default is OFF.
+
+2. **Manual per-collection trigger (one-off):** regardless of the setting, the per-collection notice *"N files use older encryption keys. [Re-encrypt now]"* triggers re-encryption for that collection only. This works whether the account-wide setting is ON or OFF.
+
+The setting controls automatic behavior; the manual trigger is always available.
+
+#### File size behavior
+
+Re-encryption applies to **all files marked `pending_key_rotation = TRUE`, regardless of size**. A 10 GB file is re-encrypted the same way as a 10 KB file: download, decrypt under old `fileKey`, re-encrypt under new `fileKey`, upload via tus.
+
+For large files this is expensive. A **10 GB** file means downloading **10 GB** and uploading **10 GB**. The progressive re-encryption flow handles this:
+
+- Concurrency is capped at 1 file at a time, so a large file does not block other files indefinitely (other files wait their turn but each one completes before the next starts).
+- The user can pause at any time. Pausing mid-file leaves that file in `pending_key_rotation = TRUE`; resume restarts that file from scratch (tus partial state for re-encryption uploads is not preserved across pauses).
+- Re-encryption respects the same idle-priority scheduling as background sync: it runs only when the client is online and the user is not actively interacting.
+
+The progress UI **MUST** show both file count and current file's byte progress for large files:
+
+> Re-encrypting collection: 47 / 1000 files (current: report.pdf, 2.3 GB / 5.1 GB)
+
+This sets correct expectations: the user understands a large file is in progress and can pause if they need their bandwidth back.
+
+#### Behavior when the setting is OFF (default)
+
+- Keys rotate, metadata re-encrypts, content remains under old keys.
+- `pending_key_rotation = TRUE` is set on affected files but no client-side work is triggered.
+- The owner sees a per-collection notice: *"N files use older encryption keys."* with an inline *"Re-encrypt now"* action.
+- The flag remains until cleared explicitly (per file or collection-wide), or until the owner enables the setting.
+
+#### Behavior when the setting is ON
+
+- After revocation, the client schedules progressive re-encryption of all `pending_key_rotation = TRUE` files in the collection.
+- Re-encryption runs in the background while the client is online and idle. **Concurrency is capped at 1 file at a time** to avoid saturating the user's upload bandwidth.
+- A persistent UI element shows progress: `"Re-encrypting collection: 47 / 1000 files"`.
+- The user MAY pause and resume at any time. Pausing leaves affected files in `pending_key_rotation = TRUE`; resuming continues from the next file.
+
+#### Re-encryption procedure for a single file
+
+Let `M` denote the current (highest) `key_generation` in `file_keys` for this `file_id`, and `R` denote the `key_generation` under which the file's content is currently encrypted. After a revocation, `R < M`. After multiple revocations without re-encryption runs, `R` may be several generations behind `M`. The boolean only signals "this file is not yet at `M`"; the exact value of `R` is determined at re-encryption time by inspecting the ciphertext or by tracking it server-side as an optional metadata field.
+
+1. Client reads `file_keys` rows for this `file_id`. The current key is at `key_generation = M`. The file's content is encrypted under the fileKey at `key_generation = R`, with `R <= M`.
+2. Client unwraps both fileKeys: the one at `R` (used to decrypt existing content) and the one at `M` (used to encrypt re-uploaded content).
+3. Client downloads existing ciphertext and decrypts using `fileContentKey_R = HKDF(fileKey_R, ...)` with the existing file `generation`.
+4. Client re-encrypts under `fileContentKey_M = HKDF(fileKey_M, ...)`. **The file `generation` counter does NOT change** — the new `fileContentKey` provides a fresh nonce space, so segment nonces are distinct from the previous encryption even at the same `(generation, segment_index)`.
+5. Client uploads via the standard tus flow. The upload metadata signals that this is a key-rotation re-upload, not a user modification.
+6. On commit, server atomically: replaces ciphertext at the storage path, sets `pending_key_rotation = FALSE` on the file row, deletes all `file_keys` rows for this `file_id` where `key_generation < M`.
+
+#### Tracking R server-side
+
+To avoid clients having to probe ciphertext to discover `R`, the `files` table SHOULD include a `content_key_generation` column tracking the key generation under which the current ciphertext was encrypted:
+
+> The `content_key_generation` column is defined in the canonical schema in §10.2. For existing deployments migrating from v7, apply:
+>
+> ```sql
+> ALTER TABLE files ADD COLUMN content_key_generation INTEGER NOT NULL DEFAULT 0;
+> ```
+
+On every successful upload commit, the server sets `content_key_generation = key_generation_used_for_upload`. On rotation, this column is left untouched (rotation does not re-encrypt content). The client reads `content_key_generation` to know which `R` to fetch from `file_keys`.
+
+#### Owner's `collection_keys` and `file_keys` retention
+
+The owner's old-generation rows in `collection_keys` and `file_keys` MUST be retained until all files dependent on them have either been re-encrypted to a newer generation or are no longer referencing them. Specifically:
+
+- A `file_keys` row at `key_generation = K` MAY be deleted when no `files` row in its collection has `content_key_generation = K`.
+- A `collection_keys` row at `key_generation = K` MAY be deleted when no `file_keys` row exists with the same `collection_id` and `key_generation = K`.
+
+This GC runs server-side and is triggered by re-encryption commits. It does not require client coordination.
+
+Revoked recipients' rows in `collection_keys` are deleted at the moment of revocation. This is independent of the owner's retention.
+
+#### Why the boolean is sufficient
+
+Multiple revocations between re-encryption runs do not require additional state. The client always re-encrypts to the current `key_generation = M` regardless of how many rotations occurred between flag set and re-encryption run. Intermediate generations are skipped. The boolean only signals "this file is not yet at the latest generation"; the actual source generation `R` is read from `files.content_key_generation` and the target `M` is read from the latest `file_keys` row.
 
 ### 11.2 Share Timestamp Validation
 
@@ -1341,6 +1552,28 @@ If the owner wants to revoke source collection recipients' access after a move, 
 
 **Schema:** No schema changes required. The existing `file_keys` table with `key_generation` handles the new `VXFK` blob naturally.
 
+#### 11.4.1 `content_id` semantics across moves
+
+When a file is moved between collections, its stored `content_id` is **not** recomputed. The `content_id` was derived using the source collection's `contentIdKey` and remains bound to that derivation. The server **MUST** keep the existing `content_id` value on the file row across a move; the client **MUST NOT** attempt to recompute it.
+
+#### Consequences
+
+- **Resume of an in-progress upload that targets the moved file** works normally. The upload was created with the source collection's `content_id` and uses it as the lookup key throughout the upload's lifetime, regardless of which collection the file is currently in.
+- **Future duplicate detection in the destination collection does not match this file.** If the user uploads the same plaintext into the destination collection later, the lookup endpoint (§6.5.6) returns **404** and the client treats it as a new file. The user ends up with two copies. Feature degradation, not security issue.
+- **Resume of a future re-upload of the moved file's plaintext into the destination collection** does not match either, for the same reason.
+
+#### Why not recompute
+
+Recomputing `content_id` on move requires the client to read the full plaintext through `BLAKE3_keyed` under the destination collection's `contentIdKey`. For a **5 GB** file this means downloading the full ciphertext, decrypting it, re-hashing, then uploading the new `content_id`,  purely to update a database column that controls dedup. The cost **is not** justified.
+
+#### UI requirement
+
+Clients **SHOULD** warn the user at move time if the file is large (recommended threshold: **100 MiB**):
+
+> Moving large files between folders may cause duplicate detection to miss this file in the future. If you upload the same file again to the new folder, it will be treated as a separate copy.
+
+Informational only. No technical action required.
+
 ### 11.5 Concurrent Modification from Two Devices
 
 [§6.5.8](#658-generation-transitions-during-in-progress-uploads) covers the case where a user modifies a file while an upload is in progress on the **same device**. This section covers **concurrent** modification from **two separate devices**.
@@ -1376,16 +1609,18 @@ The client has two paths depending on whether the local version is newer than th
 5. User chooses one of three outcomes:
 
    **Keep server version:**
-   - Client discards local changes.
-   - Client sends `DELETE {tus_url}` to discard the in-progress upload.
-   - No crypto operations required.
+   1. Client discards local changes.
+   2. Client sends `DELETE {tus_url}` to discard the in-progress upload.
+   3. No crypto operations required.
 
-   **Keep my version (overwrite):**
-   - Client sends `DELETE {tus_url}` to discard the failed upload.
-   - Client fetches current `generation` from server (now `N+1`).
-   - Client increments to `N+2`, re-encrypts local content under new generation nonce space.
-   - Client creates new tus upload and proceeds normally.
-   - The winning device's changes are overwritten. The user explicitly chose this.
+    **Keep my version (overwrite):**
+    1. Client sends `DELETE {tus_url}` to discard the failed upload.
+    2. Client fetches the file's current `generation` from the server, value `M`.
+    3. Client re-encrypts local content under generation `M+1` nonce space.
+    4. Client creates a new tus upload via `POST /uploads` with metadata fields `generation = M+1` AND `expected_current_generation = M`. The server MUST persist `expected_current_generation = M` on the resulting `tus_uploads` row.
+    5. The client uploads ciphertext via `PATCH` requests as usual. The `expected_current_generation` value is NOT re-checked on each PATCH (which would be racy and pointless); it is checked exactly once, at commit.
+    6. On commit, the server validates: if `files.generation != tus_uploads.expected_current_generation`, the server returns HTTP 409 with the actual current generation in the response body and discards the upload. The client MUST re-enter conflict resolution from step 1, AND the user MUST be re-prompted because their previous decision was based on stale state.
+    7. On successful validation, the server commits atomically: increments `files.generation` to `M+1`, replaces ciphertext, returns 204.
 
    **Keep both (conflicted copy):**
    - Client sends `DELETE {tus_url}` to discard the failed upload.
@@ -1448,8 +1683,16 @@ The server **MUST**:
 
 At registration the client generates a 24-word BIP39 phrase (256 bits of entropy) and derives a `recoveryKey` to wrap a copy of `masterKey`.
 
-```bash
-seed         = BIP39.mnemonicToSeed(phrase, passphrase = "")
+```rs
+// BIP-39 standard seed derivation. Implementations MUST use the
+// standard derivation; do not reimplement.
+seed = PBKDF2-HMAC-SHA512(
+    password   = utf8(NFKD(phrase)),
+    salt       = utf8("mnemonic"),       // empty BIP-39 passphrase
+    iterations = 2048,
+    L          = 64
+)
+
 recoveryKey  = HKDF-SHA-512(
     ikm  = seed,
     salt = 32 zero bytes,
@@ -1458,19 +1701,66 @@ recoveryKey  = HKDF-SHA-512(
 )
 ```
 
-HKDF (not Argon2id) is used here because the BIP39 phrase already provides 256 bits of entropy. A memory-hard function would add latency without measurably improving the security margin against any realistic attacker.
+Notes:
 
-The phrase is shown once, never persisted client-side, never transmitted to the server. The user must confirm specific word positions before registration completes.
+- The mnemonic phrase **MUST** be **NFKD-normalized** before being passed to **PBKDF2** as **UTF-8 bytes**. This is the **BIP-39** standard, not VexaHub-specific.
+- The salt is the literal **ASCII** string `"mnemonic"` (no passphrase suffix, since the **BIP-39** passphrase is empty).
+- Iteration count is 2048 (**BIP-39** standard, not adjustable).
+- The output is **64 bytes**; **HKDF** then derives the **32-byte** `recoveryKey`.
+
+The reference implementation in `crates/core/src/bip39.rs` uses the `bip39` crate with default settings. Implementations on other platforms **MUST** verify their **BIP-39** library produces byte-identical seed output for the test vectors in [§14](#14-test-vectors).
+
+**HKDF** (not **Argon2id**) is used here because the **BIP39** phrase already provides **256 bits** of entropy. A memory-hard function would add latency without measurably improving the security margin against any realistic attacker.
+
+The phrase is shown once, **never persisted** client-side, **never transmitted** to the server. The user **must** confirm specific word positions before registration completes.
 
 Recovery flow (forgotten password, phrase available):
 
 1. User enters email and recovery phrase.
 
 2. Client sends email to `POST /auth/recovery/lookup`. The server **MUST** respond in **constant time** regardless of whether the email is registered:
-    - **Registered:** returns `{ vxrm, user_uuid }`.
-    - **Not registered:** returns a **deterministic fake** `{ vxrm, user_uuid }` derived from `HMAC-SHA-256(recovery_enumeration_secret, email)`. The fake `vxrm` is a valid-looking **78-byte** blob that will fail decryption **silently**. The fake `user_uuid` is similarly derived. This prevents email enumeration via timing or response shape differences.
 
-    > The `recovery_enumeration_secret` is a separate **32-byte** random value generated at first deployment and stored alongside `serverSetup`. It **MUST NOT** be derived from `serverSetup` or any other key material.
+    > - **Registered:** returns `{ vxrm, user_uuid }`.
+    > - **Not registered:** returns a deterministic fake `{ vxrm, user_uuid }` derived as specified below.
+    >
+    > **Email canonicalization (applied at registration AND fake derivation):**
+    >
+    > ```rs
+    > email_canonical = NFC_normalize(lowercase(email))
+    > ```
+    >
+    > No dot-stripping, no plus-tag handling, no provider-specific aliasing. `Foo@Example.COM` and `foo@example.com` are the same account. The canonicalization function **MUST** be a single shared implementation in `crates/core` invoked from both the registration path and the fake-VXRM path; divergence here is a critical bug.
+    >
+    > **Fake VXRM derivation:**
+    >
+    > ```rs
+    > fake_vxrm_body = HKDF-SHA-512(
+    >     ikm  = recovery_enumeration_secret,
+    >     salt = 32 zero bytes,
+    >     info = "vexahub:v1:fakeVxrm:" || utf8(email_canonical),
+    >     L    = 72
+    > )
+    > fake_vxrm = bytes("VXRM") || 0x01 || 0x01 || fake_vxrm_body
+    > // 6 (header) + 72 (nonce + ciphertext + tag bytes) = 78 bytes,
+    > // matching real VXRM layout exactly.
+    > ```
+    >
+    > **Fake user_uuid derivation:**
+    >
+    > ```rs
+    > fake_user_uuid = HKDF-SHA-512(
+    >     ikm  = recovery_enumeration_secret,
+    >     salt = 32 zero bytes,
+    >     info = "vexahub:v1:fakeUserUuid:" || utf8(email_canonical),
+    >     L    = 16
+    > )
+    > ```
+    >
+    > The `recovery_enumeration_secret` is a separate 32-byte random value generated at first deployment and stored alongside `serverSetup`. It **MUST NOT** be derived from `serverSetup` or any other key material. Loss of `recovery_enumeration_secret` does not compromise user data; rotating it changes which fake responses are returned for unknown emails but has no effect on registered users.
+    >
+    > **Client-side AAD handling:**
+    >
+    > The client uses the returned `user_uuid` directly as **AAD** when attempting to decrypt the returned `vxrm`. The client does **NOT** attempt to verify whether `user_uuid` is **"real"** or **"fake"** before decryption. It cannot, and any attempt to differentiate creates a timing oracle. Both real and fake responses produce a tag-mismatch on incorrect input, indistinguishable to the client. The client **MUST** display a single generic error message ("Incorrect recovery phrase") on **AEAD** failure regardless of cause.
 
 3. Client re-derives `recoveryKey`, unwraps `masterKey`.
 
@@ -1531,6 +1821,20 @@ Migration model: new and old protocol versions coexist in the codebase. On next 
 > A **v1** client **MUST NOT** re-encrypt any blob whose `format version` byte indicates a version higher than it implements. In that case, the client **MUST** refuse the operation and prompt the user to upgrade before proceeding.
 >
 > The unknown **CBOR** key preservation rule from [§5.4](#54-vxfm---file-metadata) applies across protocol versions: when a lower-version client re-encrypts a blob it can parse, it **MUST** preserve any unknown **CBOR** keys verbatim in the re-encrypted output.
+>
+> **Key rotation does NOT bump `crypto_version`.**
+>
+> `crypto_version` tracks which protocol-version key derivation scheme and parameters produced the file's keys. It changes only during a protocol migration (e.g. v1 → v2 if Argon2id parameters change, or X-Wing wire format changes).
+>
+> Key rotation under [§11.1](#111-share-revocation) (share revocation) generates new keys under the **same** protocol version. The `key_generation` counter on `collection_keys` / `file_keys` increments; `crypto_version` on the `files` row does not.
+>
+> Examples:
+>
+> - File created on protocol v1 → `files.crypto_version = 1`, `key_generation = 0`.
+> - Owner revokes a share, rotates keys → `key_generation = 1`, `crypto_version` unchanged.
+> - Protocol migrates v1 → v2, owner re-encrypts → `crypto_version = 2`, `key_generation` may also increment but for unrelated reasons.
+>
+> A consequence: a single file's `(crypto_version, key_generation)` pair uniquely identifies which key wrapping is currently in effect. Both must be checked on key fetch; mismatch indicates a bug or migration in progress.
 
 What CANNOT be changed without re-encrypting user data: `masterKey` itself, file generation derivation paths, segment nonce derivation. `serverSetup` rotation invalidates all accounts.
 
@@ -1579,6 +1883,8 @@ All key material is wrapped in `Zeroizing<T>` (Rust) and **explicitly** overwrit
 
 ### 16.1 Content Security Policy
 
+CSP is set at the HTTP server layer for the static-built webapp:
+
 ```r
 Content-Security-Policy:
     default-src 'self';
@@ -1598,9 +1904,73 @@ Content-Security-Policy:
     report-uri https://reports.vexahub.com/csp;
 ```
 
-`'unsafe-inline'` is excluded from `style-src`. SvelteKit scoped styles are emitted as separate `<style>` blocks compatible with nonce-based CSP; the build pipeline injects per-request nonces. This is stricter than the v1 of this document and closes a real XSS exfiltration vector.
+`connect-src 'self' https://api.vexahub.com` covers all API requests including OPAQUE flows, file metadata, share endpoints, and the tus upload protocol (POST/PATCH/HEAD/DELETE on `https://api.vexahub.com/uploads/...`). The webapp at `app.vexahub.com` does not connect to any other origin. If the tus upload endpoint moves to a separate hostname (e.g., `uploads.vexahub.com`) it **MUST** be added to `connect-src`.
 
-`'wasm-unsafe-eval'` permits WebAssembly compilation only, NOT JavaScript `eval()`.
+> Although, we might just not use different origin, `self` only might be our final option.
+
+`'unsafe-inline'` is excluded from `style-src`. The build pipeline **MUST** emit all stylesheet content to external bundled files served from the same origin. Inline `<style>` blocks and inline `style` attributes are forbidden in production builds.
+
+#### SvelteKit production configuration
+
+```js
+// svelte.config.js
+import adapter from '@sveltejs/adapter-static';
+
+export default {
+    kit: {
+        adapter: adapter(),
+        // 0 (default) = always external, never inline.
+        // Do NOT set this to a non-zero value or to Infinity.
+        inlineStyleThreshold: 0,
+        // CSP is enforced at BOTH layers (defense in depth):
+        // - HTTP server serves the response-header CSP (authoritative).
+        // - SvelteKit injects a matching <meta http-equiv> CSP into
+        //   index.html so the policy is bound to the build artifact
+        //   even if served from a misconfigured proxy.
+        // The two policies MUST match; drift is a release blocker.
+        csp: {
+            mode: 'hash',
+            directives: {
+                'default-src':       ['self'],
+                'connect-src':       ['self', 'https://api.vexahub.com'],
+                'script-src':        ['self', 'wasm-unsafe-eval'],
+                'style-src':         ['self'],
+                'style-src-attr':    ['none'],
+                'img-src':           ['self', 'data:', 'blob:'],
+                'font-src':          ['self'],
+                'media-src':         ['self', 'blob:'],
+                'worker-src':        ['self'],
+                'object-src':        ['none'],
+                'base-uri':          ['self'],
+                'form-action':       ['self'],
+                'frame-ancestors':   ['none'],
+                'upgrade-insecure-requests': true,
+                'report-uri':        ['https://reports.vexahub.com/csp'],
+            },
+        },
+    },
+};
+```
+
+`inlineStyleThreshold: 0` is the default; stating it explicitly prevents future configuration drift. CSP is enforced at BOTH the HTTP server response-header layer (authoritative) and the SvelteKit `<meta http-equiv>` layer (binds the policy to the build artifact). Because the build emits zero inline styles and zero inline scripts, `mode: 'hash'` produces no extra hash entries that would interact with `'unsafe-inline'` (the issue in `sveltejs/kit#9368` only manifests when inline content is present). The two policy definitions MUST stay in sync; CI MUST diff them on every release.
+
+#### Development mode caveat
+
+`vite dev` injects styles via inline `<style>` blocks and HMR runtime. **Development builds DO NOT match production CSP and MUST NOT be used for any external testing.** CSP enforcement applies to staging and production builds only. The CI pipeline MUST verify the production bundle (`build/`) contains no inline `<style>` elements before release:
+
+```bash
+# Fail the build if inline <style> elements appear in production output.
+if grep -rEln '<style[^>]*>' build/ | grep -v '\.css$'; then
+    echo "CSP violation: inline <style> found in production build"
+    exit 1
+fi
+```
+
+#### Why not split `style-src-elem` / `style-src-attr`
+
+`style-src-attr 'none'` already prohibits inline `style="..."` attributes. The `style-src` directive without explicit `style-src-elem` falls back to `style-src` for `<style>` elements and `<link rel="stylesheet">`. This is intentionally restrictive.
+
+`'wasm-unsafe-eval'` permits **WebAssembly** compilation only, **NOT** JavaScript `eval()`.
 
 ### 16.2 Other headers
 
@@ -1618,6 +1988,8 @@ X-Frame-Options: DENY
 `COOP: same-origin` + `COEP: require-corp` enable cross-origin isolation, which is **REQUIRED** for `SharedArrayBuffer` and therefore for **Argon2id** `parallelism > 1` in WASM. Without these headers the **parallelism** degrades silently to 1, weakening the **KSF** below the spec parameters. Verification of cross-origin isolation status (`crossOriginIsolated === true`) **MUST** be checked at app bootstrap and surfaced as an error if false.
 
 If `crossOriginIsolated === false`, the app **MUST** block entirely and refuse to proceed. Silent degradation to `parallelism = 1` is not acceptable; the user must not be able to authenticate under weakened parameters **without** explicit acknowledgement.
+
+> `Cross-Origin-Embedder-Policy: require-corp` blocks future third-party embeds. Acceptable for now. Re-evaluate before adding any external embed.
 
 ### 16.3 Cookies
 
@@ -1650,37 +2022,38 @@ The Argon2id implementation **MUST** zero all intermediate state in the `SharedA
 
 ## 17. Threat Model Summary
 
-| Attacker capability                                    | VexaHub response                                                                                                                                                                                                                                                                                                                   |
-|--------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Database snapshot                                      | No decryption possible; OPRF blocks offline password attacks                                                                                                                                                                                                                                                                       |
-| Full server compromise, no active sessions intercepted | Cannot decrypt existing data; can observe future ciphertext                                                                                                                                                                                                                                                                        |
-| Server compromise + active session cookie stolen       | Can decrypt that session's persistent blob if the user opted in (documented trade-off [§9](#9-session-management).2)                                                                                                                                                                                                               |
-| Network MITM with valid TLS                            | Blocked by static public key pinning                                                                                                                                                                                                                                                                                               |
-| Malicious client update                                | Not defended; reproducible builds tracked in [§18](#18-open-questions-and-future-work)                                                                                                                                                                                                                                             |
-| Physical device compromise (unlocked)                  | Not defended beyond OS-level protections                                                                                                                                                                                                                                                                                           |
-| XSS in webapp                                          | Strict CSP (no `unsafe-inline`), Worker isolation, no eval beyond WASM                                                                                                                                                                                                                                                             |
-| Compromised `serverSetup`                              | Argon2id 128 MiB still imposes meaningful cost on offline dictionary attacks                                                                                                                                                                                                                                                       |
-| File rollback / segment reorder by malicious server    | Blocked by `generation` counter and per-segment AAD binding                                                                                                                                                                                                                                                                        |
-| CRQC (post-quantum adversary)                          | Sharing key exchange protected by X-Wing (ML-KEM-768 + X25519 hybrid); share authenticity protected by ML-DSA-65; login session keys protected by TripleDhKem (3DH + ML-KEM-768 hybrid); OPRF remains classical Ristretto255 (CRQC + database + `serverSetup` theft allows offline password attacks mitigated by Argon2id 128 MiB) |
-| Server swaps VXFM metadata blob between files          | Blocked by file_id AAD binding on VXFM                                                                                                                                                                                                                                                                                             |
-| Server swaps key-wrapping blobs between users          | Blocked by user_id AAD binding on VXWM, VXRM, VXPS, VXSK                                                                                                                                                                                                                                                                           |
-| Server serves stale VXFM from previous generation      | Detected by client verifying VXFM generation matches file row generation                                                                                                                                                                                                                                                           |
-| Server truncates download (drops trailing segments)    | Detected by segment count in VXFM before full download                                                                                                                                                                                                                                                                             |
-| Email enumeration via recovery endpoint                | Blocked by constant-time fake response for unknown emails                                                                                                                                                                                                                                                                          |
-| Share revocation by collection/file owner              | New content protected by rotated keys; metadata re-encrypted immediately; old ciphertext unreachable via API + lazy re-encryption; already-downloaded content not recoverable (E2EE limitation)                                                                                                                                    |
-| ML-DSA-65 signing key observed by attacker             | Mitigated by explicit sharing keypair rotation (§11.3), which invalidates all pending outgoing shares and replaces public keys server-side                                                                                                                                                                                         |
+| Attacker capability                                    | VexaHub response                                                                                                                                                                                                                                                                                                                                                            |
+|--------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Database snapshot                                      | No decryption possible; OPRF blocks offline password attacks                                                                                                                                                                                                                                                                                                                |
+| Full server compromise, no active sessions intercepted | Cannot decrypt existing data; can observe future ciphertext                                                                                                                                                                                                                                                                                                                 |
+| Server compromise + active session cookie stolen       | Can decrypt that session's persistent blob if the user opted in (documented trade-off [§9](#9-session-management).2)                                                                                                                                                                                                                                                        |
+| Network MITM with valid TLS                            | Blocked by static public key pinning                                                                                                                                                                                                                                                                                                                                        |
+| Malicious client update                                | Not defended; reproducible builds tracked in [§18](#18-open-questions-and-future-work)                                                                                                                                                                                                                                                                                      |
+| Physical device compromise (unlocked)                  | Not defended beyond OS-level protections                                                                                                                                                                                                                                                                                                                                    |
+| XSS in webapp                                          | Strict CSP (no `unsafe-inline`), Worker isolation, no eval beyond WASM                                                                                                                                                                                                                                                                                                      |
+| Compromised `serverSetup`                              | Argon2id 128 MiB still imposes meaningful cost on offline dictionary attacks                                                                                                                                                                                                                                                                                                |
+| File rollback / segment reorder by malicious server    | Blocked by `generation` counter and per-segment AAD binding                                                                                                                                                                                                                                                                                                                 |
+| CRQC (post-quantum adversary)                          | Sharing key exchange protected by X-Wing (ML-KEM-768 + X25519 hybrid); share authenticity protected by ML-DSA-65; login session keys protected by TripleDhKem (3DH + ML-KEM-768 hybrid); OPRF remains classical Ristretto255 (CRQC + database + `serverSetup` theft allows offline password attacks mitigated by Argon2id 128 MiB)                                          |
+| Server swaps VXFM metadata blob between files          | Blocked by file_id AAD binding on VXFM                                                                                                                                                                                                                                                                                                                                      |
+| Server swaps key-wrapping blobs between users          | Blocked by user_id AAD binding on VXWM, VXRM, VXPS, VXSK                                                                                                                                                                                                                                                                                                                    |
+| Server serves stale VXFM from previous generation      | Detected by client verifying VXFM generation matches file row generation                                                                                                                                                                                                                                                                                                    |
+| Server truncates download (drops trailing segments)    | Detected by segment count in VXFM before full download                                                                                                                                                                                                                                                                                                                      |
+| Email enumeration via recovery endpoint                | Blocked by constant-time fake response for unknown emails                                                                                                                                                                                                                                                                                                                   |
+| Share revocation by collection/file owner              | New content protected by rotated keys; metadata re-encrypted immediately; old ciphertext unreachable via API + lazy re-encryption; already-downloaded content not recoverable (E2EE limitation)                                                                                                                                                                             |
+| ML-DSA-65 signing key observed by attacker             | Mitigated by explicit sharing keypair rotation (§11.3), which invalidates all pending outgoing shares and replaces public keys server-side                                                                                                                                                                                                                                  |
+| Recovery oracle for attacker who phished a recoveryKey | Attacker can confirm a single email is registered by attempting decryption with the captured key. Acknowledged: the attacker already knows the user whose recoveryKey they captured, and the registration status of that specific email is not new information. Cannot be used for bulk enumeration, since the attacker would need to phish a unique recoveryKey per email. |
 
 ## 18. Open Questions and Future Work
 
-- PQ-resistant OPRF migration when standardized variants land (tracking draft-vos-cfrg-pqpake). Note: TripleDhKem already protects session keys; the remaining gap is the classical OPRF which exposes passwords to offline attack only under CRQC + database + `serverSetup` compromise, mitigated by Argon2id 128 MiB.
-- WebAuthn PRF for biometric unlock.
+- **PQ-resistant OPRF** migration when standardized variants land (tracking [draft-vos-cfrg-pqpake](https://datatracker.ietf.org/doc/draft-vos-cfrg-pqpake/)). Note: TripleDhKem already protects session keys; the remaining gap is the classical OPRF which exposes passwords to offline attack only under **CRQC** + database + `serverSetup` compromise, mitigated by **Argon2id 128 MiB**.
+- `WebAuthn PRF` for biometric unlock.
 - Reproducible builds for `vexahub-protocol` and the webapp bundle, published to a transparency log.
-- Argon2id parameter telemetry on real device distributions to validate the 128 MiB choice.
+- `Argon2id` parameter telemetry on real device distributions to validate the 128 MiB choice.
 - Argon2id experimental parameter for users to freely customize.
 - `serverSetup` compromise incident response runbook.
-- Possible independent third-party audit of `vexahub-protocol` once funding allows.
-- X-Wing RFC finalization tracking. If wire format changes before RFC, bump `VXSH` format version and KEM algorithm ID.
-- Hybrid signatures (Ed25519 + ML-DSA-65) evaluation for ANSSI/BSI compliance if regulatory requirements harden before 2030.
+- Possible independent **third-party** audit of `vexahub-protocol` once funding allows.
+- `X-Wing` RFC finalization tracking. If wire format changes **before** RFC, bump `VXSH` format version and KEM algorithm ID.
+- Hybrid signatures (`Ed25519` + `ML-DSA-65`) evaluation for **ANSSI/BSI** compliance if regulatory requirements harden **before 2030**.
 - UX flow for sharing keypair rotation notification to recipients whose pending shares were invalidated.
 
 ## 19 Deletion
@@ -1731,30 +2104,62 @@ A compliant server **cannot** re-surface deleted content. An adversarial server 
 
 ### 19.2 Collection deletion
 
-The `files` table references `collections` with `ON DELETE RESTRICT` (not CASCADE). This is intentional: cascading deletes would orphan object storage blobs since there is no file-level delete hook in a database cascade. The client is responsible for deleting all files before deleting the collection, giving the server the opportunity to schedule blob cleanup per file.
+Collections are moved to trash before permanent deletion, mirroring file trash semantics (§19.1).
 
-**Deletion flow:**
+#### Trash flow
 
-1. Client iterates all files in the collection and deletes each per §19.1.
-2. Client iterates all child collections recursively (depth-first) and deletes each per this section.
-3. Client sends `DELETE /api/v1/collections/{collection_id}`.
-4. Server verifies the collection has no remaining `files` rows and no remaining child collections with this `parent_id`. If either check fails, the server MUST return HTTP 409 and the client MUST NOT retry without resolving the remaining children.
-5. Server atomically:
-   - Deletes the `collections` row.
-   - Deletes all `collection_keys` rows for that `collection_id`.
-   - Deletes all `shares` rows where the shared resource is this `collection_id`.
-   - Deletes the `VXCM` blob associated with the collection.
-6. Server responds 204.
+1. Client sends `DELETE /api/v1/collections/{collection_id}`.
+2. Server atomically sets `trashed_at = now()` on the target collection AND on every descendant collection (recursive walk via `parent_id`) AND on every file (`files.trashed_at`) within those collections.
+3. Trashed collections and their contents are no longer visible in normal listings. All ciphertext, `VXCM`, `VXCK`, `VXFM`, `VXFK`, and `shares` rows remain intact.
+4. Server responds 204.
 
-The client MUST evict the `collectionKey` from its Worker cache after a successful deletion response.
+The eager update (writing `trashed_at` to every descendant) is acceptable because trash is rare and listing queries are frequent; lazy/inherited trash would force every listing query to walk ancestors via a recursive CTE.
 
-**Schema note:** The foreign key on `files.collection_id` and `collections.parent_id` MUST use `ON DELETE RESTRICT`, not `ON DELETE CASCADE`:
+#### Restore flow
 
-```sql
--- Corrected from the schema in §10.2
-collection_id UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
-parent_id     UUID REFERENCES collections(id) ON DELETE RESTRICT,
+1. Client sends `POST /api/v1/collections/{collection_id}/restore`.
+2. Server atomically clears `trashed_at = NULL` on the target collection ONLY. **Descendant collections and files retain their own `trashed_at` values.**
+3. Server responds 204.
+
+This means: if the user trashes folder `A`, then independently trashes subfolder `A/B`, then restores `A`, only `A` comes back. `A/B` and its contents stay in trash because they were trashed by a separate user action. This is the expected behavior: independent user actions are not undone by restoring an ancestor.
+
+If the user wants to restore everything, the client iterates: restore the root, then restore each still-trashed descendant in order.
+
+> **UI note:** the client SHOULD offer a "Restore folder and all its contents" option that performs the iterative restore client-side. The server-side restore endpoint operates on a single collection at a time to keep the API stateless and the transaction small.
+
+#### Permanent deletion
+
+Triggered either by the user explicitly emptying trash, or automatically after the trash TTL (recommended: 30 days from `trashed_at`).
+
+The client walks the trashed tree depth-first (children first). For each collection, the client sends:
+
+```sh
+DELETE /api/v1/collections/{collection_id}/permanent
 ```
+
+The server performs the atomic operations from v7 §19.2 step 5:
+
+- Deletes the `collections` row.
+- Deletes all `collection_keys` rows for that `collection_id`.
+- Deletes all `shares` rows where the shared resource is this `collection_id`.
+- Deletes the `VXCM` blob.
+
+Server-side validation:
+
+- The collection **MUST** be trashed (`trashed_at IS NOT NULL`). Permanent deletion of a non-trashed collection is rejected with **HTTP 409**.
+- The collection **MUST** have no remaining `files` rows (trashed or not) and no remaining child `collections` rows. The client is responsible for walking the tree depth-first; the server enforces the invariant. If either check fails, the server returns **HTTP 409**.
+
+#### Scheduled trash purge
+
+A scheduled job (recommended: daily) finds collections with `trashed_at < now() - INTERVAL '30 days'` and performs the same depth-first permanent deletion server-side, walking the tree to delete files and child collections first. The TTL is operator-configurable.
+
+#### Cache eviction
+
+The client MUST evict the `collectionKey` from its Worker cache after a successful permanent deletion response. Trashing alone does not require cache eviction (the keys may still be needed for restore).
+
+#### What the server cannot see
+
+Collection names remain encrypted in `VXCM`. The server sees that a collection was trashed and when, but never which folder by name.
 
 ### 19.3 Account deletion
 
@@ -1777,93 +2182,30 @@ Account deletion permanently removes the user and all associated data.
 
 The email address is retained in a suppression table for an operator-configurable period after deletion. This prevents immediate re-registration with the same address, which could be used to abuse sharing or invitation flows that reference the old account by email. After the suppression period the address is permanently purged.
 
-## 20 Audit Log
+> **The deletion sequence is mandatory and database-enforced.** The schema uses `ON DELETE RESTRICT` throughout. Attempting `DELETE FROM users WHERE id = X` directly fails with a foreign key violation. The application MUST walk the dependency tree (sessions → tus_uploads → file_keys → collection_keys → shares → files → collections → users) and schedule object storage cleanup per file before deleting the row. This prevents orphaned ciphertext in **Storage** from a misconfigured cascade.
 
-### 20.1 Purpose
+### 19.4 Empty trash (bulk)
 
-The audit log gives users a record of security-sensitive actions taken on their account. It serves two purposes: allowing users to detect actions they did not take (such as shares created by a compromised client), and providing a forensic record for incident response.
+**Permanently deletes all** trashed items for the authenticated user in **a single operation**.
 
-The audit log does not provide cryptographic proof of authenticity. A compromised server can forge or delete log entries. It is a transparency mechanism, not a security enforcement mechanism.
+**Endpoint:**
 
-### 20.2 Logged events
-
-The following events MUST be logged:
-
-| Event                      | Logged fields                                                                             |
-|----------------------------|-------------------------------------------------------------------------------------------|
-| Login (successful)         | `timestamp`, `ip_network`, `user_agent`, `session_id`                                     |
-| Login (failed)             | `timestamp`, `ip_network`, `user_agent`                                                   |
-| Registration               | `timestamp`, `ip_network`, `user_agent`                                                   |
-| Password change            | `timestamp`, `ip_network`, `session_id`                                                   |
-| Recovery phrase rotation   | `timestamp`, `session_id`                                                                 |
-| Sharing keypair rotation   | `timestamp`, `session_id`                                                                 |
-| Share created (outgoing)   | `timestamp`, `session_id`, `recipient_id`, `share_id`, `share_kind`                       |
-| Share accepted (incoming)  | `timestamp`, `session_id`, `sender_id`, `share_id`                                        |
-| Share revoked              | `timestamp`, `session_id`, `share_id`                                                     |
-| Persistent session created | `timestamp`, `device_label`, `session_id`                                                 |
-| Persistent session revoked | `timestamp`, `device_label`                                                               |
-| File move                  | `timestamp`, `session_id`, `file_id`, `source_collection_id`, `destination_collection_id` |
-| Destructive reset          | `timestamp`, `ip_network`                                                                 |
-| Account deletion initiated | `timestamp`, `ip_network`                                                                 |
-
-File and collection names are NEVER logged. They are encrypted inside `VXFM` and `VXCM` blobs and the server never sees them. `share_kind` indicates whether a collection or a file was shared, but not its name or content.
-
-### 20.3 Storage
-
-Audit log entries are stored in a dedicated `audit_log` table with append-only access enforced at the database privilege level:
-
-```sql
-CREATE TABLE audit_log (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    event       TEXT NOT NULL,
-    metadata    JSONB NOT NULL DEFAULT '{}',
-    ip_network  INET,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX ON audit_log (user_id, created_at DESC);
+```sh
+DELETE /api/v1/trash
 ```
 
-The application database role MUST hold INSERT and SELECT privileges on `audit_log` only. UPDATE and DELETE MUST NOT be granted to the application role. A separate privileged role (not used by the application) handles retention purges. This means the application cannot modify or delete log entries even under compromise, unless the attacker escalates beyond the application database role.
+**Server behavior:**
 
-Retention period is operator-configurable. Entries are purged by a scheduled job running under the privileged role, not the application role.
+1. Collects **all root-level** trashed `collections` rows for the user, collections where `trashed_at IS NOT NULL` and whose `parent_id` is either `NULL` or points to a collection that is **not** itself trashed.
+2. Collects all trashed `files` rows for the user where `trashed_at IS NOT NULL` and the file does not belong to a trashed collection (to avoid double-deletion with the collection sweep).
+3. For **each trashed collection**, performs the depth-first permanent deletion defined in [§19.2](#192-collection-deletion).
+4. For **each remaining trashed file**, performs the permanent deletion defined in [§19.1](#191-file-deletion).
+5. Items **MAY** be processed in parallel. Each item's deletion **MUST** be its own atomic transaction.
+6. If an item is not found during deletion, the server **MUST** treat this as a success. The item was already deleted (e.g. by the concurrent scheduled purge job in [§19.2](#192-collection-deletion)) and the end state is correct.
+7. Server responds `204` on success. If the **entire operation** fails **catastrophically**, the server responds `500`. Individual item failures are logged **server-side** and do not surface to the client.
 
-### 20.4 User-facing access
+**Cache eviction:**
 
-Users can retrieve their own audit log via:
+The client **MUST** evict all `fileKey` and `collectionKey` entries from its **Worker** cache after a successful `204` response.
 
-```rs
-GET /api/v1/account/audit-log?limit=50&before={cursor}
-
-← {
-    "entries": [
-      {
-        "id": "...",
-        "event": "share_created",
-        "metadata": { "recipient_id": "...", "share_kind": "collection" },
-        "ip_network": "192.168.1.0/24",
-        "created_at": "2026-04-30T12:00:00Z"
-      }
-    ],
-    "next_cursor": "..."
-  }
-```
-
-The response uses cursor-based pagination. `ip_network` is coarsened to a /24 (IPv4) or /48 (IPv6) prefix before storage and before display, so precise client IP addresses are never retained or returned.
-
-`recipient_id` and `sender_id` in share events are returned as UUIDs. The client resolves these to display names using the existing user lookup endpoint. The server does not store or return usernames or emails in the audit log.
-
-### 20.5 Limitations
-
-- A compromised server can suppress or fabricate log entries. The audit log is a best-effort transparency tool, not a cryptographic guarantee.
-- Actions taken by a compromised client appear legitimate in the log. The log records that a share was created from the user's session, but cannot distinguish between the user and malicious code running in the same session context.
-- The log does not record file content access (download events). Recording every download would produce high-volume noise and leak access patterns to anyone who can read the log. Users who need download audit trails should treat any share creation as implying potential access by the recipient.
-
-### 20.6 Threat model addition
-
-| Attacker capability                                      | VexaHub response                                                                                     |
-|----------------------------------------------------------|------------------------------------------------------------------------------------------------------|
-| Compromised client creates shares without user knowledge | Detectable via `share_created` entries in the audit log visible to the user on next login            |
-| Server suppresses or forges audit log entries            | Not preventable at the crypto layer; acknowledged limitation documented in [§20.5](#205-limitations) |
-| Attacker reads another user's audit log                  | Blocked: the audit log endpoint is scoped to the authenticated user; cross-user access returns 403   |
+**Server MUST NOT** allow this endpoint to affect items belonging to other users. The `user_id` scope is enforced at the query level.
