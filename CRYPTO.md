@@ -309,9 +309,13 @@ CBOR schema:
 }
 ```
 
+> **Nonce requirement:** `collectionMetadataKey` is stable for the lifetime of a `collectionKey`. A fresh random nonce **MUST** be generated on every `VXCM` write (rename, timestamp update). Nonce reuse under the same `collectionMetadataKey` is catastrophic.
+>
+> On `collectionKey` rotation (share revocation), `collectionMetadataKey` changes and the nonce space resets, but this **does not** relax the fresh-nonce requirement.
+
 ### 5.6 `VXPS` - Persistent Session Blob
 
-Stored in IndexedDB on the user's device when "Remember me" is enabled.
+Stored in **IndexedDB** on the user's device when `"Remember me"` is **enabled**.
 
 ```rs
 Offset  Size  Field
