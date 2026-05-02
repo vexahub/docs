@@ -969,7 +969,7 @@ Implementations **MAY** override these defaults for UX reasons (e.g., a desktop 
 
 #### Why idle eviction matters on web
 
-JavaScript GC may have already copied key bytes to other heap regions before any explicit `fill(0)` runs. The actual zeroization mechanism on web is **Worker termination**, which deallocates the Worker's heap. Idle eviction reduces the population of keys exposed to GC copying during a live session. This is defense-in-depth, not a guarantee. The threat model in §17 acknowledges this.
+JavaScript GC may have already copied key bytes to other heap regions before any explicit `fill(0)` runs. The actual zeroization mechanism on web is **Worker termination**, which deallocates the Worker's heap. Idle eviction reduces the population of keys exposed to GC copying during a live session. This is defense-in-depth, not a guarantee. The threat model in [§17](#17-threat-model-summary) acknowledges this.
 
 #### 9.4.2 Key fetch and unwrap on demand
 
@@ -1014,7 +1014,7 @@ The Worker processes one unwrap operation at a time per key. Concurrent operatio
 
 ### 9.5 Key Fetch Ordering on Login and First File Access
 
-Login (§8.2) unwraps `masterKey` and sharing private keys eagerly. All other key material is fetched lazily on first access.
+Login ([§8.2](#82-login)) unwraps `masterKey` and sharing private keys eagerly. All other key material is fetched lazily on first access.
 
 #### 9.5.1 Lazy fetch model
 
@@ -1053,7 +1053,7 @@ Web clients have no persistent local storage of plaintext key material or plaint
 - Operations requiring a server fetch will fail with a network error. The client MUST surface this to the user as an offline error, not a decryption failure.
 - The inactivity timeout continues to run. If the user is offline for 30 minutes, the Worker is terminated and key material is zeroized on timeout as normal. Re-authentication requires network access.
 
-Web clients MUST NOT attempt to cache plaintext file content or unwrapped key material in IndexedDB, localStorage, or any other browser storage. The only persistent browser storage used by VexaHub is the `VXPS` blob (§5.6) for persistent sessions and the session cookie.
+Web clients MUST NOT attempt to cache plaintext file content or unwrapped key material in IndexedDB, localStorage, or any other browser storage. The only persistent browser storage used by VexaHub is the `VXPS` blob ([§5.6](#56-vxps---persistent-session-blob)) for persistent sessions and the session cookie.
 
 #### 9.6.2 Desktop clients (Tauri)
 
@@ -1073,7 +1073,7 @@ The keychain entry is protected by the OS and accessible only to the VexaHub pro
 
 1. App launches and reads `masterKey` from OS keychain.
 2. App sends a request to the server using the stored session cookie to fetch `vxsk`.
-3. If the server returns 401 (session expired or revoked), the app MUST discard the cached cookie, prompt the user to re-enter their password, and run the full OPAQUE login flow (§8.2). The keychain entry for `masterKey` remains valid and does not need to be replaced unless the password change flow is triggered.
+3. If the server returns 401 (session expired or revoked), the app MUST discard the cached cookie, prompt the user to re-enter their password, and run the full OPAQUE login flow ([§8.2](#82-login)). The keychain entry for `masterKey` remains valid and does not need to be replaced unless the password change flow is triggered.
 4. On successful fetch, app decrypts `VXSK` using `masterKey` to recover sharing private keys.
 5. Worker is initialised with `masterKey` and sharing keys. No password entry required.
 
@@ -1218,7 +1218,7 @@ CREATE INDEX file_keys_lookup
     ON file_keys (file_id, key_generation DESC);
 ```
 
-> **Multiple `file_keys` rows per file:** This introduces a model where multiple `file_keys` rows coexist for the same `file_id` during the window between key rotation and content re-encryption. The `key_generation DESC` index supports the "latest key" lookup. Server-side GC of old rows is described in [§11.1.1].
+> **Multiple `file_keys` rows per file:** This introduces a model where multiple `file_keys` rows coexist for the same `file_id` during the window between key rotation and content re-encryption. The `key_generation DESC` index supports the "latest key" lookup. Server-side GC of old rows is described in [§11.1.1](#1111-optional-content-re-encryption-after-revocation).
 
 ### 10.4 What the server knows vs does not know
 
@@ -1304,7 +1304,7 @@ Revocation removes a recipient's access and rotates keys so new content is crypt
    as a new `VXFK` row in file_keys with key_generation = M+1
    (where M was the current key_generation before revocation).
    Old `VXFK` rows at `key_generation` <= `M` are **RETAINED** indefinitely
-   unless the owner opts into content re-encryption (§11.1.1).
+   unless the owner opts into content re-encryption ([§11.1.1](#1111-optional-content-re-encryption-after-revocation)).
    Retention lets the owner decrypt existing content under the old
    `fileKey`; without re-encryption, the old `VXFK` row is permanent.
 
@@ -1319,7 +1319,7 @@ Revocation removes a recipient's access and rotates keys so new content is crypt
    pending_key_rotation = TRUE. The file `generation` counter is
    NOT incremented (it tracks user modifications, not key rotations).
    The actual `fileKey` used for content remains the old one until
-   the owner explicitly opts into re-encryption (§11.1.1).
+   the owner explicitly opts into re-encryption ([§11.1.1](#1111-optional-content-re-encryption-after-revocation)).
 
 **File share revocation:**
 
@@ -1333,21 +1333,21 @@ Revocation removes a recipient's access and rotates keys so new content is crypt
    `pending_key_rotation = TRUE`; old `VXFK` rows at `key_generation` <= `M`
    are retained alongside the new `VXFK` at `key_generation` = `M+1`.
    The file `generation` counter is **NOT** incremented. Re-encryption
-   happens only when the owner **opts in** (§11.1.1).
+   happens only when the owner **opts in** ([§11.1.1](#1111-optional-content-re-encryption-after-revocation)).
 
 **Guarantees and limitations:**
 
-| Property                                                                       | Status                                                            |
-|--------------------------------------------------------------------------------|-------------------------------------------------------------------|
-| Revoked user cannot access content via the API                                 | ✅ Immediate, server-enforced                                     |
-| New content after rotation uses fresh keys                                     | ✅ Both collection and file level                                 |
-| Metadata re-encrypted immediately                                              | ✅ Small blobs, synchronous                                       |
-| File content re-encrypted by default                                           | ❌ Off by default, opt-in per §11.1.1                             |
-| File content re-encrypted when opted in                                        | ✅ Progressive, user-pausable, with progress UI                   |
-| File-level revocation without affecting other files in collection              | ✅ Independent fileKey rotation                                   |
-| Revoked user cannot decrypt already-downloaded content                         | ❌ Inherent E2EE limitation                                       |
-| Revoked user cannot decrypt cold-storage exfiltration if they kept old keys    | ⚠️ Only when re-encryption setting is enabled and completed       |
-| File `generation` counter is preserved across key rotation                     | ✅ Generation is a mutation counter, not a rotation counter       |
+| Property                                                                       | Status                                                                                                                       |
+|--------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------|
+| Revoked user cannot access content via the API                                 | ✅ Immediate, server-enforced                                                                                                |
+| New content after rotation uses fresh keys                                     | ✅ Both collection and file level                                                                                            |
+| Metadata re-encrypted immediately                                              | ✅ Small blobs, synchronous                                                                                                  |
+| File content re-encrypted by default                                           | ❌ Off by default, opt-in per ([§11.1.1](#1111-optional-content-re-encryption-after-revocation))                             |
+| File content re-encrypted when opted in                                        | ✅ Progressive, user-pausable, with progress UI                                                                              |
+| File-level revocation without affecting other files in collection              | ✅ Independent fileKey rotation                                                                                              |
+| Revoked user cannot decrypt already-downloaded content                         | ❌ Inherent E2EE limitation                                                                                                  |
+| Revoked user cannot decrypt cold-storage exfiltration if they kept old keys    | ⚠️ Only when re-encryption setting is enabled and completed                                                                  |
+| File `generation` counter is preserved across key rotation                     | ✅ Generation is a mutation counter, not a rotation counter                                                                  |
 
 **Mandatory safeguards:**
 
@@ -1432,7 +1432,7 @@ Let `M` denote the current (highest) `key_generation` in `file_keys` for this `f
 
 To avoid clients having to probe ciphertext to discover `R`, the `files` table SHOULD include a `content_key_generation` column tracking the key generation under which the current ciphertext was encrypted:
 
-> The `content_key_generation` column is defined in the canonical schema in §10.2. For existing deployments migrating from v7, apply:
+> The `content_key_generation` column is defined in the canonical schema in [§10.2](#102-file-and-collection-table). For existing deployments migrating from v7, apply:
 >
 > ```sql
 > ALTER TABLE files ADD COLUMN content_key_generation INTEGER NOT NULL DEFAULT 0;
@@ -1559,7 +1559,7 @@ When a file is moved between collections, its stored `content_id` is **not** rec
 #### Consequences
 
 - **Resume of an in-progress upload that targets the moved file** works normally. The upload was created with the source collection's `content_id` and uses it as the lookup key throughout the upload's lifetime, regardless of which collection the file is currently in.
-- **Future duplicate detection in the destination collection does not match this file.** If the user uploads the same plaintext into the destination collection later, the lookup endpoint (§6.5.6) returns **404** and the client treats it as a new file. The user ends up with two copies. Feature degradation, not security issue.
+- **Future duplicate detection in the destination collection does not match this file.** If the user uploads the same plaintext into the destination collection later, the lookup endpoint ([§6.5.6](#656-upload-lookup-flow)) returns **404** and the client treats it as a new file. The user ends up with two copies. Feature degradation, not security issue.
 - **Resume of a future re-upload of the moved file's plaintext into the destination collection** does not match either, for the same reason.
 
 #### Why not recompute
@@ -2040,7 +2040,7 @@ The Argon2id implementation **MUST** zero all intermediate state in the `SharedA
 | Server truncates download (drops trailing segments)    | Detected by segment count in VXFM before full download                                                                                                                                                                                                                                                                                                                      |
 | Email enumeration via recovery endpoint                | Blocked by constant-time fake response for unknown emails                                                                                                                                                                                                                                                                                                                   |
 | Share revocation by collection/file owner              | New content protected by rotated keys; metadata re-encrypted immediately; old ciphertext unreachable via API + lazy re-encryption; already-downloaded content not recoverable (E2EE limitation)                                                                                                                                                                             |
-| ML-DSA-65 signing key observed by attacker             | Mitigated by explicit sharing keypair rotation (§11.3), which invalidates all pending outgoing shares and replaces public keys server-side                                                                                                                                                                                                                                  |
+| ML-DSA-65 signing key observed by attacker             | Mitigated by explicit sharing keypair rotation ([§11.3](#113-sharing-keypair-rotation)), which invalidates all pending outgoing shares and replaces public keys server-side                                                                                                                                                                                                 |
 | Recovery oracle for attacker who phished a recoveryKey | Attacker can confirm a single email is registered by attempting decryption with the captured key. Acknowledged: the attacker already knows the user whose recoveryKey they captured, and the registration status of that specific email is not new information. Cannot be used for bulk enumeration, since the attacker would need to phish a unique recoveryKey per email. |
 
 ## 18. Open Questions and Future Work
@@ -2104,7 +2104,7 @@ A compliant server **cannot** re-surface deleted content. An adversarial server 
 
 ### 19.2 Collection deletion
 
-Collections are moved to trash before permanent deletion, mirroring file trash semantics (§19.1).
+Collections are moved to trash before permanent deletion, mirroring file trash semantics ([§19.1](#191-file-deletion)).
 
 #### Trash flow
 
@@ -2137,7 +2137,7 @@ The client walks the trashed tree depth-first (children first). For each collect
 DELETE /api/v1/collections/{collection_id}/permanent
 ```
 
-The server performs the atomic operations from v7 §19.2 step 5:
+The server performs the atomic operations:
 
 - Deletes the `collections` row.
 - Deletes all `collection_keys` rows for that `collection_id`.
