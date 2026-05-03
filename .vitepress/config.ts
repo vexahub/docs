@@ -13,6 +13,7 @@ export default defineConfig({
     outline: {
       level: [2, 3],
     },
+    externalLinkIcon: true,
     socialLinks: [{ icon: "github", link: "https://github.com/vexahub" }],
     sidebar: [
       {
