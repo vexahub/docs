@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-> **Document version:** 8
+> **Document version:** 9
 >
 > **Protocol version:** 1
 >
@@ -141,7 +141,7 @@ For `shareWrapKey`, the IKM is the X-Wing shared secret (output of a KEM combine
 >
 > Zero salt simplifies cross-platform interoperability and has no security impact when `info` is unique per purpose.
 >
-> All UUIDs embedded in HKDF `info` strings MUST be encoded as **raw 16-byte big-endian binary**, not as hyphenated text.
+> All UUIDs embedded in HKDF `info` strings **MUST** be encoded as **raw 16-byte big-endian binary**, not as hyphenated text.
 >
 > This eliminates formatting ambiguity across platforms and implementations. Example: UUID `550e8400-e29b-41d4-a716-446655440000` is encoded as 16 bytes `0x55 0x0e 0x84 ...`, not as 36-byte ASCII.
 
@@ -176,7 +176,7 @@ fileKeyWrapKey = HKDF-SHA-512(
 
 ## 5. Binary Blob Formats
 
-All encrypted blobs use versioned, self-describing binary formats prefixed with 4 magic bytes, a format version, and an algorithm ID. Parsers MUST verify magic, version, and algorithm before decryption. Unknown values MUST cause an error, never a silent fallback.
+All encrypted blobs use versioned, self-describing binary formats prefixed with 4 magic bytes, a format version, and an algorithm ID. Parsers **MUST** verify magic, version, and algorithm before decryption. Unknown values **MUST** cause an error, never a silent fallback.
 
 Algorithm IDs:
 
@@ -282,7 +282,7 @@ CBOR schema for plaintext metadata (canonical CBOR, [RFC 8949 §4.2.1](https://w
 >
 > **Segment count verification:** Before starting a download, the client **MUST** read `sc` from `VXFM` and verify that the number of segments received matches. A mismatch indicates truncation or tampering and the client **MUST** abort the download without surfacing partial content. This catches truncation before committing bandwidth, unlike the **BLAKE3** hash check in [§6.5.9](#659-final-integrity-verification) which only runs after the full download.
 
-Unknown CBOR keys MUST be preserved on re-encryption to allow forward-compatible field additions.
+Unknown CBOR keys **MUST** be preserved on re-encryption to allow forward-compatible field additions.
 
 > Parsers **MUST** reject non-canonical **CBOR** input. Any blob or payload that does not conform to [RFC 8949 §4.2.1](https://www.rfc-editor.org/rfc/rfc8949.html#section-4.2.1) deterministic encoding **MUST** cause a hard error, **never** silent acceptance or re-canonicalization.
 
@@ -491,10 +491,10 @@ This prevents the catastrophic XChaCha20-Poly1305 nonce-reuse vulnerability that
 
 **Mandatory invariants:**
 
-- The server MUST reject any upload whose `generation` value is less than or equal to the currently stored generation for that file.
-- The server MUST store `generation` in the file row and return it with file metadata so clients can verify monotonicity.
-- When a client uploads a new generation, all segments belonging to that generation MUST be uploaded atomically (transactional or staged commit). Partial generation uploads MUST be garbage-collected after a short TTL.
-- Clients MUST refuse to decrypt a segment whose `generation` field in the `VXFC` header does not match the expected generation from file metadata.
+- The server **MUST** reject any upload whose `generation` value is less than or equal to the currently stored generation for that file.
+- The server **MUST** store `generation` in the file row and return it with file metadata so clients can verify monotonicity.
+- When a client uploads a new generation, all segments belonging to that generation **MUST** be uploaded atomically (transactional or staged commit). Partial generation uploads **MUST** be garbage-collected after a short TTL.
+- Clients **MUST** refuse to decrypt a segment whose `generation` field in the `VXFC` header does not match the expected generation from file metadata.
 
 The `generation` field is 32 bits, providing 4 billion modifications per file. This is effectively unbounded for any realistic workload.
 
@@ -580,7 +580,7 @@ last_segment_ciphertext               = (last_segment_plaintext > 0)
                                           ? last_segment_plaintext + SEGMENT_CIPHERTEXT_OVERHEAD
                                           : 0
 
-ciphertext_length = full_segments × SEGMENT_CIPHERTEXT_SIZE_FULL + last_segment_ciphertext
+ciphertext_length = full_segments x SEGMENT_CIPHERTEXT_SIZE_FULL + last_segment_ciphertext
 ```
 
 The **plaintext** size is **never** sent to the **server**. The **server** knows **only** the ciphertext size as `Upload-Length`.
@@ -598,7 +598,7 @@ Server responses:
 
 - **404 Not Found**: No existing upload or committed file matches.
 
-    The client MUST proceed with a fresh tus `POST /uploads` to create a new upload resource.
+    The client **MUST** proceed with a fresh tus `POST /uploads` to create a new upload resource.
 
 - **200 OK** with `{ "kind": "incomplete", "tus_url": "...", "upload_offset": <int>, "generation": <int>, "expires_at": "..." }`:
 
@@ -606,13 +606,13 @@ Server responses:
 
 - **200 OK** with `{ "kind": "committed", "file_id": "...", "generation": <int> }`:
 
-    The file already exists fully committed in the user's account. The client MUST prompt the user to choose between skip, replace (creates generation+1), or duplicate (creates a new `file_id`).
+    The file already exists fully committed in the user's account. The client **MUST** prompt the user to choose between skip, replace (creates generation+1), or duplicate (creates a new `file_id`).
 
-The server MUST scope the lookup to the authenticated user. Cross-user lookups by `content_id` MUST return 404 even if a match exists in another account.
+The server **MUST** scope the lookup to the authenticated user. Cross-user lookups by `content_id` **MUST** return 404 even if a match exists in another account.
 
 ### 6.5.7 Resume alignment
 
-A tus `PATCH` MAY contain any number of bytes, and may interrupt at any byte boundary. When an interrupted upload is resumed via `HEAD` followed by `PATCH`, the server-reported `Upload-Offset` may fall in the middle of a VexaHub crypto segment. The client MUST NOT submit ciphertext starting at that arbitrary offset, because XChaCha20-Poly1305 does not support partial AEAD writes. A segment is a single atomic encryption unit.
+A tus `PATCH` **MAY** contain any number of bytes, and may interrupt at any byte boundary. When an interrupted upload is resumed via `HEAD` followed by `PATCH`, the server-reported `Upload-Offset` may fall in the middle of a **VexaHub** crypto segment. The client **MUST NOT** submit ciphertext starting at that arbitrary offset, because `XChaCha20-Poly1305` does not support partial **AEAD** writes. A segment is a single atomic encryption unit.
 
 Resume procedure:
 
@@ -620,32 +620,112 @@ Resume procedure:
 2. Client computes the index of the segment that contains byte `O`:
         ```
 segment_index = floor(O / SEGMENT_CIPHERTEXT_SIZE_FULL)
-segment_start = segment_index × SEGMENT_CIPHERTEXT_SIZE_FULL
+segment_start = segment_index x SEGMENT_CIPHERTEXT_SIZE_FULL
         ```
-3. If `O > segment_start`, the server holds a partial segment. The client MUST request the server to truncate the upload back to `segment_start` via the custom endpoint:
+3. If `O > segment_start`, the server holds a partial segment. The client **MUST** request the server to truncate the upload back to `segment_start` via the custom endpoint:
         ```
 POST /api/v1/uploads/{upload_id}/rewind
 { "to_offset": <segment_start> }
         ```
-   The server MUST verify the requested offset is segment-aligned, truncate the underlying storage object, update `tus_uploads.upload_offset`, and respond 204.
+   The server **MUST** verify the requested offset is segment-aligned, truncate the underlying storage object, update `tus_uploads.upload_offset`, and respond 204.
 4. Client resumes with `PATCH` from `segment_start`, re-deriving each segment nonce from `(generation, segment_index)` as defined in [§6.2](#62-per-segment-nonce-derivation).
 
-The rewind endpoint is NOT part of the tus standard. It is a VexaHub extension necessary because tus alone cannot express the constraint that uploads must be aligned to AEAD segment boundaries.
+The rewind endpoint is **NOT** part of the tus standard. It is a **VexaHub** extension necessary because tus alone cannot express the constraint that uploads must be aligned to **AEAD** segment boundaries.
+
+#### 6.5.7.1 Backend Storage Layer Alignment
+
+**VexaHub** uses a backend server to persist upload data to storage. The server internally translates tus `PATCH` requests into multipart upload parts. This section specifies constraints that bridge the cryptographic segment model with the **server's multipart** upload mechanics.
+
+**Client-side invariant:** Every tus `PATCH` request **MUST** contain one or more **complete** `VXFC` ciphertext segments. The client **MUST NOT** send a partial segment in a `PATCH` body. This is enforced by the client's encryption pipeline: the client encrypts a full plaintext segment into a `VXFC` blob and only then writes it to the `PATCH` stream. The last `PATCH` of an upload MAY contain a final segment shorter than `SEGMENT_CIPHERTEXT_SIZE_FULL` (because the last plaintext segment may be shorter than 1 MiB), but it is still a **complete** `VXFC` blob.
+
+**Consequence:** If a network interruption occurs mid-`PATCH`, the bytes received by the backend server may end at an arbitrary offset. The server stores trailing bytes that fall below the minimum part size as an **incomplete part** (a separate `.part` object). These bytes may contain zero or more complete `VXFC` segments followed optionally by a partial segment. Partial segment bytes are **not usable**.
+
+`XChaCha20-Poly1305` requires the full ciphertext and tag to decrypt.
+
+**Part size alignment:**
+
+The server **MUST** select a part size that is a multiple of `SEGMENT_CIPHERTEXT_SIZE_FULL`. This ensures that completed multipart parts always contain an exact number of complete `VXFC` segments. When the server auto-scales the part size to accommodate large files, it **MUST** round the resulting size up to the nearest multiple of `SEGMENT_CIPHERTEXT_SIZE_FULL`. If the resulting part size exceeds the maximum allowed part size, the server **MUST** reject the upload.
+
+**HEAD response handling (mandatory):**
+
+The backend server reports `Upload-Offset` as `committed_parts_size + incomplete_part_size`. For **VexaHub** uploads, this offset may fall mid-segment when an interruption occurred mid-`VXFC` blob. The server **MUST** intercept **HEAD** responses for **VexaHub** uploads and apply the following logic:
+
+1. Compute `committed_offset` = sum of completed multipart part sizes.
+2. Get `incomplete_part_size` from the `.part` object, or `0` if none exists.
+3. If `(committed_offset + incomplete_part_size)` is divisible by `SEGMENT_CIPHERTEXT_SIZE_FULL`, OR equals `upload_length`, the `.part` bytes are segment-aligned. Report `Upload-Offset = committed_offset + incomplete_part_size`. Do **NOT** delete `.part`.
+4. Otherwise, the `.part` bytes end mid-segment. Delete the `.part` object. Report `Upload-Offset = committed_offset`.
+
+This ensures every **HEAD** response reports a segment-aligned offset, and the server's prepend mechanism only fires when the prepended bytes are themselves complete segments.
+
+> **Why intercept at HEAD rather than at every `PATCH`?**
+>
+> The backend server's write method automatically prepends `.part` bytes to the next `PATCH` data. This behavior is correct when `.part` contains complete segments (the prepended bytes are valid `VXFC` blobs). It is corrupting only when `.part` contains a trailing partial segment. Deleting `.part` unconditionally before every write would discard valid complete segments and cause an offset mismatch between the server's reported `Upload-Offset` and the actual committed state. Intercepting at **HEAD** is precise: `.part` is deleted only when its bytes are unsafe to prepend, and the reported offset is always segment-aligned.
+
+**Rewind procedure:**
+
+The rewind endpoint exists for cases beyond the HEAD-time auto-cleanup: explicit client-initiated rewind (e.g. modify-during-upload per [§6.5.8](#658-generation-transitions-during-in-progress-uploads)), or rewind to an offset earlier than the current `Upload-Offset`.
+
+```sh
+POST /api/v1/uploads/{upload_id}/rewind
+{ "to_offset": <segment_start> }
+```
+
+The server **MUST**:
+
+1. Verify `to_offset` satisfies all of:
+   - `to_offset = 0`, OR `to_offset = k x SEGMENT_CIPHERTEXT_SIZE_FULL` for some positive integer `k`.
+   - `to_offset <= tus_uploads.upload_length`.
+   - `to_offset <= tus_uploads.upload_offset`.
+
+   Reject with `HTTP 400 Bad Request` on any failure.
+
+2. Verify the requested offset falls on or after the boundary of the last completed multipart part. If the requested offset falls **inside** a completed part, return `HTTP 409 Conflict` with a response body indicating the earliest valid rewind offset (the start of the last completed part). With segment-aligned parts and complete-segment `PATCH` requests, a rewind into a completed part should never occur. The server **MUST NOT** attempt to re-upload or reconstruct parts.
+
+3. Delete the incomplete part object (`{upload_id}.part`) if one exists.
+
+4. Update `tus_uploads.upload_offset` to `to_offset`.
+
+5. Respond `204 No Content`.
+
+**Locking:** The rewind endpoint **MUST** acquire the same per-upload lock used by tus `PATCH` operations (via the configured **Locker**). Rewind and `PATCH` on the same `upload_id` are mutually exclusive. Concurrent rewind requests on the same `upload_id` are also mutually exclusive.
+
+**Client-side BLAKE3 state on rewind:**
+
+The `content_id` computation in [§6.5.4](#654-streaming-computation) processes plaintext segments incrementally as the client reads the local file. When a rewind occurs, the client's **BLAKE3** hasher state has consumed plaintext segments that are no longer present in the upload.
+
+After any rewind operation (**HEAD**-time auto-cleanup or explicit rewind endpoint call), the client **MUST**:
+
+1. Discard the in-progress **BLAKE3** hasher state.
+2. Restart `content_id` computation from the beginning of the local plaintext.
+3. Re-encrypt all segments from `to_offset / SEGMENT_CIPHERTEXT_SIZE_FULL` onward, deriving fresh per-segment nonces from `(generation, segment_index)` per [§6.2](#62-per-segment-nonce-derivation).
+
+The recomputed `content_id` **MUST** match the value originally registered with the server in [§6.5.6](#656-upload-lookup-flow). A mismatch indicates the local plaintext changed during the upload; the client **MUST** treat this as a generation transition per [§6.5.8](#658-generation-transitions-during-in-progress-uploads) and start a fresh upload.
+
+> Implementations **MAY** optimize by saving **BLAKE3** hasher state at each segment boundary and restoring on rewind, eliminating the full re-hash. This is a **non-normative** performance enhancement; the spec requires only that the resulting `content_id` is correct.
+
+**Invariant summary:**
+
+> At the moment the backend server's write method begins processing any `PATCH` for a **VexaHub** upload:
+>
+> - Either no `.part` object exists for that upload ID, OR
+> - The `.part` object contains exclusively complete `VXFC` segments (its byte length is divisible by `SEGMENT_CIPHERTEXT_SIZE_FULL`, or equals the trailing-segment offset).
+
+Violation produces silent data corruption that is only detectable at download time via **AEAD** authentication failure or **BLAKE3** integrity mismatch.
 
 ### 6.5.8 Generation transitions during in-progress uploads
 
-If the user modifies a file locally while an upload for that file is still in progress, the client MUST:
+If the user modifies a file locally while an upload for that file is still in progress, the client **MUST**:
 
 1. Send `DELETE {tus_url}` (tus Termination extension) to discard the in-progress upload server-side.
 2. Recompute `content_id` for the new plaintext.
 3. Increment the file's `generation` counter by 1.
 4. Create a new tus upload via `POST /uploads` with the new `content_id`, the new `Upload-Length`, and the incremented `generation` in the upload metadata.
 
-The server MUST NOT allow two concurrent uploads for the same `(user_id, file_id)` pair. The unique constraint defined in [§6.5.10](#6510-server-side-schema) enforces this.
+The server **MUST NOT** allow two concurrent uploads for the same `(user_id, file_id)` pair. The unique constraint defined in [§6.5.10](#6510-server-side-schema) enforces this.
 
 ### 6.5.9 Final integrity verification
 
-After a download completes, the client MUST recompute `BLAKE3(plaintext)` and compare it against the `h` field stored in the file's `VXFM` blob (see [§5.4](#54-vxfm---file-metadata)). A mismatch indicates corruption, truncation, or tampering, and the client MUST refuse to surface the file to the user, MUST log the incident, and SHOULD offer to retry the download.
+After a download completes, the client **MUST** recompute `BLAKE3(plaintext)` and compare it against the `h` field stored in the file's `VXFM` blob (see [§5.4](#54-vxfm---file-metadata)). A mismatch indicates corruption, truncation, or tampering, and the client **MUST** refuse to surface the file to the user, **MUST** log the incident, and SHOULD offer to retry the download.
 
 This BLAKE3 hash is the unkeyed plaintext hash and serves only as an integrity check on a reconstructed download. It is distinct from `content_id` in [§6.5.2](#652-per-user-content-identifier), which is keyed and serves as a per-user identifier for resume and duplicate detection.
 
@@ -706,7 +786,7 @@ Semantics:
 
 ### 6.5.11 Abandoned upload garbage collection
 
-A scheduled job MUST periodically (recommended: hourly) remove rows from `tus_uploads` where `completed_at IS NULL AND expires_at < now()`, and MUST delete the corresponding object at `storage_path` from the object storage backend. The default TTL for an incomplete upload is **7 days** from `created_at`, refreshed to 7 days on each successful `PATCH`. Long-running uploads of very large files therefore stay alive as long as the user is making progress, but truly abandoned uploads are reaped within a week.
+A scheduled job **MUST** periodically (recommended: hourly) remove rows from `tus_uploads` where `completed_at IS NULL AND expires_at < now()`, and **MUST** delete the corresponding object at `storage_path` from the storage backend. The default TTL for an incomplete upload is **7 days** from `created_at`, refreshed to 7 days on each successful `PATCH`. Long-running uploads of very large files therefore stay alive as long as the user is making progress, but truly abandoned uploads are reaped within a week.
 
 ### 6.5.12 Threat model additions
 
@@ -765,7 +845,7 @@ At first deployment, the server generates a one-time `serverSetup` containing th
 
 ### 7.4 Server static public key pinning
 
-All clients pin the server's static public key, derived from `serverSetup` and hardcoded at build time. On every OPAQUE flow completion, the client compares the received `serverStaticPublicKey` against the pinned value. Mismatch MUST abort the flow and surface a security warning to the user.
+All clients pin the server's static public key, derived from `serverSetup` and hardcoded at build time. On every OPAQUE flow completion, the client compares the received `serverStaticPublicKey` against the pinned value. Mismatch **MUST** abort the flow and surface a security warning to the user.
 
 This defends against a substituted server, contingent on the client distribution channel not being compromised (see [§17](#17-threat-model-summary) and [§18](#18-open-questions-and-future-work)).
 
@@ -1040,9 +1120,9 @@ On subsequent access to the same file within the session, steps 2 through 8 are 
 
 #### 9.5.3 Collection prefetch hint
 
-The main thread MAY send a prefetch hint to the Worker when the user navigates into a collection, to warm the collection key cache before any file is opened. A prefetch hint causes the Worker to unwrap and cache the `collectionKey` for that collection only. It does NOT trigger unwrapping of any `fileKey` values within the collection, since the user has not yet accessed any specific file.
+The main thread MAY send a prefetch hint to the Worker when the user navigates into a collection, to warm the collection key cache before any file is opened. A prefetch hint causes the Worker to unwrap and cache the `collectionKey` for that collection only. It does **NOT** trigger unwrapping of any `fileKey` values within the collection, since the user has not yet accessed any specific file.
 
-Prefetch hints are a performance optimisation only. The Worker treats a prefetch hint identically to a collection key cache miss triggered by a real operation. Prefetch hints MUST NOT be sent for collections the user has not explicitly navigated to.
+Prefetch hints are a performance optimisation only. The Worker treats a prefetch hint identically to a collection key cache miss triggered by a real operation. Prefetch hints **MUST NOT** be sent for collections the user has not explicitly navigated to.
 
 ### 9.6 Offline and Desktop Behavior
 
@@ -1052,10 +1132,10 @@ Web clients have no persistent local storage of plaintext key material or plaint
 
 - The Worker continues to hold `masterKey`, sharing keys, and any cached `collectionKey` and `fileKey` values in memory.
 - Operations on already-cached keys continue to function for content whose ciphertext has already been downloaded to the browser.
-- Operations requiring a server fetch will fail with a network error. The client MUST surface this to the user as an offline error, not a decryption failure.
+- Operations requiring a server fetch will fail with a network error. The client **MUST** surface this to the user as an offline error, not a decryption failure.
 - The inactivity timeout continues to run. If the user is offline for 30 minutes, the Worker is terminated and key material is zeroized on timeout as normal. Re-authentication requires network access.
 
-Web clients MUST NOT attempt to cache plaintext file content or unwrapped key material in IndexedDB, localStorage, or any other browser storage. The only persistent browser storage used by VexaHub is the `VXPS` blob ([§5.6](#56-vxps---persistent-session-blob)) for persistent sessions and the session cookie.
+Web clients **MUST NOT** attempt to cache plaintext file content or unwrapped key material in IndexedDB, localStorage, or any other browser storage. The only persistent browser storage used by VexaHub is the `VXPS` blob ([§5.6](#56-vxps---persistent-session-blob)) for persistent sessions and the session cookie.
 
 #### 9.6.2 Desktop clients (Tauri)
 
@@ -1075,7 +1155,7 @@ The keychain entry is protected by the OS and accessible only to the VexaHub pro
 
 1. App launches and reads `masterKey` from OS keychain.
 2. App sends a request to the server using the stored session cookie to fetch `vxsk`.
-3. If the server returns 401 (session expired or revoked), the app MUST discard the cached cookie, prompt the user to re-enter their password, and run the full OPAQUE login flow ([§8.2](#82-login)). The keychain entry for `masterKey` remains valid and does not need to be replaced unless the password change flow is triggered.
+3. If the server returns 401 (session expired or revoked), the app **MUST** discard the cached cookie, prompt the user to re-enter their password, and run the full OPAQUE login flow ([§8.2](#82-login)). The keychain entry for `masterKey` remains valid and does not need to be replaced unless the password change flow is triggered.
 4. On successful fetch, app decrypts `VXSK` using `masterKey` to recover sharing private keys.
 5. Worker is initialised with `masterKey` and sharing keys. No password entry required.
 
@@ -1085,11 +1165,11 @@ If the keychain entry is missing (first install, or after the user manually clea
 
 Desktop clients MAY maintain an encrypted local cache of file content and metadata for offline access. If a local cache is implemented:
 
-- File content MUST be stored as the original `VXFC` ciphertext segments, not as plaintext. Decryption happens in the Worker at access time.
-- File metadata MUST be stored as the original `VXFM` blob, not as plaintext CBOR.
+- File content **MUST** be stored as the original `VXFC` ciphertext segments, not as plaintext. Decryption happens in the Worker at access time.
+- File metadata **MUST** be stored as the original `VXFM` blob, not as plaintext CBOR.
 - The local cache index (which files are cached, their sizes and generations) MAY be stored in plaintext, as this information is already known to the server.
-- On reconnection, the client MUST fetch current `generation` values for all cached files and evict any whose cached generation is behind the server's current generation. Stale ciphertext MUST NOT be served to the user.
-- The local cache MUST be fully deleted on logout and on `reset_generation` mismatch.
+- On reconnection, the client **MUST** fetch current `generation` values for all cached files and evict any whose cached generation is behind the server's current generation. Stale ciphertext **MUST NOT** be served to the user.
+- The local cache **MUST** be fully deleted on logout and on `reset_generation` mismatch.
 
 > **Argon2id parallelism on Tauri:**
 >
@@ -1107,19 +1187,19 @@ Multiple browser tabs for the same origin do not share Web Workers. Each tab spa
 
 - `masterKey` may exist in memory in multiple Workers simultaneously when the user has multiple tabs open. This is an accepted consequence of the web security model. The number of in-memory copies is bounded by the number of open tabs.
 - Each Worker's inactivity timeout runs independently. A tab left idle for 30 minutes will terminate its Worker and zeroize its key material, even if other tabs remain active.
-- There is no cross-tab communication of key material. Tabs MUST NOT use `BroadcastChannel`, `SharedArrayBuffer`, or any other cross-tab mechanism to pass key material between Workers.
+- There is no cross-tab communication of key material. Tabs **MUST NOT** use `BroadcastChannel`, `SharedArrayBuffer`, or any other cross-tab mechanism to pass key material between Workers.
 
 #### 9.7.2 Session invalidation across tabs
 
-The session cookie is shared across all tabs automatically by the browser. When a user explicitly logs out in one tab, the client MUST:
+The session cookie is shared across all tabs automatically by the browser. When a user explicitly logs out in one tab, the client **MUST**:
 
 1. Call the server logout endpoint to invalidate the session row in Postgres.
 2. Terminate its own Worker and zeroize its key material.
 3. Broadcast a logout signal to other tabs via `BroadcastChannel` (channel name: `"vexahub:session"`).
 
-Other tabs listening on `"vexahub:session"` MUST terminate their Workers and zeroize their key material immediately on receiving the logout signal, then redirect to the login screen.
+Other tabs listening on `"vexahub:session"` **MUST** terminate their Workers and zeroize their key material immediately on receiving the logout signal, then redirect to the login screen.
 
-Tabs that miss the broadcast (for example, a tab opened in a different browser window without shared `BroadcastChannel` access) will encounter a 401 on their next API request due to the invalidated session cookie. On receiving a 401 response to any authenticated API request, a tab MUST terminate its Worker, zeroize key material, and redirect to the login screen.
+Tabs that miss the broadcast (for example, a tab opened in a different browser window without shared `BroadcastChannel` access) will encounter a 401 on their next API request due to the invalidated session cookie. On receiving a 401 response to any authenticated API request, a tab **MUST** terminate its Worker, zeroize key material, and redirect to the login screen.
 
 A 401 received during normal operation (not following a logout broadcast) should be treated the same way: the session has expired or been revoked server-side, and the client must re-authenticate.
 
@@ -1263,7 +1343,7 @@ Receive flow:
 
 > Security degrades only if **both** X25519 and ML-KEM-768 are broken (X-Wing hybrid guarantee). Share authenticity degrades only if ML-DSA-65 is broken. The signature covers the entire invitation payload including `recipient_id` and `ctXwing`, preventing the server from redirecting shares to other users or swapping the encapsulated key material.
 >
-> **Critical design note:** The ML-DSA-65 signature sits **outside** the encrypted `VXSH` blob, at the transport layer. The recipient MUST verify the signature before trusting or decrypting the ciphertext. If the signature were inside the encrypted envelope, a malicious server could swap the entire `{ctXwing, vxsh}` package and the forgery would only be discovered after decryption (And that's too late).
+> **Critical design note:** The ML-DSA-65 signature sits **outside** the encrypted `VXSH` blob, at the transport layer. The recipient **MUST** verify the signature before trusting or decrypting the ciphertext. If the signature were inside the encrypted envelope, a malicious server could swap the entire `{ctXwing, vxsh}` package and the forgery would only be discovered after decryption (And that's too late).
 >
 > When sharing a **collection**, the `VXSH` blob wraps the `collectionKey`. The recipient stores their own `VXCK` blob wrapped by their `masterKey`. When sharing a **file**, the `VXSH` blob wraps the `fileKey`. The recipient stores their own `VXFK` blob wrapped by a `collectionKey` in their scope.
 >
@@ -1317,9 +1397,9 @@ Revocation removes a recipient's access and rotates keys so new content is crypt
 7. Sender re-shares the new `collectionKey` with all remaining
    recipients via fresh `X-Wing` + `ML-DSA-65` invitations.
 
-8. File content is NOT re-encrypted by default. Files are marked
+8. File content is **NOT** re-encrypted by default. Files are marked
    pending_key_rotation = TRUE. The file `generation` counter is
-   NOT incremented (it tracks user modifications, not key rotations).
+   **NOT** incremented (it tracks user modifications, not key rotations).
    The actual `fileKey` used for content remains the old one until
    the owner explicitly opts into re-encryption ([§11.1.1](#1111-optional-content-re-encryption-after-revocation)).
 
@@ -1353,9 +1433,9 @@ Revocation removes a recipient's access and rotates keys so new content is crypt
 
 **Mandatory safeguards:**
 
-- The server MUST reject any data request from a recipient whose share has `revoked_at IS NOT NULL`.
-- The client MUST delete cached keys for revoked shares on next sync.
-- The sender's UI MUST indicate that revocation cannot undo prior access and that key rotation is in progress.
+- The server **MUST** reject any data request from a recipient whose share has `revoked_at IS NOT NULL`.
+- The client **MUST** delete cached keys for revoked shares on next sync.
+- The sender's UI **MUST** indicate that revocation cannot undo prior access and that key rotation is in progress.
 
 **Schema:**
 
@@ -1444,7 +1524,7 @@ On every successful upload commit, the server sets `content_key_generation = key
 
 #### Owner's `collection_keys` and `file_keys` retention
 
-The owner's old-generation rows in `collection_keys` and `file_keys` MUST be retained until all files dependent on them have either been re-encrypted to a newer generation or are no longer referencing them. Specifically:
+The owner's old-generation rows in `collection_keys` and `file_keys` **MUST** be retained until all files dependent on them have either been re-encrypted to a newer generation or are no longer referencing them. Specifically:
 
 - A `file_keys` row at `key_generation = K` MAY be deleted when no `files` row in its collection has `content_key_generation = K`.
 - A `collection_keys` row at `key_generation = K` MAY be deleted when no `file_keys` row exists with the same `collection_id` and `key_generation = K`.
@@ -1463,12 +1543,12 @@ The `timestamp` field in the signed share payload is a Unix epoch in seconds (UT
 
 **Server enforcement:**
 
-- The server MUST reject share uploads where `timestamp` is more than **5 minutes** in the past or future relative to server time. This prevents replay of old signed payloads and accounts for reasonable clock skew.
+- The server **MUST** reject share uploads where `timestamp` is more than **5 minutes** in the past or future relative to server time. This prevents replay of old signed payloads and accounts for reasonable clock skew.
 - The server records `created_at` independently. The signed `timestamp` and server `created_at` are both available to the recipient.
 
 **Recipient enforcement:**
 
-- The recipient MUST reject share records where the signed `timestamp` differs from the server's `created_at` by more than **5 minutes**. This detects a malicious server holding a valid signed payload and replaying it later.
+- The recipient **MUST** reject share records where the signed `timestamp` differs from the server's `created_at` by more than **5 minutes**. This detects a malicious server holding a valid signed payload and replaying it later.
 
 **Clock skew:**
 
@@ -1487,7 +1567,7 @@ An authenticated user **MAY** rotate their sharing keypairs at **any** time, for
 
 > Already-accepted incoming shares stored by recipients are unaffected. The recipient unwrapped and stored the key locally at accept time.
 >
-> Password change does NOT automatically trigger sharing keypair rotation.
+> Password change does **NOT** automatically trigger sharing keypair rotation.
 >
 > Rotation is an explicit user action available from security settings.
 
@@ -1590,7 +1670,7 @@ The client **MUST NOT** silently retry with an incremented generation. Because, 
 
 #### 11.5.2 Resolution Flow
 
-The client has two paths depending on whether the local version is newer than the server's committed version, which it cannot determine cryptographically (both are valid generations from the server's perspective). The client MUST therefore always surface a conflict to the user and let them decide.
+The client has two paths depending on whether the local version is newer than the server's committed version, which it cannot determine cryptographically (both are valid generations from the server's perspective). The client **MUST** therefore always surface a conflict to the user and let them decide.
 
 **Conflict resolution procedure:**
 
@@ -1619,9 +1699,9 @@ The client has two paths depending on whether the local version is newer than th
     1. Client sends `DELETE {tus_url}` to discard the failed upload.
     2. Client fetches the file's current `generation` from the server, value `M`.
     3. Client re-encrypts local content under generation `M+1` nonce space.
-    4. Client creates a new tus upload via `POST /uploads` with metadata fields `generation = M+1` AND `expected_current_generation = M`. The server MUST persist `expected_current_generation = M` on the resulting `tus_uploads` row.
-    5. The client uploads ciphertext via `PATCH` requests as usual. The `expected_current_generation` value is NOT re-checked on each PATCH (which would be racy and pointless); it is checked exactly once, at commit.
-    6. On commit, the server validates: if `files.generation != tus_uploads.expected_current_generation`, the server returns HTTP 409 with the actual current generation in the response body and discards the upload. The client MUST re-enter conflict resolution from step 1, AND the user MUST be re-prompted because their previous decision was based on stale state.
+    4. Client creates a new tus upload via `POST /uploads` with metadata fields `generation = M+1` AND `expected_current_generation = M`. The server **MUST** persist `expected_current_generation = M` on the resulting `tus_uploads` row.
+    5. The client uploads ciphertext via `PATCH` requests as usual. The `expected_current_generation` value is **NOT** re-checked on each PATCH (which would be racy and pointless); it is checked exactly once, at commit.
+    6. On commit, the server validates: if `files.generation != tus_uploads.expected_current_generation`, the server returns HTTP 409 with the actual current generation in the response body and discards the upload. The client **MUST** re-enter conflict resolution from step 1, AND the user **MUST** be re-prompted because their previous decision was based on stale state.
     7. On successful validation, the server commits atomically: increments `files.generation` to `M+1`, replaces ciphertext, returns 204.
 
    **Keep both (conflicted copy):**
@@ -1954,11 +2034,11 @@ export default {
 };
 ```
 
-`inlineStyleThreshold: 0` is the default; stating it explicitly prevents future configuration drift. CSP is enforced at BOTH the HTTP server response-header layer (authoritative) and the SvelteKit `<meta http-equiv>` layer (binds the policy to the build artifact). Because the build emits zero inline styles and zero inline scripts, `mode: 'hash'` produces no extra hash entries that would interact with `'unsafe-inline'` (the issue in `sveltejs/kit#9368` only manifests when inline content is present). The two policy definitions MUST stay in sync; CI MUST diff them on every release.
+`inlineStyleThreshold: 0` is the default; stating it explicitly prevents future configuration drift. CSP is enforced at BOTH the HTTP server response-header layer (authoritative) and the SvelteKit `<meta http-equiv>` layer (binds the policy to the build artifact). Because the build emits zero inline styles and zero inline scripts, `mode: 'hash'` produces no extra hash entries that would interact with `'unsafe-inline'` (the issue in `sveltejs/kit#9368` only manifests when inline content is present). The two policy definitions **MUST** stay in sync; CI **MUST** diff them on every release.
 
 #### Development mode caveat
 
-`vite dev` injects styles via inline `<style>` blocks and HMR runtime. **Development builds DO NOT match production CSP and MUST NOT be used for any external testing.** CSP enforcement applies to staging and production builds only. The CI pipeline MUST verify the production bundle (`build/`) contains no inline `<style>` elements before release:
+`vite dev` injects styles via inline `<style>` blocks and HMR runtime. **Development builds DO NOT match production CSP and MUST NOT be used for any external testing.** CSP enforcement applies to staging and production builds only. The CI pipeline **MUST** verify the production bundle (`build/`) contains no inline `<style>` elements before release:
 
 ```bash
 # Fail the build if inline <style> elements appear in production output.
@@ -2018,7 +2098,7 @@ Violations POSTed to `https://reports.vexahub.com/csp`, rate-limited per IP, sto
 
 `SharedArrayBuffer` is available under cross-origin isolation ([§16.2](#162-other-headers)) and is used for Argon2id parallelism during the OPAQUE flow.
 
-`SharedArrayBuffer` **MUST NOT** be used to share key material between tabs, between Workers, or between the main thread and a Worker beyond the scope of a single Argon2id computation. After the OPAQUE flow completes, any `SharedArrayBuffer` used to hold password material, `exportKey`, or `masterKeyWrapper` MUST be zeroed and the reference released before any other code can observe it.
+`SharedArrayBuffer` **MUST NOT** be used to share key material between tabs, between Workers, or between the main thread and a Worker beyond the scope of a single Argon2id computation. After the OPAQUE flow completes, any `SharedArrayBuffer` used to hold password material, `exportKey`, or `masterKeyWrapper` **MUST** be zeroed and the reference released before any other code can observe it.
 
 The Argon2id implementation **MUST** zero all intermediate state in the `SharedArrayBuffer` before signalling completion to the calling code, not after.
 
@@ -2080,7 +2160,7 @@ Triggered either by the user explicitly emptying trash, or automatically after t
    - Deletes all `file_keys` rows for that `file_id`.
    - Deletes all `shares` rows where the shared resource is this `file_id`.
    - Cancels any in-progress `tus_uploads` rows for this `file_id` and schedules their storage objects for deletion.
-   - Schedules deletion of all object storage blobs at the file's storage paths. Blob deletion MAY be asynchronous as long as the file row is removed atomically and the blobs become unreachable to any API request immediately.
+   - Schedules deletion of all storage blobs at the file's storage paths. Blob deletion MAY be asynchronous as long as the file row is removed atomically and the blobs become unreachable to any API request immediately.
 3. Server responds 204.
 
 **Schema addition:**
@@ -2090,7 +2170,7 @@ ALTER TABLE files ADD COLUMN trashed_at TIMESTAMPTZ;
 CREATE INDEX ON files (user_id) WHERE trashed_at IS NOT NULL;
 ```
 
-The client MUST evict the `fileKey` from its Worker cache after a successful permanent deletion response. Trashing alone does not require cache eviction.
+The client **MUST** evict the `fileKey` from its Worker cache after a successful permanent deletion response. Trashing alone does not require cache eviction.
 
 **Server MUST NOT** serve trashed files in normal collection listing responses. A trashed file is only accessible via an explicit trash listing endpoint.
 
@@ -2157,7 +2237,7 @@ A scheduled job (recommended: daily) finds collections with `trashed_at < now() 
 
 #### Cache eviction
 
-The client MUST evict the `collectionKey` from its Worker cache after a successful permanent deletion response. Trashing alone does not require cache eviction (the keys may still be needed for restore).
+The client **MUST** evict the `collectionKey` from its Worker cache after a successful permanent deletion response. Trashing alone does not require cache eviction (the keys may still be needed for restore).
 
 #### What the server cannot see
 
@@ -2173,7 +2253,7 @@ Account deletion permanently removes the user and all associated data.
 2. Server sends a confirmation email containing a single-use token with a 15-minute TTL.
 3. User clicks the confirmation link.
 4. Server atomically:
-   - Deletes all files and their object storage blobs (scheduled asynchronously).
+   - Deletes all files and their storage blobs (scheduled asynchronously).
    - Deletes all `file_keys`, `collection_keys`, `tus_uploads`, and `shares` rows for this user.
    - Deletes all `collections` rows for this user.
    - Deletes all `sessions` and `persistent_sessions` rows for this user.
@@ -2184,7 +2264,7 @@ Account deletion permanently removes the user and all associated data.
 
 The email address is retained in a suppression table for an operator-configurable period after deletion. This prevents immediate re-registration with the same address, which could be used to abuse sharing or invitation flows that reference the old account by email. After the suppression period the address is permanently purged.
 
-> **The deletion sequence is mandatory and database-enforced.** The schema uses `ON DELETE RESTRICT` throughout. Attempting `DELETE FROM users WHERE id = X` directly fails with a foreign key violation. The application MUST walk the dependency tree (sessions → tus_uploads → file_keys → collection_keys → shares → files → collections → users) and schedule object storage cleanup per file before deleting the row. This prevents orphaned ciphertext in **Storage** from a misconfigured cascade.
+> **The deletion sequence is mandatory and database-enforced.** The schema uses `ON DELETE RESTRICT` throughout. Attempting `DELETE FROM users WHERE id = X` directly fails with a foreign key violation. The application **MUST** walk the dependency tree (sessions → tus_uploads → file_keys → collection_keys → shares → files → collections → users) and schedule storage cleanup per file before deleting the row. This prevents orphaned ciphertext in **Storage** from a misconfigured cascade.
 
 ### 19.4 Empty trash (bulk)
 
