@@ -24,4 +24,4 @@ body{background-color:var(--bg);color:var(--text);max-width:var(--max-screen);ma
 .vp-doc blockquote p{margin:0}
 .vp-doc blockquote>p+p{margin-top:16px}
 .vp-doc p>img{margin:0;display:inline}
-.VPNavScreen{bottom:auto}
+.VPNavScreen{bottom:auto!important}
