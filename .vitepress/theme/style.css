@@ -23,3 +23,5 @@ body{background-color:var(--bg);color:var(--text);max-width:var(--max-screen);ma
 .VPDocAsideOutline a.active,.VPDocAsideOutline a:hover,.outline-link.active,.outline-link:hover{color:#a855f7!important}
 .vp-doc blockquote p{margin:0}
 .vp-doc blockquote>p+p{margin-top:16px}
+.vp-doc p>img{margin:0;display:inline}
+.VPNavScreen{bottom:auto}
