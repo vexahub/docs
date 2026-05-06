@@ -28,4 +28,6 @@ If you find a mistake in this document, **please** reach out! Security is a **co
 
 To anyone reading this who is building something similar. Please, **do not** cut corners on the crypto. Your users are trusting you with the most personal things they own. Take that trust **seriously**.
 
-Built with care in **France** 🇫🇷, for everyone who believes privacy is a **right**, not a **privilege**. Love from the team ❤
+Built with care in **France** ![Beautiful and magnificent French flag](/fr.svg) - For everyone who believes privacy is a **right**, not a **privilege**.
+
+Love from the team ❤
