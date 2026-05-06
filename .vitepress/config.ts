@@ -1,5 +1,16 @@
 // @ts-nocheck
 import { defineConfig } from "vitepress";
+
+const slugify = (s: string) =>
+  s
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .toLowerCase()
+    .replace(/^-+|-+$/g, "")
+    .replace(/^(\d)/, "_$1");
+
 export default defineConfig({
   lang: "en",
   title: "VexaHub",
@@ -38,6 +49,11 @@ export default defineConfig({
     footer: {
       message: "Released under the AGPL-3.0-or-later License.",
       copyright: "Copyright © 2026-present VexaHub",
+    },
+  },
+  markdown: {
+    anchor: {
+      slugify,
     },
   },
 });
