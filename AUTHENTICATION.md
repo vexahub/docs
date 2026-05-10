@@ -125,20 +125,9 @@ CREATE TABLE users (
 
 ### 3.4 Key Derivation at Registration
 
-```rs
-password
-    └─► OPAQUE (Argon2id 128 MiB client-side, OPRF server-side)
-            ├─► exportKey (64 bytes) ─► HKDF ─► masterKeyWrapper (32 bytes)
-            │                                        └─► encrypts masterKey ─► VXWM
-            └─► sessionKey (64 bytes) ─► mints session cookie
-
-masterKey (CSPRNG)
-    ├─► encrypts { X-Wing decaps key, ML-DSA-65 signing key } ─► VXSK
-    └─► encrypts masterKey via recoveryKey ─► VXRM
-
-BIP39 phrase (CSPRNG, 256-bit)
-    └─► HKDF ─► recoveryKey (32 bytes) ─► encrypts masterKey ─► VXRM
-```
+<!-- markdownlint-disable MD033 -->
+<img src="/public/vexahub-key-derivation-registration.svg" alt="Key derivation diagram registration" width="700" />
+<!-- markdownlint-enable MD033 -->
 
 ## 4. Login
 
@@ -169,15 +158,9 @@ Nothing permanent is created at login. The following are derived transiently fro
 
 ### 4.3 Key Derivation at Login
 
-```rs
-password
-    └─► OPAQUE (same Argon2id + OPRF as registration, same exportKey emerges)
-            ├─► exportKey (64 bytes)
-            │       └─► HKDF ─► masterKeyWrapper (32 bytes)
-            │                        └─► decrypt VXWM ─► masterKey
-            │                                              └─► decrypt VXSK ─► sharing keys
-            └─► sessionKey ─► session cookie (server-side)
-```
+<!-- markdownlint-disable MD033 -->
+<img src="/public/vexahub-key-derivation-login.svg" alt="Key derivation diagram login" width="700" />
+<!-- markdownlint-enable MD033 -->
 
 The `exportKey` is stable: as long as the password is the same and `serverSetup` has not changed, the same 64-byte value emerges from every login. This is how the server can store the wrapped `masterKey` once and have it be unwrappable on every future login without the server ever knowing the wrapping key.
 
