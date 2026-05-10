@@ -12,7 +12,7 @@ What protects users against **realistic** threats, what stays usable for normal 
 >
 > - **OPAQUE** means the server never sees passwords.
 >
-> - **Argon2id** at 128 MiB means offline attacks is hard to overcome.
+> - **Argon2id** at 128 MiB makes offline attacks computationally prohibitive.
 >
 > - **XChaCha20-Poly1305** means no nonce reuse footguns.
 >
