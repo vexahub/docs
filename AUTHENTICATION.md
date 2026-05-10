@@ -88,7 +88,9 @@ Registration is the only time most **permanent key material is generated**. Ever
 > pin verification ➜ key generation (`masterKey`, **X-Wing**, **ML-DSA-65**) ➜ blob wrapping
 > (`VXWM`, `VXSK`, `VXRM`) ➜ recovery phrase confirmation ➜ `POST /register/finish` ➜ **zeroize**.
 
-![Registration Flow](/public/vexahub-registration-flow.svg)
+<!-- markdownlint-disable MD033 -->
+<img src="/public/vexahub-registration-flow.svg" alt="Registration Flow" width="700" />
+<!-- markdownlint-enable MD033 -->
 
 ### 3.2 What Gets Created at Registration
 
@@ -141,7 +143,9 @@ The `masterKey` is unwrapped and loaded into the **Crypto Worker**, then discard
 > pin verification ➜ `masterKeyWrapper` derivation ➜ `VXWM`/`VXSK` unwrap ➜ `POST /login/finish`
 > ➜ session cookie ➜ **zeroize** ➜ Crypto Worker load.
 
-![Login Flow](/public/vexahub-login-flow.svg)
+<!-- markdownlint-disable MD033 -->
+<img src="/public/vexahub-login-flow.svg" alt="Login Flow" width="700" />
+<!-- markdownlint-enable MD033 -->
 
 ### 4.2 What Gets Reconstructed at Login
 
