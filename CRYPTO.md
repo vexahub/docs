@@ -246,7 +246,7 @@ CBOR schema for plaintext metadata (canonical CBOR, [RFC 8949 §4.2.1](https://w
 >
 > - Valid UTF-8, NFC-normalized.
 > - Maximum **1024 bytes** (encoded).
-> - **MUST NOT** contain null bytes or control characters (U+0000–U+001F, U+007F).
+> - **MUST NOT** contain null bytes or control characters (U+0000-U+001F, U+007F).
 > - **MUST NOT** be empty.
 >
 > The server never sees plaintext filenames. Validation is a client-only
