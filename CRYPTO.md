@@ -56,44 +56,7 @@ Explicit non-goals:
 
 ## 3. Key Hierarchy
 
-```rs
-password (user input, never leaves the client)
-    │
-    ▼ OPAQUE (Argon2id client-side, OPRF server-side)
-    │
-    ├──► exportKey (64 bytes, client-only, stable across logins)
-    │       │
-    │       ▼ HKDF-SHA-512
-    │       │
-    │       └──► masterKeyWrapper (32 bytes) ──► unwraps masterKey
-    │
-    └──► sessionKey (negotiated with server, used to mint API session cookie)
-
-
-masterKey (32 bytes, generated once at registration via CSPRNG)
-    │
-    ├──► wrapped by masterKeyWrapper ──► VXWM blob (stored server-side)
-    ├──► wrapped by recoveryKey       ──► VXRM blob (stored server-side)
-    │
-    └──► wraps collectionKey(s)
-          │
-          collectionKey (32 bytes, CSPRNG, per collection, wrapped by masterKey)
-            │
-            ├──► collectionMetadataKey = HKDF(collectionKey, "...collectionMetadataKey")
-            └──► wraps fileKey(s)
-                    │
-                    fileKey (32 bytes, CSPRNG, per file, wrapped by collectionKey)
-                            │
-                            ├──► fileContentKey  = HKDF(fileKey, "...fileContentKey")
-                            └──► fileMetadataKey = HKDF(fileKey, "...fileMetadataKey")
-
-
-sharingKeyPair (generated at registration)
-    │
-    ├──► X-Wing keypair          (decaps key wrapped by masterKey)
-    └──► ML-DSA-65 keypair       (signing seed wrapped by masterKey)
-          public keys (encaps + verify) stored server-side in plaintext
-```
+![Key Hierarchy](/public/vexahub-key-hierarchy.svg)
 
 The intermediate `masterKeyWrapper` exists for uniformity with all other derivations and to avoid using `exportKey` directly as an AEAD key. It carries no extra security versus a direct slice of `exportKey`, but keeps the derivation graph consistent.
 

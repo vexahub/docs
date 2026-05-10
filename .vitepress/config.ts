@@ -55,5 +55,22 @@ export default defineConfig({
     anchor: {
       slugify,
     },
+    config: (md) => {
+      // Strip /public/ prefix from image src for MD compatibility
+      const defaultImageRenderer = md.renderer.rules.image!;
+      md.renderer.rules.image = (tokens, idx, options, env, self) => {
+        const token = tokens[idx];
+        const srcIndex = token.attrIndex("src");
+        if (srcIndex >= 0) {
+          const src = token.attrs![srcIndex][1];
+          if (src.startsWith("/public/")) {
+            token.attrs![srcIndex][1] = src.replace("/public/", "/");
+          }
+        }
+        return defaultImageRenderer
+          ? defaultImageRenderer(tokens, idx, options, env, self)
+          : self.renderToken(tokens, idx, options);
+      };
+    },
   },
 });
