@@ -1,8 +1,10 @@
 # VexaHub - Authentication & Key Material Reference
 
-> **Status:** (Draft) Proposed
+> **Status:** (Draft) *Proposed*
 >
-> This document covers the authentication system: the OPAQUE protocol, what gets created at registration, what gets reconstructed at login, and how sessions are managed. For the full cryptographic specification see the [master crypto spec](CRYPTO.md).
+> This document covers the authentication system: the **OPAQUE** protocol, what gets **created at registration**, what gets **reconstructed at login**, and how sessions are managed.
+>
+> For the **full cryptographic specification** see the [master crypto spec](CRYPTO.md).
 
 ## Table of Contents
 
@@ -40,22 +42,22 @@ For a **zero-knowledge**, **end-to-end encrypted** cloud storage system, this pr
 
 ### Ciphersuite (frozen at protocol version 1)
 
-| Parameter      | Value                                           |
-|----------------|-------------------------------------------------|
-| OPRF group     | Ristretto255                                    |
-| KE group       | Ristretto255                                    |
-| Hash           | SHA-512                                         |
-| Key exchange   | TripleDhKem (`Triple DH` + `ML-KEM-768` hybrid) |
-| Key stretching | Argon2id (`m=128 MiB, t=3, p=4`)                |
+| Parameter      | Value                                               |
+|----------------|-----------------------------------------------------|
+| **OPRF** group | **Ristretto255**                                    |
+| KE group       | **Ristretto255**                                    |
+| Hash           | **SHA-512**                                         |
+| Key exchange   | **TripleDhKem** (`Triple DH` + `ML-KEM-768` hybrid) |
+| Key stretching | **Argon2id** (`m=128 MiB, t=3, p=4`)                |
 
-The `TripleDhKem` variant augments standard OPAQUE 3DH with a post-quantum KEM hop. During KE1 the client generates an ephemeral ML-KEM-768 keypair and sends the encapsulation key alongside the DH ephemeral. In KE2 the server encapsulates to the client's ML-KEM-768 key. Both parties mix the ML-KEM shared secret into the key schedule alongside the three DH products. The result: session keys are quantum-resistant. An attacker recording login transcripts today cannot recover session keys with a future cryptographically-relevant quantum computer (CRQC). The OPRF itself remains classical Ristretto255.
+The `TripleDhKem` variant augments standard **OPAQUE 3DH** with a **post-quantum KEM hop**. During **KE1** the client generates an **ephemeral ML-KEM-768 keypair** and sends the encapsulation key alongside the **DH ephemeral**. In **KE2** the server encapsulates to the **client's ML-KEM-768 key**. Both **parties mix the ML-KEM shared secret into the key schedule** alongside the **three DH products**. The result: session keys are **quantum-resistant**. An attacker recording login transcripts today cannot recover session keys with a **future cryptographically-relevant quantum computer** (*CRQC*). The **OPRF** itself remains classical **Ristretto255**.
 
 ### `serverSetup`
 
-At first deployment the server generates a one-time `serverSetup` blob containing the OPRF secret key (the global pepper) and the server's static AKE keypair. This blob:
+At first deployment the server generates a one-time `serverSetup` blob containing the **OPRF** secret key (*the global pepper*) and the server's static **AKE keypair**. This blob:
 
 - Is loaded via the `OPAQUE_SERVER_SETUP` environment variable only.
-- Is never committed to Git, never logged, never returned in any API response.
+- Is never committed to Git, never logged, never returned in any **API** response.
 - Must be backed up encrypted in at least two independent locations.
 - If lost, all user accounts are permanently unrecoverable.
 
@@ -63,84 +65,30 @@ At first deployment the server generates a one-time `serverSetup` blob containin
 
 ### Server static public key pinning
 
-Every client hardcodes the server's static public key at build time (derived from `serverSetup`). On every OPAQUE flow completion the client compares the received `serverStaticPublicKey` against this pinned value. A mismatch aborts the flow immediately and surfaces a security warning. This defends against a substituted server.
+Every client hardcodes the server's static public key at build time (derived from `serverSetup`). On every **OPAQUE** flow completion the client compares the received `serverStaticPublicKey` against this pinned value. A mismatch aborts the flow immediately and surfaces a security warning. This defends against a substituted server.
 
 ## 2. OPAQUE Protocol
 
 OPAQUE produces two outputs from a successful exchange:
 
 - **`exportKey`** (64 bytes) client-only, stable across every login for the same password. Never sent to the server. The root from which `masterKeyWrapper` is derived.
-- **`sessionKey`** (64 bytes)  negotiated with the server and used to mint the API session cookie. The server derives the cookie token from this; the raw `sessionKey` is zeroized afterward.
+- **`sessionKey`** (64 bytes)  negotiated with the server and used to mint the **API** session cookie. The server derives the cookie token from this; the raw `sessionKey` is zeroized afterward.
 
-Both are derived from the password + **OPRF** interaction and the three-DH key exchange. Neither can be reconstructed without the correct password and the server's `serverSetup`.
+Both are derived from the password + **OPRF** interaction and the **three-DH key exchange**. Neither can be reconstructed without the correct password and the server's `serverSetup`.
 
 ## 3. Registration
 
-Registration is the only time most permanent key material is generated. Everything created here is either stored server-side in wrapped (encrypted) form, or shown once to the user (recovery phrase) and then discarded.
+Registration is the only time most **permanent key material is generated**. Everything created here is either stored **server-side in wrapped (encrypted) form**, or shown once to the **user (recovery phrase)** *and* **then discarded**.
 
 ### 3.1 Full Registration Flow
 
-```rs
-1.  User enters email + password
-2.  Client → opaque.client.startRegistration({ password })
-              → { clientRegistrationState, registrationRequest }
+> See **diagram** in the rendered documentation.
+>
+> **Steps**: user input ➜ **OPAQUE** exchange ➜
+> pin verification ➜ key generation (`masterKey`, **X-Wing**, **ML-DSA-65**) ➜ blob wrapping
+> (`VXWM`, `VXSK`, `VXRM`) ➜ recovery phrase confirmation ➜ `POST /register/finish` ➜ **zeroize**.
 
-3.  Client → Server: POST /auth/register/start
-              { email, registrationRequest }
-
-4.  Server verifies email is not already registered
-
-5.  Server → opaque.server.createRegistrationResponse(
-              { serverSetup, userIdentifier: email, registrationRequest })
-              → { registrationResponse }
-
-6.  Server → Client: { registrationResponse, continuationToken }
-
-7.  Client → opaque.client.finishRegistration(...)
-              → { registrationRecord, exportKey, serverStaticPublicKey }
-
-8.  Client verifies serverStaticPublicKey == hardcoded pin
-              ↳ ABORT if mismatch
-
-9.  Client derives masterKeyWrapper = HKDF-SHA-512(exportKey, "vexahub:v1:masterKeyWrapper")
-
-10. Client generates masterKey (32 bytes, CSPRNG) ← generated ONCE, permanent
-
-11. Client generates X-Wing keypair    ← generated ONCE, permanent
-    Client generates ML-DSA-65 keypair ← generated ONCE, permanent
-
-12. Client wraps masterKey with masterKeyWrapper
-              → VXWM blob (78 bytes)
-
-13. Client wraps { X-Wing decaps key, ML-DSA-65 signing key } with masterKey
-              → VXSK blob
-
-14. Client generates 24-word BIP39 recovery phrase (256 bits entropy)
-    Client derives recoveryKey from phrase
-    Client wraps masterKey with recoveryKey
-              → VXRM blob (78 bytes)
-
-15. Client shows recovery phrase to user
-    Client requires confirmation of specific word positions ← no skip
-
-16. Client → Server: POST /auth/register/finish
-              {
-                email,
-                continuationToken,
-                registrationRecord,   ← OPAQUE envelope (server stores, cannot decrypt)
-                vxwm,                 ← wrapped masterKey (password-derived)
-                vxsk,                 ← wrapped sharing keypair
-                vxrm,                 ← wrapped masterKey (recovery-derived)
-                sharingPublicXwing,   ← X-Wing encapsulation key (plaintext, 1216 bytes)
-                sharingPublicMldsa    ← ML-DSA-65 verification key (plaintext, ~1952 bytes)
-              }
-
-17. Server stores the user row atomically
-
-18. Client zeroizes: password, exportKey, masterKeyWrapper,
-                     plaintext private keys, recovery phrase, recoveryKey
-    Client keeps live in Crypto Worker: masterKey, X-Wing decaps key, ML-DSA-65 signing key
-```
+![Registration Flow](/public/vexahub-registration-flow.svg)
 
 ### 3.2 What Gets Created at Registration
 
@@ -196,53 +144,15 @@ BIP39 phrase (CSPRNG, 256-bit)
 
 Login reconstructs the session-time key material from the user's password and the blobs stored on the server. No permanent key material changes during login.
 
-The `masterKey` is unwrapped and loaded into the Crypto Worker, then discarded from memory on logout or timeout.
+The `masterKey` is unwrapped and loaded into the **Crypto Worker**, then discarded from memory on logout or timeout.
 
 ### 4.1 Full Login Flow
 
-```rs
-1.  User enters email + password
+> See diagram in the rendered documentation. Steps: user input ➜ **OPAQUE** exchange ➜
+> pin verification ➜ `masterKeyWrapper` derivation ➜ `VXWM`/`VXSK` unwrap ➜ `POST /login/finish`
+> ➜ session cookie ➜ **zeroize** ➜ Crypto Worker load.
 
-2.  Client → opaque.client.startLogin({ password })
-              → { clientLoginState, startLoginRequest }
-
-3.  Client → Server: POST /auth/login/start
-              { email, startLoginRequest }
-
-4.  Server looks up user, loads registrationRecord
-
-5.  Server → opaque.server.startLogin(...)
-              → { loginResponse, serverLoginState }
-
-6.  Server stores serverLoginState in Valkey
-              (random continuationToken, 60-second TTL)
-
-7.  Server → Client: { loginResponse, continuationToken, vxwm, vxsk }
-
-8.  Client → opaque.client.finishLogin(...)
-              → { finishLoginRequest, sessionKey, exportKey, serverStaticPublicKey }
-
-9.  Client verifies serverStaticPublicKey == hardcoded pin
-              ↳ ABORT if mismatch
-
-10. Client derives masterKeyWrapper = HKDF-SHA-512(exportKey, "vexahub:v1:masterKeyWrapper")
-    Client decrypts VXWM with masterKeyWrapper → masterKey
-    Client decrypts VXSK with masterKey → { X-Wing decaps key, ML-DSA-65 signing key }
-
-11. Client → Server: POST /auth/login/finish
-              { continuationToken, finishLoginRequest }
-
-12. Server retrieves + immediately deletes serverLoginState from Valkey
-
-13. Server → opaque.server.finishLogin(...) → { sessionKey }
-
-14. Server derives HTTP session token from sessionKey
-    Server stores hashed session row in Postgres
-    Server → Client: Set-Cookie (HttpOnly; Secure; SameSite=Strict)
-
-15. Client zeroizes: password, exportKey, masterKeyWrapper
-    Client loads into Crypto Worker: masterKey, X-Wing decaps key, ML-DSA-65 signing key
-```
+![Login Flow](/public/vexahub-login-flow.svg)
 
 ### 4.2 What Gets Reconstructed at Login
 
@@ -289,13 +199,13 @@ Once logged in, the `masterKey` and sharing private keys live exclusively inside
 
 The Worker exposes only operation endpoints. It never returns raw key material:
 
-| Worker endpoint       | What it does                       |
-|-----------------------|------------------------------------|
-| `encryptFileSegment`  | Returns ciphertext                 |
-| `decryptFileSegment`  | Returns plaintext                  |
-| `deriveCollectionKey` | Returns encrypted operation result |
-| `wrapForSharing`      | Returns VXSH blob                  |
-| `unwrapFromSharing`   | Returns unwrapped key              |
+| Worker endpoint       | What it does                                             |
+|-----------------------|----------------------------------------------------------|
+| `encryptFileSegment`  | Returns ciphertext                                       |
+| `decryptFileSegment`  | Returns plaintext segment                                |
+| `deriveCollectionKey` | Returns encrypted operation result                       |
+| `wrapForSharing`      | Returns `VXSH` blob (includes `"p"` permission field)    |
+| `unwrapFromSharing`   | Returns operation result; never returns raw key material |
 
 **Inactivity timeout:** 30 minutes. The Worker is terminated and all in-memory key material is zeroized. The user must re-authenticate. Closing the browser tab has the same effect.
 
@@ -307,8 +217,8 @@ Never enabled by default. When opted in, a device-bound blob lets the user resum
 
 ```rs
 1. Client generates localKey (32 random bytes, CSPRNG)
-2. Client wraps masterKey with localKey → VXPS blob → stored in IndexedDB
-3. Client → Server: POST /auth/persistent-session/create { localKey, deviceLabel }
+2. Client wraps masterKey with localKey ➜ VXPS blob ➜ stored in IndexedDB
+3. Client ➜ Server: POST /auth/persistent-session/create { localKey, deviceLabel }
 4. Server stores { userId, localKey, cookieHash, deviceLabel, createdAt, expiresAt }
 5. Server issues PS-AUTH cookie (HttpOnly; Secure; SameSite=Strict; Max-Age=30d)
 ```
@@ -318,9 +228,9 @@ Never enabled by default. When opted in, a device-bound blob lets the user resum
 ```rs
 1. Client detects VXPS blob in IndexedDB + PS-AUTH cookie
 2. Client shows "Resume as <user>" prompt (no password form)
-3. Client → Server: GET /auth/persistent-session/resume (cookie auto-attached)
+3. Client ➜ Server: GET /auth/persistent-session/resume (cookie auto-attached)
 4. Server validates cookie, returns { localKey, vxsk }
-5. Client decrypts VXPS with localKey → masterKey → loaded into Worker
+5. Client decrypts VXPS with localKey ➜ masterKey ➜ loaded into Worker
 6. Server issues fresh active-session cookie alongside the persistent one
 ```
 
@@ -358,7 +268,7 @@ CREATE TABLE sessions (
     expires_at   TIMESTAMPTZ NOT NULL,
     revoked_at   TIMESTAMPTZ,
     user_agent   TEXT,
-    ip_network   INET
+    ip_network   CIDR                      -- /24 IPv4 or /48 IPv6, host bits zeroed at insert
 );
 
 CREATE TABLE persistent_sessions (
@@ -399,16 +309,16 @@ The phrase is shown once at registration, never stored client-side, never transm
 
 **Recovery flow (password forgotten, phrase available):**
 
-1. User enters email + recovery phrase
-2. Client → Server: `GET /auth/recovery/lookup?email={email}`  (rate-limited)
-              ← { vxrm, user_uuid }
-3. Client re-derives `recoveryKey` from phrase + user_uuid
-4. Client decrypts `VXRM` → `masterKey` (same `masterKey` as always)
+1. User enters **email + recovery** phrase
+2. Client ➜ Server: `GET /auth/recovery/lookup?email={email}`  (*rate-limited*)
+              ☚ { **vxrm**, **user_uuid** }
+3. Client re-derives `recoveryKey` from phrase + **user_uuid**
+4. Client decrypts `VXRM` ➜ `masterKey` (same `masterKey` as always)
 5. User chooses a new password
-6. Client runs a fresh OPAQUE registration with the new password
-7. Client re-wraps masterKey with the new `masterKeyWrapper` → new `VXWM`
-8. Client → Server: `POST /auth/recovery/finish`
-              { registrationRecord, vxwm, vxsk }  (atomic replace)
+6. Client runs a fresh **OPAQUE** registration with the new password
+7. Client re-wraps `masterKey` with the new `masterKeyWrapper` ➜ new `VXWM`
+8. Client ➜ Server: `POST /auth/recovery/finish`
+              { **registrationRecord**, **vxwm**, **vxsk** }  (*atomic replace*)
 9. All existing files, collections, and shares remain valid. `masterKey` never changed
 
 ### 6.2 Destructive Reset
