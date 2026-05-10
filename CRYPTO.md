@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-> **Document version:** 9
+> **Document version:** 10
 >
 > **Protocol version:** 1
 >
@@ -241,6 +241,17 @@ CBOR schema for plaintext metadata (canonical CBOR, [RFC 8949 §4.2.1](https://w
 }
 ```
 
+> **Filename constraints:** The `"n"` field **MUST** be validated by the client
+> before encryption:
+>
+> - Valid UTF-8, NFC-normalized.
+> - Maximum **1024 bytes** (encoded).
+> - **MUST NOT** contain null bytes or control characters (U+0000–U+001F, U+007F).
+> - **MUST NOT** be empty.
+>
+> The server never sees plaintext filenames. Validation is a client-only
+> responsibility.
+>
 > **Nonce requirement:** A fresh random nonce **MUST** be generated for every `VXFM` encryption, including re-encryption on generation increment. `fileMetadataKey` is derived from `fileKey` without `generation` in the derivation path, meaning the metadata key is **stable across generations**. Nonce reuse under the same `fileMetadataKey` is catastrophic. It breaks **XChaCha20-Poly1305** confidentiality.
 >
 > Implementors **MUST NOT** cache or reuse a previous `VXFM` nonce.
@@ -373,7 +384,7 @@ Offset  Size   Field
 6       24     Nonce (random)
 30      N+16   Ciphertext (CBOR { "k": bstr, "kind": "collection"|"file", "id": bstr }) + tag
 ------
-Total: 113 bytes (file share) / 119 bytes (collection share)
+Total: 116 bytes (file share) / 122 bytes (collection share)
 ```
 
 ```rs
@@ -385,6 +396,7 @@ AAD: sender_id ‖ recipient_id (32 bytes, both raw UUID)
 
 {
   "k":    bstr .size 32,    // wrapped key (collectionKey OR fileKey)
+  "p":    uint,             // permission bitmask (see §11.x)
   "id":   bstr .size 16,    // collection_id or file_id, raw 16-byte UUID
   "kind": tstr ("collection" | "file"),
 }
@@ -394,31 +406,36 @@ AAD: sender_id ‖ recipient_id (32 bytes, both raw UUID)
 // text-string keys reduces to length-then-lexicographic. The keys here
 // encode as:
 
-  "k"    -> 0x61 0x6b              (2 bytes)
-  "id"   -> 0x62 0x69 0x64         (3 bytes)
-  "kind" -> 0x64 0x6b 0x69 0x6e 0x64 (5 bytes)
+    "k"    -> 0x61 0x6b              (2 bytes)
+    "p"    -> 0x61 0x70              (2 bytes)
+    "id"   -> 0x62 0x69 0x64         (3 bytes)
+    "kind" -> 0x64 0x6b 0x69 0x6e 0x64 (5 bytes)
 
-Canonical order is therefore: "k" -> "id" -> "kind".
+"k" and "p" are both 2-byte encodings; tie-break is lexicographic on the
+second byte: 0x6b ('k') < 0x70 ('p').
+Canonical order is therefore: "k" -> "p" -> "id" -> "kind".
 
 Layout:
 
-  Map header (3 entries, 0xa3)                          : 1 byte
-  "k" key (0x61 0x6b)                                   : 2 bytes
-  "k" value: bstr(32) header (0x58 0x20) + 32 data      : 2 + 32 = 34 bytes
-  "id" key (0x62 0x69 0x64)                             : 3 bytes
-  "id" value: bstr(16) header (0x50) + 16 data          : 1 + 16 = 17 bytes
-  "kind" key (0x64 0x6b 0x69 0x6e 0x64)                 : 5 bytes
-  "kind" value: tstr "collection" (0x6a + 10 bytes)     : 1 + 10 = 11 bytes
-  "kind" value: tstr "file"        (0x64 + 4 bytes)     : 1 +  4 =  5 bytes
+    Map header (4 entries, 0xa4)                          : 1 byte
+    "k" key (0x61 0x6b)                                   : 2 bytes
+    "k" value: bstr(32) header (0x58 0x20) + 32 data      : 2 + 32 = 34 bytes
+    "p" key (0x61 0x70)                                   : 2 bytes
+    "p" value: uint(1) (0x01)                             : 1 byte
+    "id" key (0x62 0x69 0x64)                             : 3 bytes
+    "id" value: bstr(16) header (0x50) + 16 data          : 1 + 16 = 17 bytes
+    "kind" key (0x64 0x6b 0x69 0x6e 0x64)                : 5 bytes
+    "kind" value: tstr "collection" (0x6a + 10 bytes)     : 1 + 10 = 11 bytes
+    "kind" value: tstr "file"        (0x64 + 4 bytes)     : 1 +  4 =  5 bytes
 
 CBOR plaintext (collection share):
-  1 + 2 + 34 + 3 + 17 + 5 + 11 = 73 bytes
+    1 + 2 + 34 + 2 + 1 + 3 + 17 + 5 + 11 = 76 bytes
 CBOR plaintext (file share):
-  1 + 2 + 34 + 3 + 17 + 5 +  5 = 67 bytes
+    1 + 2 + 34 + 2 + 1 + 3 + 17 + 5 +  5 = 70 bytes
 
 Encrypted blob total:
-  Collection share: 6 (header) + 24 (nonce) + 73 (plaintext) + 16 (tag) = 119 bytes
-  File share:       6 (header) + 24 (nonce) + 67 (plaintext) + 16 (tag) = 113 bytes
+    Collection share: 6 (header) + 24 (nonce) + 76 (plaintext) + 16 (tag) = 122 bytes
+    File share:       6 (header) + 24 (nonce) + 70 (plaintext) + 16 (tag) = 116 bytes
 ```
 
 The order in which the encoder *receives* the fields does not matter; what matters is that the **canonical-CBOR** encoder emits them in length-then-lexicographic order. Both `serde_cbor` (with deterministic option) and `cbor4ii` (with the `canonical` feature) produce this ordering. Test vectors in [§14](#14-test-vectors) **MUST** verify byte-identical output across implementations.
@@ -746,7 +763,7 @@ Semantics:
 
 - `NULL` for normal first-upload flows (file does not exist yet) and for normal modify flows where the client did not request optimistic concurrency.
 - Set to a non-NULL `M` only when the client requested overwrite-with-CAS via the conflict resolution flow.
-- When non-NULL, the server's commit logic verifies `files.generation = expected_current_generation` inside the same transaction that updates `files.generation` and the ciphertext. Mismatch → HTTP 409 with the current generation, upload discarded.
+- When non-NULL, the server's commit logic verifies `files.generation = expected_current_generation` inside the same transaction that updates `files.generation` and the ciphertext. Mismatch ➜ HTTP 409 with the current generation, upload discarded.
 - Checked at commit only, not on every `PATCH`.
 
 ### 6.5.11 Abandoned upload garbage collection
@@ -767,6 +784,7 @@ A scheduled job **MUST** periodically (recommended: hourly) remove rows from `tu
 | Server rolls back to an older generation                                     | Blocked by monotonic `generation` enforcement ([§6.3](#63-file-generation-counter-mutability)) and client-side verification                                    |
 | Server tries to correlate files across collections for the same user         | Blocked: `contentIdKey` is per-collection, same plaintext produces different `content_id` in different collections                                             |
 | Server observes unchanged `content_id` values after `collectionKey` rotation | Accepted: minor metadata leak (file set unchanged), negligible over what server already knows (file count, ciphertext sizes). Content remains fully protected. |
+| Server upgrades `permission` on a share record to grant elevated access      | Detected: recipient **MUST** verify decrypted `"p"` matches server-visible `permission` column; mismatch -> share rejected                                     |
 
 ## 7. OPAQUE Protocol
 
@@ -1293,7 +1311,7 @@ Send flow:
     ```
 
 4. Sender wraps the target key (collection or file) with `shareWrapKey` using **XChaCha20-Poly1305** ➜ `VXSH` blob.
-5. Sender builds the **signed payload**: canonical CBOR encoding of `{ share_uuid, sender_id, recipient_id, ctXwing, vxsh, timestamp }`.
+5. Sender builds the **signed payload**: canonical CBOR encoding of `{ share_uuid, sender_id, recipient_id, ctXwing, vxsh, permission, timestamp }`.
 6. Sender signs the payload with their **ML-DSA-65** signing key using context string `"vexahub:v1:share"` ➜ `signature`. Signatures are **deterministic** (no per-signature randomness).
 7. Sender uploads `{ signedPayload, signature }` to the server.
 
@@ -1327,7 +1345,9 @@ CREATE TABLE shares (
     sig_algorithm   SMALLINT NOT NULL,      -- 0x10 = ML-DSA-65
     signature       BYTEA NOT NULL,         -- ML-DSA-65 signature over canonical payload
     signed_payload  BYTEA NOT NULL,         -- canonical CBOR of the signed fields
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    permission      INTEGER NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT shares_permission_check CHECK (permission > 0 AND permission <= 7)
 );
 ```
 
@@ -1339,44 +1359,44 @@ Revocation removes a recipient's access and rotates keys so new content is crypt
 
 1. Sender calls `DELETE /api/v1/shares/{share_id}`.
 
-2. Server sets `revoked_at = now()`. Revoked recipient gets 403 immediately.
+2. Server sets `revoked_at = now()`. Revoked recipient **gets 403 immediately**.
 
-3. Sender generates a new `collectionKey` via CSPRNG, increments `key_generation`.
+3. Sender generates a new `collectionKey` via **CSPRNG**, increments `key_generation`.
 
 4. Sender re-wraps the new `collectionKey` with `collectionKeyWrapKey` ➜ new `VXCK` blob.
 
-5. Sender generates new `fileKey` via CSPRNG for each file in the
+5. Sender generates new `fileKey` via **CSPRNG** for each file in the
    collection. The new `fileKey` is wrapped under the new
-   `fileKeyWrapKey` (derived from the new collectionKey) and stored
-   as a new `VXFK` row in file_keys with key_generation = M+1
-   (where M was the current key_generation before revocation).
+   `fileKeyWrapKey` (derived from the new `collectionKey`) and stored
+   as a new `VXFK` row in `file_keys` with `key_generation` = `M+1`
+   (where M was the current `key_generation` before revocation).
    Old `VXFK` rows at `key_generation` <= `M` are **RETAINED** indefinitely
-   unless the owner opts into content re-encryption ([§11.1.1](#1111-optional-content-re-encryption-after-revocation)).
+   unless the owner **opts into content re-encryption** ([§11.1.1](#1111-optional-content-re-encryption-after-revocation)).
    Retention lets the owner decrypt existing content under the old
-   `fileKey`; without re-encryption, the old `VXFK` row is permanent.
+   `fileKey`; **without re-encryption**, the old `VXFK` row is permanent.
 
 6. Sender re-encrypts all `VXFM` metadata blobs under new
    `fileMetadataKey` values (derived from new `fileKey` via the standard
-   HKDF info string). Metadata is small, this is synchronous.
+   **HKDF** info string). Metadata is small, this is synchronous.
 
 7. Sender re-shares the new `collectionKey` with all remaining
    recipients via fresh `X-Wing` + `ML-DSA-65` invitations.
 
-8. File content is **NOT** re-encrypted by default. Files are marked
-   pending_key_rotation = TRUE. The file `generation` counter is
-   **NOT** incremented (it tracks user modifications, not key rotations).
+8. File content is **NOT re-encrypted by default**. Files are marked
+   `pending_key_rotation = TRUE`. The file `generation` counter is
+   **NOT** incremented (it tracks user modifications, **not key rotations**).
    The actual `fileKey` used for content remains the old one until
-   the owner explicitly opts into re-encryption ([§11.1.1](#1111-optional-content-re-encryption-after-revocation)).
+   the **owner explicitly opts into re-encryption** ([§11.1.1](#1111-optional-content-re-encryption-after-revocation)).
 
 **File share revocation:**
 
 1. Sender calls `DELETE /api/v1/shares/{share_id}`.
-2. Server sets `revoked_at = now()`. Revoked recipient gets 403 immediately.
-3. Sender generates a new `fileKey` via CSPRNG, increments `key_generation`.
+2. Server sets `revoked_at = now()`. Revoked **recipient gets 403 immediately**.
+3. Sender generates a new `fileKey` via **CSPRNG**, increments `key_generation`.
 4. Sender re-wraps the new `fileKey` with `fileKeyWrapKey` ➜ new `VXFK` blob.
 5. Sender re-encrypts the `VXFM` metadata blob under new `fileMetadataKey`. Immediate.
 6. Sender re-shares with remaining recipients via fresh invitations.
-7. File content is **NOT** re-encrypted by default. The file is marked
+7. File content is **NOT re-encrypted by default**. The file is marked
    `pending_key_rotation = TRUE`; old `VXFK` rows at `key_generation` <= `M`
    are retained alongside the new `VXFK` at `key_generation` = `M+1`.
    The file `generation` counter is **NOT** incremented. Re-encryption
@@ -1428,7 +1448,7 @@ The owner **MAY** opt into full content re-encryption via a setting:
 
 The opt-in re-encryption can be activated in two ways:
 
-1. **Setting ON (account-wide, persistent):** in user settings under *Security → Re-encrypt files after sharing revocation*. When ON, every future revocation automatically schedules re-encryption for the affected collection. Default is OFF.
+1. **Setting ON (account-wide, persistent):** in user settings under *Security ➜ Re-encrypt files after sharing revocation*. When ON, every future revocation automatically schedules re-encryption for the affected collection. Default is OFF.
 
 2. **Manual per-collection trigger (one-off):** regardless of the setting, the per-collection notice *"N files use older encryption keys. [Re-encrypt now]"* triggers re-encryption for that collection only. This works whether the account-wide setting is ON or OFF.
 
@@ -1525,7 +1545,7 @@ The `timestamp` field in the signed share payload is a Unix epoch in seconds (UT
 An authenticated user **MAY** rotate their sharing keypairs at **any** time, for example if they suspect their signing key has been **observed**.
 
 1. Client generates new **X-Wing** keypair and **ML-DSA-65** keypair.
-2. Client wraps new private keys under `masterKey` → new `VXSK` blob.
+2. Client wraps new private keys under `masterKey` ➜ new `VXSK` blob.
 3. Client ➜ Server: `POST /auth/sharing-keys/rotate { vxsk, sharingPublicXwing, sharingPublicMldsa }`.
 4. Server atomically replaces `vxsk`, `sharing_public_xwing`, `sharing_public_mldsa`, and sets `revoked_at = now()` on **all outgoing** pending shares for this user.
 5. Client **re-shares** any collections or files with affected recipients using the new signing key.
@@ -1557,7 +1577,7 @@ The `VXFK` blob remains wrapped under the source `collectionKey` and would be in
    ```
 
 3. Client wraps the same `fileKey` under the new `fileKeyWrapKey` ➜ new `VXFK` blob.
-4. Client → Server: `POST /api/v1/files/{file_id}/move`:
+4. Client ➜ Server: `POST /api/v1/files/{file_id}/move`:
 
    ```json
    {
@@ -1640,7 +1660,7 @@ The client has two paths depending on whether the local version is newer than th
 **Conflict resolution procedure:**
 
 1. Client receives HTTP 409 on upload of `generation = N+1`.
-2. Client fetches current file metadata from server: `GET /api/v1/files/{file_id}` → `{ generation: N+1, ... }` (the winning device's committed generation).
+2. Client fetches current file metadata from server: `GET /api/v1/files/{file_id}` ➜ `{ generation: N+1, ... }` (the winning device's committed generation).
 3. Client fetches and decrypts the winning `VXFM` to get the committed filename.
 4. Client presents the user with a conflict dialog:
 
@@ -1674,7 +1694,7 @@ The client has two paths depending on whether the local version is newer than th
    - Client creates a **new file** from the local version:
      - Generates new `file_id` via server: `POST /api/v1/files` in the same collection.
      - Server generates new `file_id`, client generates new `fileKey` via CSPRNG.
-     - Client wraps new `fileKey` → new `VXFK` blob under destination `collectionKey`.
+     - Client wraps new `fileKey` ➜ new `VXFK` blob under destination `collectionKey`.
      - Client constructs `VXFM` for the conflicted copy with a modified filename:
 
        ```sh
@@ -1723,6 +1743,51 @@ The server **MUST**:
 | Conflicted copy is cryptographically independent       | ✅ New `file_id`, new `fileKey`, new `VXFK`                   |
 | Server learns the conflict filename                    | ❌ Never  (filename is inside encrypted `VXFM`)               |
 | Automatic last-write-wins                              | ❌ Explicitly prohibited (always surfaces to user)            |
+
+### 11.6 Share permissions
+
+The `VXSH` inner **CBOR** includes a `"p"` field encoding share permissions as a
+bitmask. The field is covered by the **ML-DSA-65** signature and serves as a
+tamper-evident binding on the sender's intent.
+
+| Bit | Mask   | Capability                                          | Protocol version |
+|-----|--------|-----------------------------------------------------|------------------|
+| 0   | `0x01` | `view`  (decrypt and read shared content)           | 1                |
+| 1   | `0x02` | `edit` (upload and modify file content)             | 1                |
+| 2   | `0x04` | `reshare`  (invite other users to the resource)     | 1                |
+| 3-31| -      | **Reserved**                                        | 1                |
+
+At **protocol version 1**, `view` (`0x01`) is the only implemented capability. Bits `1-2` are defined but **not yet active**. Bits `3-31` are reserved. Parsers **MUST** reject shares where `"p"` is absent, zero, or has any bit beyond bit 2 set.
+
+The recipient **MUST** verify that the decrypted `"p"` value matches the
+server-visible `permission` column. A mismatch indicates server tampering and
+the share **MUST** be rejected.
+
+Permissions are enforced at the **server layer** only. Holding a `collectionKey`
+or `fileKey` **does not grant** capabilities beyond what the server permits. The
+server rejects `PATCH` requests from `view`-only recipients regardless of their
+key material.
+
+The cryptographic binding of `"p"` inside `VXSH` serves as
+tamper-evidence on the sender's intent, not as a cryptographic capability gate.
+
+Future permission bits are defined by incrementing the protocol version. Unknown
+bits in a received share **MUST** be treated as an error, never silently ignored.
+
+**Schema:**
+
+```sql
+ALTER TABLE shares ADD COLUMN permission INTEGER NOT NULL DEFAULT 1;
+
+-- Protocol version 1: only view (0x01) is valid.
+-- Widen this constraint when new bits are defined in a future protocol version.
+ALTER TABLE shares ADD CONSTRAINT shares_permission_check
+    CHECK (permission > 0 AND permission <= 7);
+```
+
+Using a named constraint instead of an inline `CHECK` allows a future migration
+to `DROP CONSTRAINT shares_permission_check` and add a replacement without touching
+the column definition.
 
 ## 12. Account Recovery
 
@@ -1855,13 +1920,13 @@ Every user row carries `opaque_protocol_version`. Every blob carries a format ve
 
 Breaking changes (any of the following) require a version bump:
 
-- Argon2id parameters
-- OPAQUE ciphersuite
-- HKDF info strings
+- **Argon2id** parameters
+- **OPAQUE** ciphersuite
+- **HKDF** info strings
 - Blob binary formats
 - Wrapping algorithm
 
-Migration model: new and old protocol versions coexist in the codebase. On next login under the old version, the client prompts the user, runs a fresh OPAQUE registration under the new params, re-wraps `masterKey`, and atomically updates the user row. Users who never log back in remain on the old version until a forced migration window is announced.
+**Migration model**: new and old protocol versions coexist in the codebase. On next login under the old version, the client prompts the user, runs a fresh **OPAQUE** registration under the new params, re-wraps `masterKey`, and atomically updates the user row. Users who never log back in remain on the old version **until a forced migration** window is announced.
 
 > **Cross-version blob handling:**
 >
@@ -1871,19 +1936,19 @@ Migration model: new and old protocol versions coexist in the codebase. On next 
 >
 > **Key rotation does NOT bump `crypto_version`.**
 >
-> `crypto_version` tracks which protocol-version key derivation scheme and parameters produced the file's keys. It changes only during a protocol migration (e.g. v1 → v2 if Argon2id parameters change, or X-Wing wire format changes).
+> `crypto_version` tracks which **protocol-version key derivation scheme and parameters** produced the file's keys. It changes **only during a protocol migration** (e.g. **v1** ➜ **v2** if **Argon2id parameters change**, or **X-Wing wire format changes**).
 >
-> Key rotation under [§11.1](#111-share-revocation) (share revocation) generates new keys under the **same** protocol version. The `key_generation` counter on `collection_keys` / `file_keys` increments; `crypto_version` on the `files` row does not.
+> Key rotation under [§11.1](#111-share-revocation) (**share revocation**) generates new keys under the **same** protocol version. The `key_generation` counter on `collection_keys` / `file_keys` increments; `crypto_version` on the `files` row does not.
 >
 > Examples:
 >
-> - File created on protocol v1 → `files.crypto_version = 1`, `key_generation = 0`.
-> - Owner revokes a share, rotates keys → `key_generation = 1`, `crypto_version` unchanged.
-> - Protocol migrates v1 → v2, owner re-encrypts → `crypto_version = 2`, `key_generation` may also increment but for unrelated reasons.
+> - File created on protocol **v1** ➜ `files.crypto_version = 1`, `key_generation = 0`.
+> - Owner revokes a share, rotates keys ➜ `key_generation = 1`, `crypto_version` unchanged.
+> - Protocol migrates **v1** ➜ **v2**, owner re-encrypts ➜ `crypto_version = 2`, `key_generation` may also increment but for unrelated reasons.
 >
 > A consequence: a single file's `(crypto_version, key_generation)` pair uniquely identifies which key wrapping is currently in effect. Both must be checked on key fetch; mismatch indicates a bug or migration in progress.
 
-What CANNOT be changed without re-encrypting user data: `masterKey` itself, file generation derivation paths, segment nonce derivation. `serverSetup` rotation invalidates all accounts.
+What **CANNOT** be changed without re-encrypting user data: `masterKey` itself, file generation derivation paths, segment nonce derivation. `serverSetup` rotation invalidates all accounts.
 
 > The `crypto_version` field on the `files` table tracks which protocol **version** was used to encrypt each file.
 >
@@ -1893,26 +1958,30 @@ What CANNOT be changed without re-encrypting user data: `masterKey` itself, file
 
 ## 14. Test Vectors
 
-Cross-target consistency is verified by JSON test vectors in `crates/core/tests/vectors/`, executed by:
+Cross-target consistency is verified by **JSON** test vectors in `crates/core/tests/vectors/`, executed by:
 
 - Native Rust via `cargo test`
 - WASM via `wasm-bindgen-test`
 - Node via the NAPI build
-- Future Android via instrumented tests
-- Future iOS via XCTest
+- Future **Android** via **instrumented tests**
+- Future **iOS** via **XCTest**
 
 Vector categories:
 
 1. **HKDF** derivations (every domain-separated path in [§4](#4-hkdf-domain-separation))
-2. VXWM, VXRM, VXFC, VXFM, VXSK, VXPS, VXSH, VXCM, VXCK, VXFK round-trips with fixed keys and nonces
+2. `VXWM`, `VXRM`, `VXFC`, `VXFM`, `VXSK`, `VXPS`, `VXSH`, `VXCM`, `VXCK`, `VXFK` round-trips with fixed keys and nonces
 3. Segment nonce derivation across multiple generations and indices
 4. **OPAQUE** registration and login with deterministic test-only RNG seeds
 5. **ML-KEM-768** encapsulation/decapsulation against **FIPS 203** known-answer tests
-6. **AAD** construction vectors for VXFC (with `file_id`) and VXFM (with `file_id`)
-7. **AAD** construction vectors for key-wrapping blobs (VXWM, VXRM, VXPS, VXSK, VXCK, VXFK) with user_id/collection_id/file_id binding
-8. `content_id` derivation vectors with `collection_uuid` bound in the HKDF info
-9. Segment count **verification** (VXFM `sc` field vs actual segment count), including the zero-byte file case (`sc = 0`, zero segments, **BLAKE3** hash over empty input).
-10. **ML-DSA-65** deterministic signing vectors: fixed `(signing_seed, message, context string "vexahub:v1:share")` tuple with expected signature output. Verifies both determinism and correct context string usage. A mismatch indicates the implementation is using a randomized signing API or incorrect context binding.
+6. **AAD** construction vectors for `VXFC` (with `file_id`) and VXFM (with `file_id`)
+7. **AAD** construction vectors for key-wrapping blobs (`VXWM`, `VXRM`, `VXPS`, `VXSK`, `VXCK`, `VXFK`) with **user_id**/**collection_id**/**file_id** binding
+8. `content_id` derivation vectors with `collection_uuid` bound in the **HKDF** info
+9. Segment count **verification** (`VXFM` `sc` field vs actual segment count), including the zero-byte file case (`sc = 0`, zero segments, **BLAKE3** hash over empty input).
+10. **ML-DSA-65** deterministic signing vectors: fixed `(signing_seed, message, context string "vexahub:v1:share")` tuple with expected signature output. Verifies both determinism and correct context string usage. A mismatch indicates the implementation is using a randomized signing **API** or incorrect context binding.
+
+> Test vectors for `VXSH` **MUST** be updated to include `"p": 0x01` in the
+> CBOR plaintext. Existing vectors without `"p"` are invalid at **protocol version 1**
+> and **MUST** be rejected by conformant parsers.
 
 A vector **mismatch** is a release **blocker**.
 
@@ -1920,7 +1989,7 @@ A vector **mismatch** is a release **blocker**.
 
 All key material is wrapped in `Zeroizing<T>` (Rust) and **explicitly** overwritten on JS/WASM boundaries via `Uint8Array.fill(0)` after use. GC-managed runtimes (JS, Kotlin, Swift) **cannot** guarantee complete erasure; this is an acknowledged limitation documented in the threat model.
 
-**Mandatory** zeroization points: after every OPAQUE flow (`password`, `exportKey`, `masterKeyWrapper`), on session timeout, on logout, on password change.
+**Mandatory** zeroization points: after every **OPAQUE** flow (`password`, `exportKey`, `masterKeyWrapper`), on session timeout, on logout, on password change.
 
 > `collectionKeyWrapKey` and `fileKeyWrapKey` are ephemeral.
 >
@@ -1930,7 +1999,7 @@ All key material is wrapped in `Zeroizing<T>` (Rust) and **explicitly** overwrit
 
 ### 16.1 Content Security Policy
 
-CSP is set at the HTTP server layer for the static-built webapp:
+**CSP** is set at the **HTTP server layer** for the static-built webapp:
 
 ```r
 Content-Security-Policy:
@@ -1951,11 +2020,11 @@ Content-Security-Policy:
     report-uri https://reports.vexahub.com/csp;
 ```
 
-`connect-src 'self' https://api.vexahub.com` covers all API requests including OPAQUE flows, file metadata, share endpoints, and the tus upload protocol (POST/PATCH/HEAD/DELETE on `https://api.vexahub.com/uploads/...`). The webapp at `app.vexahub.com` does not connect to any other origin. If the tus upload endpoint moves to a separate hostname (e.g., `uploads.vexahub.com`) it **MUST** be added to `connect-src`.
+`connect-src 'self' https://api.vexahub.com` covers all **API** requests including **OPAQUE** flows, file metadata, share endpoints, and the **tus upload protocol** (**POST**/**PATCH**/**HEAD**/**DELETE** on `https://api.vexahub.com/uploads/...`). The webapp at `app.vexahub.com` does not connect to any other origin. If the tus upload endpoint moves to a separate hostname (e.g., `uploads.vexahub.com`) it **MUST** be added to `connect-src`.
 
 > Although, we might just not use different origin, `self` only might be our final option.
 
-`'unsafe-inline'` is excluded from `style-src`. The build pipeline **MUST** emit all stylesheet content to external bundled files served from the same origin. Inline `<style>` blocks and inline `style` attributes are forbidden in production builds.
+`'unsafe-inline'` is excluded from `style-src`. The build pipeline **MUST** emit all stylesheet content to external bundled files served from the same origin. Inline `<style>` blocks and inline `style` attributes **are forbidden in production builds**.
 
 #### SvelteKit production configuration
 
@@ -2092,16 +2161,29 @@ The Argon2id implementation **MUST** zero all intermediate state in the `SharedA
 
 ## 18. Open Questions and Future Work
 
-- **PQ-resistant OPRF** migration when standardized variants land (tracking [draft-vos-cfrg-pqpake](https://datatracker.ietf.org/doc/draft-vos-cfrg-pqpake/)). Note: TripleDhKem already protects session keys; the remaining gap is the classical OPRF which exposes passwords to offline attack only under **CRQC** + database + `serverSetup` compromise, mitigated by **Argon2id 128 MiB**.
+- **PQ-resistant OPRF** migration when standardized variants land (tracking [draft-vos-cfrg-pqpake](https://datatracker.ietf.org/doc/draft-vos-cfrg-pqpake/)). Note: **TripleDhKem** already protects session keys; the remaining gap is the classical **OPRF** which exposes passwords to offline attack only under **CRQC** + *database* + `serverSetup` compromise, mitigated by **Argon2id 128 MiB**.
 - `WebAuthn PRF` for biometric unlock.
 - Reproducible builds for `vexahub-protocol` and the webapp bundle, published to a transparency log.
 - `Argon2id` parameter telemetry on real device distributions to validate the 128 MiB choice.
-- Argon2id experimental parameter for users to freely customize.
+- `Argon2id` experimental parameter **for users to freely customize**.
 - `serverSetup` compromise incident response runbook.
 - Possible independent **third-party** audit of `vexahub-protocol` once funding allows.
 - `X-Wing` RFC finalization tracking. If wire format changes **before** RFC, bump `VXSH` format version and KEM algorithm ID.
 - Hybrid signatures (`Ed25519` + `ML-DSA-65`) evaluation for **ANSSI/BSI** compliance if regulatory requirements harden **before 2030**.
 - UX flow for sharing keypair rotation notification to recipients whose pending shares were invalidated.
+- **Social recovery via Verifiable Secret Sharing (Pedersen VSS, k-of-n threshold):**
+  split the `recoveryPhrase` (or `masterKey` directly) among trusted contacts
+  using **Pedersen VSS**, each share encrypted via **X-Wing** for the
+  corresponding contact. Each contact can **verify their share is valid**
+  without reconstructing the secret or leaking any information about it,
+  **detecting corruption before a recovery is needed**. Reconstruction requires
+  *k* contacts to cooperate. Integrates naturally with the existing **X-Wing infrastructure** and
+  the **Ristretto255** group already used in the **OPAQUE**
+  ciphersuite. Trade-offs (**threshold selection**, **contact key rotation**,
+  **contact account loss**) require UX design before spec work. Would introduce
+  a new blob type (`VXSR`) and endpoints without modifying any existing
+  primitive or format. **No protocol version bump required**. Candidate
+  implementation: `vsss-rs` crate (Pedersen variant with `RistrettoPoint`).
 
 ## 19 Deletion
 
@@ -2229,7 +2311,7 @@ Account deletion permanently removes the user and all associated data.
 
 The email address is retained in a suppression table for an operator-configurable period after deletion. This prevents immediate re-registration with the same address, which could be used to abuse sharing or invitation flows that reference the old account by email. After the suppression period the address is permanently purged.
 
-> **The deletion sequence is mandatory and database-enforced.** The schema uses `ON DELETE RESTRICT` throughout. Attempting `DELETE FROM users WHERE id = X` directly fails with a foreign key violation. The application **MUST** walk the dependency tree (sessions → tus_uploads → file_keys → collection_keys → shares → files → collections → users) and schedule storage cleanup per file before deleting the row. This prevents orphaned ciphertext in **Storage** from a misconfigured cascade.
+> **The deletion sequence is mandatory and database-enforced.** The schema uses `ON DELETE RESTRICT` throughout. Attempting `DELETE FROM users WHERE id = X` directly fails with a foreign key violation. The application **MUST** walk the dependency tree (sessions ➜ tus_uploads ➜ file_keys ➜ collection_keys ➜ shares ➜ files ➜ collections ➜ users) and schedule storage cleanup per file before deleting the row. This prevents orphaned ciphertext in **Storage** from a misconfigured cascade.
 
 ### 19.4 Empty trash (bulk)
 
