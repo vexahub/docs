@@ -128,7 +128,7 @@ CREATE TABLE users (
 ### 3.4 Key Derivation at Registration
 
 <!-- markdownlint-disable MD033 -->
-<img src="/public/vexahub-key-derivation-registration.svg" alt="Key derivation diagram registration" width="700" />
+<img src="/public/vexahub-key-derivation-registration.svg" alt="Key derivation diagram registration" width="950" />
 <!-- markdownlint-enable MD033 -->
 
 ## 4. Login
@@ -163,7 +163,7 @@ Nothing permanent is created at login. The following are derived transiently fro
 ### 4.3 Key Derivation at Login
 
 <!-- markdownlint-disable MD033 -->
-<img src="/public/vexahub-key-derivation-login.svg" alt="Key derivation diagram login" width="700" />
+<img src="/public/vexahub-key-derivation-login.svg" alt="Key derivation diagram login" width="950" />
 <!-- markdownlint-enable MD033 -->
 
 The `exportKey` is stable: as long as the password is the same and `serverSetup` has not changed, the same 64-byte value emerges from every login. This is how the server can store the wrapped `masterKey` once and have it be unwrappable on every future login without the server ever knowing the wrapping key.
