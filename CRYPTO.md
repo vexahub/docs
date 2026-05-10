@@ -56,7 +56,9 @@ Explicit non-goals:
 
 ## 3. Key Hierarchy
 
-![Key Hierarchy](/public/vexahub-key-hierarchy.svg)
+<!-- markdownlint-disable MD033 -->
+<img src="/public/vexahub-key-hierarchy.svg" alt="Key Hierarchy" width="700" />
+<!-- markdownlint-enable MD033 -->
 
 The intermediate `masterKeyWrapper` exists for uniformity with all other derivations and to avoid using `exportKey` directly as an AEAD key. It carries no extra security versus a direct slice of `exportKey`, but keeps the derivation graph consistent.
 
