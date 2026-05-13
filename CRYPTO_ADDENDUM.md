@@ -193,14 +193,14 @@ shared collection, **ownership is transferred to the parent collection owner**
 ### 21.1 Creation flow
 
 1. Editor generates a new `collectionKey` via **CSPRNG**.
-2. Editor wraps `collectionKey` under their own `masterKey` ➜ `VXCK` blob
+2. Editor wraps `collectionKey` under their own `masterKey` -> `VXCK` blob
    (editor-scoped). **Editor has immediate access**.
 3. Editor wraps `collectionKey` under a new **X-Wing share invitation** addressed
-   to the parent collection owner ➜ `VXSH` blob. The invitation **MUST** set
+   to the parent collection owner -> `VXSH` blob. The invitation **MUST** set
    `"p"` to `0x07` (*view* + *edit* + *reshare*). The owner receives full permissions
    on the **sub-collection regardless of the editor's own permission level** on
    the parent.
-4. Editor ➜ Server: `POST /api/v1/collections` with:
+4. Editor -> Server: `POST /api/v1/collections` with:
    - `parent_id` of the shared collection
    - `vxcm` (**encrypted collection** metadata)
    - `vxck_editor` (**editor-scoped** wrapped key)
@@ -218,6 +218,16 @@ shared collection, **ownership is transferred to the parent collection owner**
 >If the owner has **auto-accept** enabled in their account settings, the client
 > **MUST** process all pending transfers automatically on sync without prompting
 > the user. Steps 1-5 execute identically; no confirmation UI is shown.
+>
+> **`auto_accept` column semantics:** The `auto_accept` column on
+> `pending_ownership_transfers` snapshots the owner's `auto_accept_subcollections`
+> setting **at the moment the transfer row is created** within the same transaction.
+> If the owner changes their setting after creation, the snapshotted value on the row governs that
+> specific transfer.
+>
+> The live `users.auto_accept_subcollections` value governs
+> only future transfers. This prevents a race where the owner disables
+> auto-accept between creation and sync processing.
 
 On next sync, the **parent collection owner's client** detects the pending
 transfer:
@@ -226,9 +236,9 @@ transfer:
 2. Owner verifies the **ML-DSA-65 signature** on the share invitation.
 3. Owner decapsulates the **X-Wing ciphertext**, derives `shareWrapKey`, unwraps
    `collectionKey`.
-4. Owner wraps `collectionKey` under their own `masterKey` ➜ new `VXCK` blob
+4. Owner wraps `collectionKey` under their own `masterKey` -> new `VXCK` blob
    (owner-scoped).
-5. Owner ➜ Server: `POST /api/v1/collections/{collection_id}/accept-ownership`
+5. Owner -> Server: `POST /api/v1/collections/{collection_id}/accept-ownership`
    with `vxck_owner`.
 6. Server atomically:
    - Replaces `collections.user_id` with the parent collection owner's
@@ -243,7 +253,7 @@ transfer:
 
 If the owner explicitly rejects the handoff:
 
-1. Owner ➜ Server: `POST /api/v1/collections/{collection_id}/reject-ownership`.
+1. Owner -> Server: `POST /api/v1/collections/{collection_id}/reject-ownership`.
 2. Server atomically:
    - Permanently deletes the sub-collection row.
    - Deletes all `files`, `file_keys`, `collection_keys`, and object storage

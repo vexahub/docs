@@ -84,9 +84,9 @@ Registration is the only time most **permanent key material is generated**. Ever
 
 > See **diagram** in the rendered documentation.
 >
-> **Steps**: user input ➜ **OPAQUE** exchange ➜
-> pin verification ➜ key generation (`masterKey`, **X-Wing**, **ML-DSA-65**) ➜ blob wrapping
-> (`VXWM`, `VXSK`, `VXRM`) ➜ recovery phrase confirmation ➜ `POST /register/finish` ➜ **zeroize**.
+> **Steps**: user input -> **OPAQUE** exchange ->
+> pin verification -> key generation (`masterKey`, **X-Wing**, **ML-DSA-65**) -> blob wrapping
+> (`VXWM`, `VXSK`, `VXRM`) -> recovery phrase confirmation -> `POST /register/finish` -> **zeroize**.
 
 <!-- markdownlint-disable MD033 -->
 <img src="/public/vexahub-registration-flow.svg" alt="Registration Flow" width="1000" />
@@ -139,9 +139,9 @@ The `masterKey` is unwrapped and loaded into the **Crypto Worker**, then discard
 
 ### 4.1 Full Login Flow
 
-> See diagram in the rendered documentation. Steps: user input ➜ **OPAQUE** exchange ➜
-> pin verification ➜ `masterKeyWrapper` derivation ➜ `VXWM`/`VXSK` unwrap ➜ `POST /login/finish`
-> ➜ session cookie ➜ **zeroize** ➜ Crypto Worker load.
+> See diagram in the rendered documentation. Steps: user input -> **OPAQUE** exchange ->
+> pin verification -> `masterKeyWrapper` derivation -> `VXWM`/`VXSK` unwrap -> `POST /login/finish`
+> -> session cookie -> **zeroize** -> Crypto Worker load.
 
 <!-- markdownlint-disable MD033 -->
 <img src="/public/vexahub-login-flow.svg" alt="Login Flow" width="1000" />
@@ -204,8 +204,8 @@ Never enabled by default. When opted in, a device-bound blob lets the user resum
 
 ```rs
 1. Client generates localKey (32 random bytes, CSPRNG)
-2. Client wraps masterKey with localKey ➜ VXPS blob ➜ stored in IndexedDB
-3. Client ➜ Server: POST /auth/persistent-session/create { localKey, deviceLabel }
+2. Client wraps masterKey with localKey -> VXPS blob -> stored in IndexedDB
+3. Client -> Server: POST /auth/persistent-session/create { localKey, deviceLabel }
 4. Server stores { userId, localKey, cookieHash, deviceLabel, createdAt, expiresAt }
 5. Server issues PS-AUTH cookie (HttpOnly; Secure; SameSite=Strict; Max-Age=30d)
 ```
@@ -215,9 +215,9 @@ Never enabled by default. When opted in, a device-bound blob lets the user resum
 ```rs
 1. Client detects VXPS blob in IndexedDB + PS-AUTH cookie
 2. Client shows "Resume as <user>" prompt (no password form)
-3. Client ➜ Server: GET /auth/persistent-session/resume (cookie auto-attached)
+3. Client -> Server: GET /auth/persistent-session/resume (cookie auto-attached)
 4. Server validates cookie, returns { localKey, vxsk }
-5. Client decrypts VXPS with localKey ➜ masterKey ➜ loaded into Worker
+5. Client decrypts VXPS with localKey -> masterKey -> loaded into Worker
 6. Server issues fresh active-session cookie alongside the persistent one
 ```
 
@@ -297,14 +297,13 @@ The phrase is shown once at registration, never stored client-side, never transm
 **Recovery flow (password forgotten, phrase available):**
 
 1. User enters **email + recovery** phrase
-2. Client ➜ Server: `GET /auth/recovery/lookup?email={email}`  (*rate-limited*)
-              ☚ { **vxrm**, **user_uuid** }
+2. Client -> Server: `GET /auth/recovery/lookup?email={email}`  (*rate-limited*) <- { **vxrm**, **user_uuid** }
 3. Client re-derives `recoveryKey` from phrase + **user_uuid**
-4. Client decrypts `VXRM` ➜ `masterKey` (same `masterKey` as always)
+4. Client decrypts `VXRM` -> `masterKey` (same `masterKey` as always)
 5. User chooses a new password
 6. Client runs a fresh **OPAQUE** registration with the new password
-7. Client re-wraps `masterKey` with the new `masterKeyWrapper` ➜ new `VXWM`
-8. Client ➜ Server: `POST /auth/recovery/finish`
+7. Client re-wraps `masterKey` with the new `masterKeyWrapper` -> new `VXWM`
+8. Client -> Server: `POST /auth/recovery/finish`
               { **registrationRecord**, **vxwm**, **vxsk** }  (*atomic replace*)
 9. All existing files, collections, and shares remain valid. `masterKey` never changed
 
