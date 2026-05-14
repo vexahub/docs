@@ -43,7 +43,10 @@ export default defineConfig({
       },
       {
         text: "Project",
-        items: [{ text: "Author", link: "/AUTHOR" }],
+        items: [
+          { text: "Security", link: "/SECURITY" },
+          { text: "Author", link: "/AUTHOR" },
+        ],
       },
     ],
     footer: {
