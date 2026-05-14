@@ -204,43 +204,59 @@ Never enabled by default. When opted in, a device-bound blob lets the user resum
 
 ```rs
 1. Client generates localKey (32 random bytes, CSPRNG)
-2. Client wraps masterKey with localKey -> VXPS blob -> stored in IndexedDB
-3. Client -> Server: POST /auth/persistent-session/create { localKey, deviceLabel }
-4. Server stores { userId, localKey, cookieHash, deviceLabel, createdAt, expiresAt }
-5. Server issues PS-AUTH cookie (HttpOnly; Secure; SameSite=Strict; Max-Age=30d)
+2. Client encrypts masterKey with localKey -> VXPS blob // (see CRYPTO.md §5.6)
+3. Client stores localKey in IndexedDB
+4. Client -> Server: POST /auth/persistent-session/create { vxps, deviceLabel }
+   // Implementation note: if the client crashes between step 3 and step 4,
+   // localKey is orphaned in IndexedDB. Harmless: absence of PS-AUTH cookie
+   // causes it to be silently ignored. MAY be GC'd on startup.
+5. Server stores { userId, vxps, cookieHash, deviceLabel, createdAt, expiresAt }
+6. Server issues PS-AUTH cookie (HttpOnly; Secure; SameSite=Strict; Max-Age=30d)
 ```
 
 **Resume:**
 
 ```rs
-1. Client detects VXPS blob in IndexedDB + PS-AUTH cookie
+1. Client detects PS-AUTH cookie AND localKey in IndexedDB
+   // If PS-AUTH present but localKey absent (storage cleared): silently discard,
+   // show password form. Server-side session remains valid until expiry or revocation.
 2. Client shows "Resume as <user>" prompt (no password form)
 3. Client -> Server: GET /auth/persistent-session/resume (cookie auto-attached)
-4. Server validates cookie, returns { localKey, vxsk }
-5. Client decrypts VXPS with localKey -> masterKey -> loaded into Worker
+4. Server validates cookie, returns { vxps, vxsk }
+5. Client retrieves localKey from IndexedDB, decrypts VXPS -> masterKey -> loaded into Worker
 6. Server issues fresh active-session cookie alongside the persistent one
 ```
 
+**Revocation:**
+
+- **Logout**: client deletes `localKey` from IndexedDB + `DELETE /auth/persistent-session/{id}`
+- **Sign out everywhere**: client clears IndexedDB + server wipes all `persistent_sessions` for the user
+- **Password change**: server wipes all `persistent_sessions`; client must re-activate "Remember me"
+
 **Security trade-off (displayed at opt-in):**
 
-> Remember me stores an encrypted copy of your keys on this device. The key to unlock them is held by VexaHub servers. Under normal operation your data stays private, but an attacker who fully controls our servers AND captures your session cookie could decrypt this remembered session. For maximum security, leave this option off and sign in with your password each time.
+> **Remember me** stores an encrypted copy of your master key on **VexaHub** servers (`VXPS` blob), and the decryption key (`localKey`) on this device in `IndexedDB`. Neither side alone is sufficient to recover your data.
+>
+> An attacker who **simultaneously** gains full control of VexaHub servers **and** captures your `PS-AUTH` session cookie **and** reads your device's `IndexedDB` could decrypt this remembered session. Under normal operation your data remains private.
+>
+> For **strict zero-knowledge guarantees**, leave **Remember me** unchecked and authenticate with your password each session. Desktop and mobile clients achieve zero-knowledge persistent sessions **via OS keychain**. The server holds **no key material in either case**.
 
 **Zero-knowledge tiers:**
 
-| Mode                                 | True ZK?                          | Server holds         |
-|--------------------------------------|-----------------------------------|----------------------|
-| Web (no `Remember me`)               | ✅ Yes                            | Nothing session-side |
-| Web (`Remember me`)                  | ⚠️ Trade-off (opt-in, documented) | `localKey`           |
-| Web (`Remember me` + `WebAuthn` PRF) | ✅ Yes                            | Nothing              |
-| Desktop / Mobile                     | ✅ Yes                            | Nothing              |
+| Mode                                 | True ZK?                          | Server holds            |
+|--------------------------------------|-----------------------------------|-------------------------|
+| Web (no `Remember me`)               | ✅ Yes                            | Nothing session-side    |
+| Web (`Remember me`)                  | ⚠️ Trade-off (opt-in, documented) | `vxps` (encrypted blob) |
+| Web (`Remember me` + `WebAuthn` PRF) | ✅ Yes                            | Nothing                 |
+| Desktop / Mobile                     | ✅ Yes                            | Nothing                 |
 
 **Mandatory safeguards:**
 
 - Strict opt-in only. No nudging.
 - Settings page lists every persistent session with device label, creation time, last use, and one-click revoke.
 - Password change revokes all persistent sessions server-side.
-- `localKey` deleted server-side after 30 days of disuse.
-- "Sign out everywhere" wipes all server-side persistent sessions and the local IndexedDB blob.
+- Server-side inactivity timeout: session deleted after 30 days of disuse.
+- "Sign out everywhere" wipes all server-side persistent sessions and the local IndexedDB `localKey`.
 - `localKey` is never stored client-side in plaintext beyond the instant it is used to decrypt the `VXPS` blob.
 
 ### 5.3 Session Database Schema
@@ -261,7 +277,7 @@ CREATE TABLE sessions (
 CREATE TABLE persistent_sessions (
     id           UUID PRIMARY KEY,
     user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    local_key    BYTEA NOT NULL,
+    vxps         BYTEA NOT NULL,
     cookie_hash  BYTEA NOT NULL,
     device_label TEXT NOT NULL,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -350,5 +366,5 @@ From settings, an authenticated user can regenerate their recovery phrase. The n
 | X-Wing encapsulation key (public)                   | `masterKey`                          |
 | ML-DSA-65 verification key (public)                 | `collectionKey`, `fileKey`           |
 | Session cookie hash                                 | File content, file names, mime types |
-| `localKey` (persistent sessions only)               | Recovery phrase                      |
+| `vxps` blob (persistent sessions only)              | Recovery phrase                      |
 | File/collection UUIDs, ciphertext sizes, timestamps | Any plaintext metadata               |
