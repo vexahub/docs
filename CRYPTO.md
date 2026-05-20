@@ -146,12 +146,12 @@ All encrypted blobs use versioned, self-describing binary formats prefixed with 
 
 Algorithm IDs:
 
-- `0x01` >  XChaCha20-Poly1305
-- `0x02` > X-Wing (ML-KEM-768 + X25519)
+- `0x01` -> XChaCha20-Poly1305
+- `0x02` -> X-Wing (ML-KEM-768 + X25519)
 
 Signature algorithm IDs (new, for share records):
 
-- `0x10` > ML-DSA-65
+- `0x10` -> ML-DSA-65
 
 ### 5.1 `VXWM` - Wrapped Master Key (password-derived)
 
@@ -282,7 +282,7 @@ AAD = version ‖ alg_id ‖ collection_id
 
 CBOR schema:
 
-```asm
+```json
 {
   "n": tstr,   // collection name
   "ct": uint,  // creation time
@@ -339,7 +339,7 @@ AAD: user_id (16 bytes, raw UUID)
 
 CBOR schema:
 
-```asm
+```json
 {
   "xw": bstr .size 32,    // X-Wing decapsulation key (seed)
   "ds": bstr .size 32,    // ML-DSA-65 seed (not expanded signing key)
@@ -435,7 +435,7 @@ Layout:
     "p" value: uint(1) (0x01)                             : 1 byte
     "id" key (0x62 0x69 0x64)                             : 3 bytes
     "id" value: bstr(16) header (0x50) + 16 data          : 1 + 16 = 17 bytes
-    "kind" key (0x64 0x6b 0x69 0x6e 0x64)                : 5 bytes
+    "kind" key (0x64 0x6b 0x69 0x6e 0x64)                 : 5 bytes
     "kind" value: tstr "collection" (0x6a + 10 bytes)     : 1 + 10 = 11 bytes
     "kind" value: tstr "file"        (0x64 + 4 bytes)     : 1 +  4 =  5 bytes
 
@@ -611,15 +611,19 @@ Resume procedure:
 
 1. Client sends `HEAD {tus_url}` and reads `Upload-Offset` (`O`).
 2. Client computes the index of the segment that contains byte `O`:
-        ```
-segment_index = floor(O / SEGMENT_CIPHERTEXT_SIZE_FULL)
-segment_start = segment_index x SEGMENT_CIPHERTEXT_SIZE_FULL
-        ```
+
+    ```rs
+        segment_index = floor(O / SEGMENT_CIPHERTEXT_SIZE_FULL)
+        segment_start = segment_index x SEGMENT_CIPHERTEXT_SIZE_FULL
+    ```
+
 3. If `O > segment_start`, the server holds a partial segment. The client **MUST** request the server to truncate the upload back to `segment_start` via the custom endpoint:
-        ```
-POST /api/v1/uploads/{upload_id}/rewind
-{ "to_offset": <segment_start> }
-        ```
+
+    ```rs
+        POST /api/v1/uploads/{upload_id}/rewind
+        { "to_offset": <segment_start> }
+    ```
+
    The server **MUST** verify the requested offset is segment-aligned, truncate the underlying storage object, update `tus_uploads.upload_offset`, and respond 204.
 4. Client resumes with `PATCH` from `segment_start`, re-deriving each segment nonce from `(generation, segment_index)` as defined in [§6.2](#62-per-segment-nonce-derivation).
 

@@ -12,18 +12,59 @@ const slugify = (s: string) =>
     .replace(/^(\d)/, "_$1");
 
 export default defineConfig({
-  lang: "en",
   title: "VexaHub",
   description: "Documentation for VexaHub to follow best practices.",
   head: [["link", { rel: "icon", href: "/favicon.ico" }]],
   lastUpdated: true,
   cleanUrls: true,
+
+  locales: {
+    root: {
+      label: "English",
+      lang: "en",
+    },
+    fr: {
+      label: "Français",
+      lang: "fr",
+      description:
+        "Documentation VexaHub pour suivre les meilleures pratiques.",
+      themeConfig: {
+        nav: [{ text: "Accueil", link: "/fr/" }],
+        sidebar: [
+          {
+            text: "Documentation",
+            items: [
+              { text: "Authentification", link: "/fr/AUTHENTICATION" },
+              {
+                text: "Cryptographie",
+                collapsed: false,
+                items: [
+                  { text: "Spécification", link: "/fr/CRYPTO" },
+                  { text: "Addendum", link: "/fr/CRYPTO_ADDENDUM" },
+                ],
+              },
+            ],
+          },
+          {
+            text: "Projet",
+            items: [
+              { text: "Sécurité", link: "/fr/SECURITY" },
+              { text: "Auteur", link: "/fr/AUTHOR" },
+            ],
+          },
+        ],
+        footer: {
+          message: "Publié sous la licence AGPL-3.0-or-later.",
+          copyright: "Copyright © 2026-present VexaHub",
+        },
+      },
+    },
+  },
+
   themeConfig: {
     nav: [{ text: "Home", link: "/" }],
     logo: "/logo.svg",
-    outline: {
-      level: [2, 3],
-    },
+    outline: { level: [2, 3] },
     externalLinkIcon: true,
     socialLinks: [{ icon: "github", link: "https://github.com/vexahub" }],
     sidebar: [
@@ -54,10 +95,9 @@ export default defineConfig({
       copyright: "Copyright © 2026-present VexaHub",
     },
   },
+
   markdown: {
-    anchor: {
-      slugify,
-    },
+    anchor: { slugify },
     config: (md) => {
       // Strip /public/ prefix from image src for MD compatibility
       const defaultImageRenderer = md.renderer.rules.image!;

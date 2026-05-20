@@ -121,7 +121,7 @@ since the log is being wiped.
 ```rs
 GET /api/v1/account/audit-log?limit=50&before={cursor}
 
-← {
+<- {
     "entries": [
       {
         "id": "...",
@@ -132,7 +132,7 @@ GET /api/v1/account/audit-log?limit=50&before={cursor}
       }
     ],
     "next_cursor": "..."
-  }
+   }
 ```
 
 > The response uses cursor-based pagination. `ip_network` is coarsened to a /24 (IPv4) or /48 (IPv6) prefix before storage and before display, so precise client IP addresses are never retained or returned.
@@ -215,7 +215,7 @@ shared collection, **ownership is transferred to the parent collection owner**
 
 ### 21.2 Owner acceptance flow
 
->If the owner has **auto-accept** enabled in their account settings, the client
+> If the owner has **auto-accept** enabled in their account settings, the client
 > **MUST** process all pending transfers automatically on sync without prompting
 > the user. Steps 1-5 execute identically; no confirmation UI is shown.
 >
@@ -324,7 +324,7 @@ CREATE INDEX ON pending_ownership_transfers (owner_user_id)
     WHERE revocation_pending = TRUE;
 CREATE INDEX ON pending_ownership_transfers (expires_at);
 
--- FOR user TABLE!
+-- FOR users TABLE!
 ALTER TABLE users ADD COLUMN auto_accept_subcollections BOOLEAN NOT NULL DEFAULT FALSE;
 ```
 
