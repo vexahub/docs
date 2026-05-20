@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique
 
-> **Version du document:** 11
+> **Version du document:** 12
 >
 > **Version du protocole:** 1
 >
@@ -2322,8 +2322,9 @@ La mise à jour anticipée (écriture de `trashed_at` sur chaque descendant) est
 #### Flux de restauration
 
 1. Le client envoie `POST /api/v1/collections/{collection_id}/restore`.
-2. Le serveur efface atomiquement `trashed_at = NULL` sur la collection cible UNIQUEMENT. **Les collections et fichiers descendants conservent leurs propres valeurs `trashed_at`.**
-3. Le serveur répond 204.
+2. Le serveur vérifie que l'utilisateur authentifié détient la collection visé. Retourne `403` si non.
+3. Le serveur efface atomiquement `trashed_at = NULL` sur la collection cible UNIQUEMENT. **Les collections et fichiers descendants conservent leurs propres valeurs `trashed_at`.**
+4. Le serveur répond 204.
 
 Cela signifie : si l'utilisateur met à la corbeille le dossier `A`, puis met indépendamment à la corbeille le sous-dossier `A/B`, puis restaure `A`, seul `A` revient. `A/B` et son contenu restent dans la corbeille car ils ont été mis à la corbeille par une action utilisateur séparée. C'est le comportement attendu : les actions utilisateur indépendantes ne sont pas annulées par la restauration d'un ancêtre.
 
@@ -2374,13 +2375,16 @@ La suppression de compte supprime définitivement l'utilisateur et toutes les do
 1. L'utilisateur initie la suppression de compte depuis les paramètres.
 2. Le serveur envoie un email de confirmation contenant un jeton à usage unique avec un TTL de 15 minutes.
 3. L'utilisateur clique sur le lien de confirmation.
-4. Le serveur procède atomiquement :
-   - Supprime tous les fichiers et leurs blobs de stockage (planifié de manière asynchrone).
+4. Le serveur exécute une transaction atomique unique :
+
    - Supprime toutes les lignes `file_keys`, `collection_keys`, `tus_uploads` et `shares` pour cet utilisateur.
    - Supprime toutes les lignes `collections` pour cet utilisateur.
    - Supprime toutes les lignes `sessions` et `persistent_sessions` pour cet utilisateur.
    - Supprime `VXWM`, `VXRM`, `VXSK` et `registration_record` de la ligne `users`.
    - Supprime la ligne `users`.
+
+   > La suppression des blobs de stockage est planifiée de manière asynchrone après la validation de la transaction.
+
 5. Tous les cookies de session actifs pour cet utilisateur deviennent invalides immédiatement à la prochaine requête.
 6. Le serveur répond 204 à la requête de confirmation de suppression.
 

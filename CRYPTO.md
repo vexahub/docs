@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-> **Document version:** 11
+> **Document version:** 12
 >
 > **Protocol version:** 1
 >
@@ -2499,8 +2499,9 @@ The eager update (writing `trashed_at` to every descendant) is acceptable becaus
 #### Restore flow
 
 1. Client sends `POST /api/v1/collections/{collection_id}/restore`.
-2. Server atomically clears `trashed_at = NULL` on the target collection ONLY. **Descendant collections and files retain their own `trashed_at` values.**
-3. Server responds 204.
+2. Server verifies the authenticated user owns the target collection. Returns `403` if not.
+3. Server atomically clears `trashed_at = NULL` on the target collection ONLY. **Descendant collections and files retain their own `trashed_at` values.**
+4. Server responds 204.
 
 This means: if the user trashes folder `A`, then independently trashes subfolder `A/B`, then restores `A`, only `A` comes back. `A/B` and its contents stay in trash because they were trashed by a separate user action. This is the expected behavior: independent user actions are not undone by restoring an ancestor.
 
@@ -2551,13 +2552,16 @@ Account deletion permanently removes the user and all associated data.
 1. User initiates account deletion from settings.
 2. Server sends a confirmation email containing a single-use token with a 15-minute TTL.
 3. User clicks the confirmation link.
-4. Server atomically:
-   - Deletes all files and their storage blobs (scheduled asynchronously).
+4. Server executes a single atomic database transaction:
+
    - Deletes all `file_keys`, `collection_keys`, `tus_uploads`, and `shares` rows for this user.
    - Deletes all `collections` rows for this user.
    - Deletes all `sessions` and `persistent_sessions` rows for this user.
-   - Deletes the `VXWM`, `VXRM`, `VXSK`, and `registration_record` from the `users` row.
+   - Clears `VXWM`, `VXRM`, `VXSK`, and `registration_record` from the `users` row.
    - Deletes the `users` row.
+
+   > Storage blob deletion is scheduled asynchronously after the transaction commits successfully.
+
 5. All active session cookies for this user become invalid immediately on the next request.
 6. Server responds 204 to the deletion confirmation request.
 
