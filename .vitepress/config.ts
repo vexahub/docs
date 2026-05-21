@@ -40,7 +40,7 @@ export default defineConfig({
                 collapsed: false,
                 items: [
                   { text: "Spécification", link: "/fr/CRYPTO" },
-                  { text: "Addendum", link: "/fr/CRYPTO_ADDENDUM" },
+                  { text: "Addenda", link: "/fr/CRYPTO_ADDENDUM" },
                 ],
               },
             ],

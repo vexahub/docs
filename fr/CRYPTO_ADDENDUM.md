@@ -1,4 +1,4 @@
-# VexaHub - Spécification cryptographique | **Addendum**
+# VexaHub - Spécification cryptographique | **Addenda**
 
 > **Version du document :** 1
 >
