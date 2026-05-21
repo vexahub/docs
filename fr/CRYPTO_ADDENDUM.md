@@ -1,10 +1,10 @@
 # VexaHub - Spécification cryptographique | **Addenda**
 
-> **Version du document :** 1
+> **Version du document :** 2
 >
 > **Statut :** (Brouillon) Proposé
 
-**Document parent :** [VexaHub - Spécification cryptographique](CRYPTO.md)
+**Document parent :** [VexaHub - Spécification cryptographique](/fr/CRYPTO.md)
 
 ## 20 Journal d'audit
 
@@ -81,7 +81,7 @@ POST /api/v1/account/audit-log/disable
 
 Les deux points d'accès requièrent une session authentifiée active. À l'activation, le serveur définit `audit_log_enabled = TRUE` et écrit une entrée **journal d'audit activé** comme premier événement. À la désactivation, le serveur écrit une entrée **journal d'audit désactivé** comme dernier événement, puis définit `audit_log_enabled = FALSE`. Cela garantit que le journal contient toujours un enregistrement clair des périodes pendant lesquelles la journalisation était active.
 
-La désactivation du journal d'audit ne **supprime pas** les entrées existantes. L'utilisateur conserve l'accès aux événements précédemment collectés. Si l'utilisateur souhaite effacer son journal, il le fait explicitement (voir §20.5).
+La désactivation du journal d'audit ne **supprime pas** les entrées existantes. L'utilisateur conserve l'accès aux événements précédemment collectés. Si l'utilisateur souhaite effacer son journal, il le fait explicitement (voir [§20.5](#205-effacement-du-journal-daudit)).
 
 ### 20.5 Effacement du journal d'audit
 
@@ -133,7 +133,7 @@ fn coarsen(client_ip: IpAddr) -> IpNet {
 
 L'appel `.trunc()` met les bits d'hôte à zéro, ce qu'exige le type `CIDR` de PostgreSQL.
 
-La colonne `ip_network` de la table `sessions` ([§9.3](/fr/CRYPTO.md#93-session-schemas)) suit la même règle. Mettez également à jour son schéma vers `CIDR` :
+La colonne `ip_network` de la table `sessions` ([§9.3](/fr/CRYPTO.md#93-schémas-de-session)) suit la même règle. Mettez également à jour son schéma vers `CIDR` :
 
 ```sql
 ALTER TABLE sessions ALTER COLUMN ip_network TYPE CIDR USING ip_network::CIDR;
@@ -157,125 +157,90 @@ Pour les nouveaux déploiements, déclarez-la directement en `CIDR` dès le dép
 | Un attaquant lit le journal d'audit d'un autre utilisateur                          | Bloqué : le point d'accès du journal est limité à l'utilisateur authentifié; l'accès inter-utilisateurs retourne 403                            |
 | L'utilisateur ne sait pas que la journalisation était désactivée lors d'un incident | L'événement `audit_log_disabled` marque la limite; les lacunes dans le journal sont visibles par horodatage                                     |
 
-## 21 Création de sous-collection par un éditeur
+## 21 Création de sous-collection par un éditeur (susceptible de modification)
 
-Lorsqu'un destinataire disposant de la permission `edit` crée une **sous-collection** dans une collection partagée, la **propriété est transférée au propriétaire de la collection parente** *de manière asynchrone* **via un transfert de clé assisté par le serveur**.
+Lorsqu'un destinataire disposant de la permission `edit` crée une **sous-collection** dans une collection partagée, la sous-collection appartient au propriétaire de la collection parente **immédiatement à la création**. Aucune fenêtre d'attente, aucun TTL, aucun transfert requis.
 
-> **Mécanisme de synchronisation :** Toutes les notifications de cette section sont délivrées via le mécanisme de synchronisation défini dans la spécification API. « Notifie via sync » ci-dessous fait toujours référence à ce mécanisme.
+### 21.1 Dérivation des clés
 
-### 21.1 Flux de création
+La `subCollectionWrapKey` est dérivée depuis la `collectionKey` parente, en miroir de la dérivation `fileKeyWrap` au [§4](/fr/CRYPTO.md#4-séparation-de-domaine-hkdf) :
 
-1. L'éditeur génère une nouvelle `collectionKey` via **CSPRNG**.
-2. L'éditeur encapsule `collectionKey` sous sa propre `masterKey` -> blob `VXCK` (étendue éditeur). **L'éditeur dispose d'un accès immédiat**.
-3. L'éditeur encapsule `collectionKey` sous une nouvelle **invitation de partage X-Wing** adressée au propriétaire de la collection parente -> blob `VXSH`. L'invitation **DOIT** définir `"p"` à `0x07` (*voir* + *modifier* + *repartager*). Le propriétaire reçoit des permissions complètes sur la **sous-collection indépendamment du niveau de permission propre de l'éditeur** sur la collection parente.
-4. Éditeur -> Serveur : `POST /api/v1/collections` avec :
-   - `parent_id` de la collection partagée
-   - `vxcm` (**métadonnées de collection** chiffrées)
-   - `vxck_editor` (clé encapsulée à **étendue éditeur**)
-   - `vxsh_owner` (**invitation X-Wing** pour le propriétaire)
-5. Le serveur **DOIT** vérifier que le partage de l'éditeur sur la collection parente a le bit `edit` (`0x02`) défini dans `permission` avant d'accepter la requête. Rejeter avec `HTTP 403` sinon.
-6. Le serveur stocke la nouvelle ligne de collection avec `user_id = editor_user_id` temporairement et insère une ligne dans `pending_ownership_transfers`.
-7. Le serveur notifie le propriétaire via sync qu'un transfert en attente requiert son approbation.
+| Dérivation                                        | Chaîne `info`                                          | Longueur |
+|---------------------------------------------------|--------------------------------------------------------|----------|
+| `subCollectionWrapKey` depuis `collectionKey`     | `vexahub:v1:subCollectionWrap:{subcollection_uuid}`    | 32       |
 
-### 21.2 Flux d'acceptation par le propriétaire
-
-> Si le propriétaire a **l'acceptation automatique** activée dans les paramètres de son compte, le client **DOIT** traiter automatiquement tous les transferts en attente à la synchronisation sans inviter l'utilisateur. Les étapes 1-5 s'exécutent de manière identique ; aucune interface de confirmation n'est affichée.
->
-> **Sémantique de la colonne `auto_accept` :** La colonne `auto_accept` sur `pending_ownership_transfers` capture la valeur du paramètre `auto_accept_subcollections` du propriétaire **au moment où la ligne de transfert est créée** dans la même transaction. Si le propriétaire modifie son paramètre après la création, la valeur capturée sur la ligne régit ce transfert spécifique.
->
-> La valeur en direct de `users.auto_accept_subcollections` ne régit que les transferts futurs. Cela évite une situation de compétition où le propriétaire désactive l'acceptation automatique entre la création et le traitement par sync.
-
-À la prochaine synchronisation, le **client du propriétaire de la collection parente** détecte le transfert en attente :
-
-1. Le propriétaire récupère `vxsh_owner` depuis la ligne `pending_ownership_transfers`.
-2. Le propriétaire vérifie la **signature ML-DSA-65** sur l'invitation de partage.
-3. Le propriétaire désencapsule le texte chiffré **X-Wing**, dérive `shareWrapKey`, désencapsule `collectionKey`.
-4. Le propriétaire encapsule `collectionKey` sous sa propre `masterKey` -> nouveau blob `VXCK` (étendue propriétaire).
-5. Propriétaire -> Serveur : `POST /api/v1/collections/{collection_id}/accept-ownership` avec `vxck_owner`.
-6. Le serveur procède de manière atomique :
-   - Remplace `collections.user_id` par le `user_id` du propriétaire de la collection parente.
-   - Stocke le `VXCK` à étendue propriétaire dans `collection_keys`.
-   - Conserve le `VXCK` à étendue éditeur dans `collection_keys`. L'éditeur conserve l'accès cryptographique tant que son partage `edit` sur la collection parente reste valide.
-   - Supprime la ligne `pending_ownership_transfers`.
-
-### 21.3 Flux de rejet par le propriétaire
-
-Si le propriétaire rejette explicitement le transfert :
-
-1. Propriétaire -> Serveur : `POST /api/v1/collections/{collection_id}/reject-ownership`.
-2. Le serveur procède de manière atomique :
-   - Supprime définitivement la ligne de la sous-collection.
-   - Supprime tous les `files`, `file_keys`, `collection_keys`, et blobs de stockage objet appartenant à la sous-collection. Les fichiers téléversés par l'éditeur pendant la fenêtre en attente sont inclus dans cette suppression.
-   - Supprime la ligne `pending_ownership_transfers`.
-3. Le serveur notifie l'éditeur via sync que la sous-collection a été rejetée. Le client de l'éditeur **DOIT** expulser la `collectionKey` de son cache Worker à la réception de cette notification.
-
-### 21.4 Révocation de partage pendant un transfert en attente
-
-Si le partage de l'éditeur sur la collection parente est révoqué alors qu'un transfert de propriété est en attente pour une sous-collection qu'il a créée, la révocation prend effet **immédiatement** au niveau de l'API. L'éditeur perd immédiatement l'accès à la collection parente. La résolution du transfert en attente est indépendante et se déroule comme suit :
-
-1. Le serveur révoque le partage de manière atomique et définit `revocation_pending = TRUE` sur toutes les lignes `pending_ownership_transfers` initiées par cet éditeur sous la collection parente affectée.
-2. Le serveur notifie le propriétaire via sync à la fois de la révocation et de tout transfert en attente nécessitant une résolution.
-3. Le propriétaire **DEVRAIT** explicitement accepter ou rejeter chaque transfert en attente. Le serveur **DOIT** les présenter comme une décision groupée : `"L'accès de l'éditeur X a été révoqué. Il a créé N sous-collections en attente de votre approbation. Acceptez ou rejetez chacune avant de continuer."`
-4. Si le propriétaire n'agit pas dans le TTL, le serveur rejette automatiquement tous les transferts en attente de cet éditeur, supprime atomiquement les sous-collections et leur contenu, et notifie le propriétaire via sync.
-5. Si le propriétaire est hors ligne indéfiniment, le TTL garantit que l'état en attente ne persiste pas éternellement. La révocation du partage parent est déjà pleinement en vigueur indépendamment de l'expiration du TTL.
-
-### 21.5 TTL de la fenêtre en attente
-
-Si le transfert reste en attente au-delà du TTL configurable par l'opérateur (**recommandé** : *7 jours*) **sans action du propriétaire**, le serveur le **rejette automatiquement**, **supprime atomiquement la sous-collection et tout son contenu**, et notifie l'éditeur via sync.
-
-> Le serveur **DOIT** notifier le propriétaire via sync **au moins 24 heures** avant l'expiration d'un transfert en attente. Si le propriétaire **n'agit pas après l'avertissement**, le transfert **est rejeté et la sous-collection supprimée** normalement.
-
-### 21.6 Ajouts au schéma
-
-```sql
-CREATE TABLE pending_ownership_transfers (
-    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    collection_id      UUID NOT NULL REFERENCES collections(id)
-                           ON DELETE RESTRICT,
-    editor_user_id     UUID NOT NULL REFERENCES users(id)
-                           ON DELETE RESTRICT,
-    owner_user_id      UUID NOT NULL REFERENCES users(id)
-                           ON DELETE RESTRICT,
-    vxsh_owner         BYTEA NOT NULL,
-    revocation_pending BOOLEAN NOT NULL DEFAULT FALSE,
-    auto_accept        BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at         TIMESTAMPTZ NOT NULL DEFAULT now() + INTERVAL '7 days'
-);
-
-CREATE UNIQUE INDEX ON pending_ownership_transfers (collection_id);
-CREATE INDEX ON pending_ownership_transfers (owner_user_id)
-    WHERE revocation_pending = FALSE;
-CREATE INDEX ON pending_ownership_transfers (owner_user_id)
-    WHERE revocation_pending = TRUE;
-CREATE INDEX ON pending_ownership_transfers (expires_at);
-
--- POUR LA TABLE users !
-ALTER TABLE users ADD COLUMN auto_accept_subcollections BOOLEAN NOT NULL DEFAULT FALSE;
+```rust
+subCollectionWrapKey = HKDF-SHA-512(
+    ikm  = parentCollectionKey,     // collectionKey de la collection parente
+    salt = 32 octets zéro,
+    info = "vexahub:v1:subCollectionWrap:" || subcollection_uuid,
+    L    = 32
+)
 ```
 
-`ON DELETE RESTRICT` sur toutes les clés étrangères garantit que les collections, éditeurs et propriétaires impliqués dans un transfert en attente ne peuvent pas être supprimés tant que le transfert n'est pas explicitement résolu. Les flux de suppression de compte **DOIVENT** résoudre ou rejeter tous les transferts en attente avant de supprimer la ligne utilisateur, conformément au parcours de dépendances défini au §19.3.
+L'IKM est une sortie **CSPRNG** uniformément aléatoire (héritée de `collectionKey`), donc un sel zéro n'a aucun impact sur la sécurité conformément à la politique de sel au [§4](/fr/CRYPTO.md#4-séparation-de-domaine-hkdf). Tous les UUIDs dans les chaînes `info` sont encodés en binaire big-endian brut de 16 octets.
 
-### 21.7 Note sur la vie privée
+### 21.2 Flux de création
 
-Pendant la fenêtre en attente, seul l'éditeur détient la `collectionKey` en clair. Le propriétaire de la collection parente n'a pas d'accès cryptographique à la sous-collection avant l'acceptation. Cette fenêtre devrait être gardée aussi courte que possible. Les clients **DEVRAIENT** traiter les transferts de propriété en attente de manière proactive à la synchronisation plutôt que de les différer.
+1. L'éditeur génère une nouvelle `collectionKey` via **CSPRNG**.
+2. L'éditeur génère un `subcollection_uuid` côté client (UUID v4).
+3. L'éditeur dérive `subCollectionWrapKey` depuis `parentCollectionKey` et `subcollection_uuid`.
+4. L'éditeur encapsule `collectionKey` avec `subCollectionWrapKey` -> blob `VXCK`.
+5. Éditeur -> Serveur : `POST /api/v1/collections` avec :
+   - `id` (`subcollection_uuid` généré côté client)
+   - `parent_id` de la collection partagée
+   - `vxcm` (métadonnées de collection chiffrées)
+   - `vxck` (`collectionKey` encapsulée)
+6. Le serveur **DOIT** vérifier :
+   - Le partage de l'éditeur sur la collection parente a le bit `edit` (`0x02`) défini. Rejet `HTTP 403` sinon.
+   - L'`id` fourni est un UUID valide et n'existe pas déjà. Rejet `HTTP 409` en cas de doublon.
+7. Le serveur crée la ligne de collection avec `user_id = parent_collection_owner_id` immédiatement. Le propriétaire est le propriétaire dès le premier instant.
+8. Le serveur répond `201` avec le `collection_id`.
 
-L'interface **DOIT** afficher un indicateur `« En attente d'approbation du propriétaire »` sur la sous-collection pour l'éditeur, et un indicateur `« En attente de votre approbation »` pour le propriétaire.
+### 21.3 Accès
 
-### 21.8 Garanties
+L'éditeur et le propriétaire dérivent tous deux `subCollectionWrapKey` depuis leur copie de `parentCollectionKey` et le `subcollection_uuid`. Les deux peuvent désencapsuler `collectionKey` depuis le blob `VXCK` indépendamment.
 
-| Propriété                                                                              | Statut                                                                                                |
-|----------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------|
-| L'éditeur dispose d'un accès immédiat après la création                                | ✅                                                                                                    |
-| Le propriétaire dispose d'un accès cryptographique avant l'acceptation                 | ❌ Fenêtre en attente                                                                                 |
-| Le propriétaire devient le vrai propriétaire après acceptation                         | ✅                                                                                                    |
-| Le propriétaire reçoit des permissions complètes sur la sous-collection acceptée       | ✅ `"p" = 0x07` appliqué dans `vxsh_owner`                                                            |
-| Le propriétaire peut accepter automatiquement les transferts sans approbation manuelle | ✅ Paramètre opt-in par compte                                                                        |
-| Le serveur peut lire le contenu de la sous-collection                                  | ❌ Connaissance zéro préservée                                                                        |
-| Le transfert est authentifié cryptographiquement                                       | ✅ Signature ML-DSA-65 sur `vxsh_owner`                                                               |
-| L'éditeur conserve l'accès après le transfert de propriété                             | ✅ Tant que son partage `edit` sur la collection parente reste valide                                 |
-| Les fichiers téléversés pendant la fenêtre en attente sont supprimés en cas de rejet   | ✅                                                                                                    |
-| La révocation du partage parent prend effet immédiatement                              | ✅ Indépendant de la résolution du transfert en attente                                               |
-| Le transfert en attente est résolu avant la suppression du compte                      | ✅ `ON DELETE RESTRICT` appliqué, parcours de dépendances [§19.3](./CRYPTO.md#193-account-deletion)   |
-| L'état en attente ne peut pas persister indéfiniment si le propriétaire est hors ligne | ✅ Rejet automatique par TTL après 7 jours                                                            |
-| Le serveur rejette la création si l'éditeur manque la permission `edit`                | ✅ HTTP 403 sur bit `0x02` manquant                                                                   |
+- **Propriétaire** : dispose de `parentCollectionKey` via son propre `VXCK` -> dérive `subCollectionWrapKey` -> désencapsule la `collectionKey` de la sous-collection. L'accès est immédiat, aucune interaction requise.
+- **Éditeur** : dispose de `parentCollectionKey` via son partage `VXSH` -> dérive `subCollectionWrapKey` -> désencapsule la `collectionKey` de la sous-collection. L'accès persiste tant que son partage `edit` sur la collection parente reste valide.
+
+> La vérification de la permission `edit` (bit `0x02`) est appliquée uniquement côté serveur. Un éditeur avec la permission `view` (`0x01`) détient techniquement `parentCollectionKey` et pourrait dériver `subCollectionWrapKey` côté client, mais le serveur rejette toute tentative de création avec `HTTP 403`. Cela est cohérent avec [§11.6](/fr/CRYPTO.md#116-permissions-de-partage) : les permissions sont appliquées au niveau de la couche serveur, pas au niveau cryptographique.
+
+### 21.4 Révocation de partage et rotation de clé
+
+Lorsque le partage de l'éditeur sur la collection parente est révoqué, la rotation des clés se déroule conformément au [§11.1](/fr/CRYPTO.md#111-révocation-de-partage) :
+
+1. La `parentCollectionKey` est renouvelée. Une nouvelle `collectionKey` est générée pour la collection parente.
+2. Le propriétaire désencapsule chaque `collectionKey` de sous-collection en utilisant l'**ancienne** `subCollectionWrapKey` (dérivée de l'ancienne `parentCollectionKey`).
+3. Le propriétaire dérive les nouvelles valeurs de `subCollectionWrapKey` depuis la **nouvelle** `parentCollectionKey` et chaque `subcollection_uuid`.
+4. Le propriétaire réencapsule chaque `collectionKey` de sous-collection avec la nouvelle `subCollectionWrapKey` -> nouveaux blobs `VXCK`, téléversés vers le serveur.
+5. L'éditeur ne peut plus dériver `subCollectionWrapKey`; il n'a pas accès à la nouvelle `parentCollectionKey`.
+
+Le coût est identique à la réencapsulation des blobs `VXFK` après révocation ([§11.1](/fr/CRYPTO.md#111-révocation-de-partage)). Les sous-collections sont traitées comme des ressources encapsulées supplémentaires aux côtés des fichiers.
+
+### 21.5 Schéma
+
+Aucune nouvelle table requise. Les sous-collections créées par les éditeurs utilisent les tables `collections` et `collection_keys` existantes. Le serveur accepte un `id` fourni par le client (UUID v4) lors de la création de collection et applique l'unicité.
+
+```sql
+-- Aucun changement de schéma au-delà de ce que §11.1 requiert déjà.
+-- collections.user_id = parent_collection_owner_id à la création.
+```
+
+### 21.6 Séparation de domaine HKDF
+
+La chaîne d'info `"vexahub:v1:subCollectionWrap:"` est distincte de toutes les chaînes d'info existantes au [§4](/fr/CRYPTO.md#4-séparation-de-domaine-hkdf). Aucun incrément de version de protocole requis.
+
+### 21.7 Garanties
+
+| Propriété                                                                     | Statut                                                              |
+|-------------------------------------------------------------------------------|---------------------------------------------------------------------|
+| L'éditeur dispose d'un accès immédiat après la création                       | ✅                                                                  |
+| Le propriétaire dispose d'un accès cryptographique immédiat après la création | ✅ Aucune fenêtre d'attente                                         |
+| Le propriétaire est le vrai propriétaire dès la création                      | ✅ `user_id = owner_id` à l'insertion                               |
+| Aucun TTL, aucun état en attente, aucun transfert                             | ✅                                                                  |
+| Le serveur peut lire le contenu de la sous-collection                         | ❌ Zéro connaissance préservée                                      |
+| L'éditeur perd l'accès lors de la révocation du partage parent                | ✅ La rotation de `parentCollectionKey` invalide l'accès            |
+| Le propriétaire conserve l'accès après la rotation de `parentCollectionKey`   | ✅ Réencapsule `VXCK` avec la nouvelle `subCollectionWrapKey`       |
+| Le serveur rejette la création si l'éditeur manque la permission `edit`       | ✅ HTTP 403 sur bit `0x02` manquant                                 |
+| Aucun incrément de version de protocole requis                                | ✅ Nouvelle chaîne d'info HKDF uniquement                           |
