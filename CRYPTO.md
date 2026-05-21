@@ -348,7 +348,7 @@ CBOR schema:
 
 > Parsers **MUST** reject non-canonical **CBOR** input. Any blob or payload that does not conform to [RFC 8949 §4.2.1][cbor_rfc] deterministic encoding **MUST** cause a hard error, **never** silent acceptance or re-canonicalization.
 
-### 5.8 `VXCK` - Wrapped Collection Key (new section)
+### 5.8 `VXCK` - Wrapped Collection Key
 
 ```rs
 Offset  Size  Field
@@ -366,7 +366,7 @@ Total: 78 bytes
 AAD: user_id ‖ collection_id (32 bytes, both raw UUID)
 ```
 
-### 5.9 `VXFK` - Wrapped File Key (new section)
+### 5.9 `VXFK` - Wrapped File Key
 
 ```rs
 Offset  Size  Field

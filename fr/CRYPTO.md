@@ -6,7 +6,7 @@
 >
 > **Status:** (Brouillon) Accepté
 
-**Voir aussi:** [Spécification cryptographique | Addendum](/fr/CRYPTO_ADDENDUM.md)
+**Voir aussi:** [Spécification cryptographique | Addenda](/fr/CRYPTO_ADDENDUM.md)
 
 Ce document est l'unique source de vérité pour toutes les décisions cryptographiques de VexaHub. Toute modification des paramètres, algorithmes, chemins de dérivation ou formats binaires définis ici constitue un changement incompatible pour les comptes existants et **DOIT** incrémenter la version du protocole (voir [§13](#13-versionnage-du-protocole-et-migration)).
 
@@ -342,7 +342,7 @@ Schéma CBOR :
 
 > Les parseurs **DOIVENT** rejeter les entrées **CBOR** non canoniques. Tout blob ou charge utile non conforme à l'encodage déterministe du [RFC 8949 §4.2.1][cbor_rfc] **DOIT** provoquer une erreur critique, **jamais** une acceptation silencieuse ou une recanonicali­sation.
 
-### 5.8 `VXCK` - Clé de collection encapsulée (nouvelle section)
+### 5.8 `VXCK` - Clé de collection encapsulée
 
 ```rs
 Décalage  Taille  Champ
@@ -360,7 +360,7 @@ Total : 78 octets
 AAD : user_id ‖ collection_id (32 octets, UUIDs bruts)
 ```
 
-### 5.9 `VXFK` - Clé de fichier encapsulée (nouvelle section)
+### 5.9 `VXFK` - Clé de fichier encapsulée
 
 ```rs
 Décalage  Taille  Champ
