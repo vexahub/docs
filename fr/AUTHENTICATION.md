@@ -4,7 +4,7 @@
 >
 > Ce document couvre le système d'authentification : le protocole **OPAQUE**, ce qui est **créé à l'inscription**, ce qui est **reconstruit à la connexion**, et la gestion des sessions.
 >
-> Pour la **spécification cryptographique complète**, voir la [spec crypto principale](CRYPTO.md).
+> Pour la **spécification cryptographique complète**, voir la [spec crypto principale](/fr/CRYPTO.md).
 
 ## Table des matières
 
