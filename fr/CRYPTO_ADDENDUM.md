@@ -157,7 +157,7 @@ Pour les nouveaux déploiements, déclarez-la directement en `CIDR` dès le dép
 | Un attaquant lit le journal d'audit d'un autre utilisateur                          | Bloqué : le point d'accès du journal est limité à l'utilisateur authentifié; l'accès inter-utilisateurs retourne 403                            |
 | L'utilisateur ne sait pas que la journalisation était désactivée lors d'un incident | L'événement `audit_log_disabled` marque la limite; les lacunes dans le journal sont visibles par horodatage                                     |
 
-## 21 Création de sous-collection par un éditeur (susceptible de modification)
+## 21 Création de sous-collection par un éditeur (susceptible d'être modifiée)
 
 Lorsqu'un destinataire disposant de la permission `edit` crée une **sous-collection** dans une collection partagée, la sous-collection appartient au propriétaire de la collection parente **immédiatement à la création**. Aucune fenêtre d'attente, aucun TTL, aucun transfert requis.
 
