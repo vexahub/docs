@@ -795,19 +795,6 @@ Un job planifié **DOIT** périodiquement (recommandé : toutes les heures) supp
 | Le serveur observe des valeurs `content_id` inchangées après une rotation de `collectionKey`      | Accepté : fuite de métadonnées mineure (ensemble de fichiers inchangé), négligeable par rapport à ce que le serveur sait déjà (nombre de fichiers, tailles de texte chiffré). Le contenu reste entièrement protégé. |
 | Le serveur met à niveau `permission` sur un enregistrement de partage pour accorder un accès élevé| Détecté : le destinataire **DOIT** vérifier que le `"p"` déchiffré correspond à la colonne `permission` visible par le serveur; non-correspondance -> partage rejeté                                                |
 
-## 7. OPAQUE Protocol
-
-### 7.1 Implementation
-
-VexaHub implements **OPAQUE** ([RFC 9807][opaque_rfc]) in Rust crates, which serves as the cryptographic source of truth for all clients and the server. The crates are compiled to:
-
-- **WebAssembly** via `wasm-bindgen` for the **SvelteKit** webapp.
-- **Native** Rust linkage for the **Tauri** desktop application.
-- **NAPI-RS** bindings for the **backend**.
-- **UniFFI** bindings for future **Android (Kotlin)** and **iOS (Swift)** clients.
-
-A **single** implementation produces **byte-for-byte** identical outputs across all targets, verified by the cross-target test vectors in [§14](#14-vecteurs-de-test).
-
 ## 7. Protocole OPAQUE
 
 ### 7.1 Implémentation
