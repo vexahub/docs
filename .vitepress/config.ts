@@ -126,6 +126,7 @@ export default defineConfig({
           : self.renderToken(tokens, idx, options);
       };
 
+      // Rewrite relative .md links to kebab-case lowercase URLs, preserving locale
       const defaultLinkRenderer = md.renderer.rules.link_open!;
       md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
         const token = tokens[idx];
@@ -138,9 +139,12 @@ export default defineConfig({
               .replace(/\.md$/, "")
               .replace(/_/g, "-")
               .toLowerCase();
+            const locale = env?.relativePath?.includes("/")
+              ? "/" + env.relativePath.split("/")[0]
+              : "";
             const cleanPath = clean.startsWith("/")
               ? clean
-              : `/${clean.replace(/^\.\//, "")}`;
+              : `${locale}/${clean.replace(/^\.\//, "")}`;
             token.attrs![hrefIndex][1] = fragment
               ? `${cleanPath}#${fragment}`
               : cleanPath;
