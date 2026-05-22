@@ -133,18 +133,23 @@ export default defineConfig({
         const hrefIndex = token.attrIndex("href");
         if (hrefIndex >= 0) {
           const href = token.attrs![hrefIndex][1];
-          if (!href.startsWith("http") && /^\.?\/?\w+[#.]/.test(href)) {
+          if (
+            !href.startsWith("http") &&
+            (href.includes(".md") || /^\.?\/?\w+#/.test(href))
+          ) {
             const [path, fragment] = href.split("#");
             const clean = path
               .replace(/\.md$/, "")
               .replace(/_/g, "-")
               .toLowerCase();
-            const locale = env?.relativePath?.includes("/")
-              ? "/" + env.relativePath.split("/")[0]
-              : "";
             const cleanPath = clean.startsWith("/")
               ? clean
-              : `${locale}/${clean.replace(/^\.\//, "")}`;
+              : (() => {
+                  const locale = env?.relativePath?.includes("/")
+                    ? "/" + env.relativePath.split("/")[0]
+                    : "";
+                  return `${locale}/${clean.replace(/^\.\//, "")}`;
+                })();
             token.attrs![hrefIndex][1] = fragment
               ? `${cleanPath}#${fragment}`
               : cleanPath;
