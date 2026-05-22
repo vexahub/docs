@@ -125,6 +125,22 @@ export default defineConfig({
           ? defaultImageRenderer(tokens, idx, options, env, self)
           : self.renderToken(tokens, idx, options);
       };
+
+      const defaultLinkRenderer = md.renderer.rules.link_open!;
+      md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+        const token = tokens[idx];
+        const hrefIndex = token.attrIndex("href");
+        if (hrefIndex >= 0) {
+          const href = token.attrs![hrefIndex][1];
+          if (href.endsWith(".md") && !href.startsWith("http")) {
+            token.attrs![hrefIndex][1] =
+              "/" + href.replace(/\.md$/, "").replace(/_/g, "-").toLowerCase();
+          }
+        }
+        return defaultLinkRenderer
+          ? defaultLinkRenderer(tokens, idx, options, env, self)
+          : self.renderToken(tokens, idx, options);
+      };
     },
   },
 });
