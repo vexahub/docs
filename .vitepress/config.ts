@@ -133,8 +133,13 @@ export default defineConfig({
         if (hrefIndex >= 0) {
           const href = token.attrs![hrefIndex][1];
           if (href.endsWith(".md") && !href.startsWith("http")) {
-            token.attrs![hrefIndex][1] =
-              "/" + href.replace(/\.md$/, "").replace(/_/g, "-").toLowerCase();
+            const clean = href
+              .replace(/\.md$/, "")
+              .replace(/_/g, "-")
+              .toLowerCase();
+            token.attrs![hrefIndex][1] = clean.startsWith("/")
+              ? clean
+              : `/${clean}`;
           }
         }
         return defaultLinkRenderer
