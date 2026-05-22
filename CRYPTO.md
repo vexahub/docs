@@ -986,16 +986,17 @@ Browsers supporting the WebAuthn `prf` extension can derive a device-bound secre
 
 Support as of early 2026 is now broad:
 
-- Chrome, Edge, Brave, and Samsung Internet via Google Password Manager passkeys (100% PRF-on-create success in Q1 2026 community testing)
-- Firefox 148+
-- Safari via Apple Passwords/iCloud Keychain
-- Windows Hello after the February 2026 update (KB5077181).
+- **Android** offers the most robust PRF support: passkeys stored by the platform password manager include PRF by default, working across Chrome, Edge and Samsung Internet.
+- **macOS 15** enabled PRF via iCloud Keychain across Safari 18+, Chrome 132+ and Firefox 139; **iOS 18.4+** resolved earlier bugs affecting cross-device authentication flows.
+- **Windows Hello** on Windows 11 25H2 gained the ability to return PRF values during authentication; Firefox 148+ was the first browser to expose this fully, with Chrome 147 following for credential creation via `WEBAUTHN_API_VERSION_8`.
+- **Linux**: No platform authenticator exists in the standard browser stack. PRF works only through roaming hardware keys (YubiKey 5 Series and above) over USB/NFC. TPM-backed workarounds exist but are not appropriate for general users.
+- Community testing across hundreds of PRF ceremonies (Q1 2026) found that synced passkey providers achieve 100% PRF-on-create success rates, with Windows Hello joining that cohort after the February 2026 update (KB5077181).
 
-> The main remaining gap is roaming authenticators (YubiKeys) on iOS/macOS
+> The main remaining gap is roaming authenticators (YubiKeys) on iOS/macOS.
 >
-> Apple has acknowledged this but not yet shipped it.
+> Apple shipped PRF support in iOS 18 and macOS 15, but only for platform credentials stored in iCloud Keychain. Hardware security keys connected over USB or NFC on those platforms do not yet benefit from it.
 
-Implementation requires a registered passkey per device and a graceful fallback to the standard `localKey` model for unsupported combinations. Tracked in [§18](#18-open-questions-and-future-work).
+Implementation requires a registered passkey per device. PRF is opt-in; users who enable it replace `localKey` entirely rather than falling back to it. Tracked in [§18](#18-open-questions-and-future-work).
 
 #### 9.2.3 Mandatory safeguards
 
@@ -1018,7 +1019,7 @@ CREATE TABLE sessions (
     expires_at   TIMESTAMPTZ NOT NULL,
     revoked_at   TIMESTAMPTZ,
     user_agent   TEXT,
-    ip_network   CIDR
+    ip_network   INET
 );
 
 CREATE TABLE persistent_sessions (

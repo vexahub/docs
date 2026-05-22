@@ -133,13 +133,7 @@ fn coarsen(client_ip: IpAddr) -> IpNet {
 
 L'appel `.trunc()` met les bits d'hôte à zéro, ce qu'exige le type `CIDR` de PostgreSQL.
 
-La colonne `ip_network` de la table `sessions` ([§9.3](/fr/CRYPTO.md#93-schémas-de-session)) suit la même règle. Mettez également à jour son schéma vers `CIDR` :
-
-```sql
-ALTER TABLE sessions ALTER COLUMN ip_network TYPE CIDR USING ip_network::CIDR;
-```
-
-Pour les nouveaux déploiements, déclarez-la directement en `CIDR` dès le départ.
+La table des `sessions` stockent l'IP exacte du client en tant que `INET`, puisque c'est utilisé pour des raisons de sécurité (affichage des sessions active, réponse aux incidents) et est automatiquement purgé quand la session expire.
 
 ### 20.7 Limitations
 

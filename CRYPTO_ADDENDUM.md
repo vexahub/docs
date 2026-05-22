@@ -154,13 +154,7 @@ fn coarsen(client_ip: IpAddr) -> IpNet {
 
 The `.trunc()` call zeroes host bits, which is what the PostgreSQL `CIDR` type requires.
 
-The `ip_network` column on the `sessions` table ([§9.3](CRYPTO.md#93-session-schemas)) follows the same rule. Update its schema to `CIDR` as well:
-
-```sql
-ALTER TABLE sessions ALTER COLUMN ip_network TYPE CIDR USING ip_network::CIDR;
-```
-
-For new deployments, declare it as `CIDR` from the start.
+The `sessions` table stores the exact client IP as `INET`, since it is used for security purposes (active session display, incident response) and is automatically purged when the session expires.
 
 ### 20.7 Limitations
 

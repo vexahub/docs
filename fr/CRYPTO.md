@@ -979,16 +979,17 @@ Les navigateurs prenant en charge l'extension WebAuthn `prf` peuvent dériver un
 
 La prise en charge début 2026 est désormais large :
 
-- Chrome, Edge, Brave et Samsung Internet via les clés d'accès Google Password Manager (100 % de succès PRF à la création dans les tests communautaires du T1 2026)
-- Firefox 148+
-- Safari via Apple Passwords / iCloud Keychain
-- Windows Hello après la mise à jour de février 2026 (KB5077181)
+- **Android** offre la prise en charge PRF la plus robuste : les clés d'accès stockées par le gestionnaire de mots de passe de la plateforme incluent PRF par défaut, fonctionnant sur Chrome, Edge et Samsung Internet.
+- **macOS 15** a activé PRF via iCloud Keychain sur Safari 18+, Chrome 132+ et Firefox 139 ; **iOS 18.4+** a corrigé des bugs antérieurs affectant les flux d'authentification entre appareils.
+- **Windows Hello** sur Windows 11 25H2 a acquis la capacité de retourner des valeurs PRF lors de l'authentification ; Firefox 148+ a été le premier navigateur à l'exposer pleinement, suivi de Chrome 147 pour la création de clés d'accès via `WEBAUTHN_API_VERSION_8`.
+- **Linux** : Aucun authentificateur de plateforme n'existe dans la pile navigateur standard. PRF ne fonctionne que via des clés matérielles itinérantes (YubiKey 5 Series et supérieur) en USB/NFC. Des solutions de contournement basées sur le TPM existent mais ne conviennent pas au grand public.
+- Les tests communautaires portant sur des centaines de cérémonies PRF (T1 2026) ont montré que les fournisseurs de clés d'accès synchronisées atteignent 100 % de succès PRF à la création, Windows Hello rejoignant ce groupe après la mise à jour de février 2026 (KB5077181).
 
 > La principale lacune restante concerne les authentificateurs itinérants (YubiKeys) sur iOS/macOS.
 >
-> Apple a reconnu le problème mais n'a pas encore livré de correctif.
+> Apple a livré la prise en charge PRF dans iOS 18 et macOS 15, mais uniquement pour les clés d'accès de plateforme stockées dans iCloud Keychain. Les clés de sécurité matérielles connectées en USB ou NFC sur ces plateformes n'en bénéficient pas encore.
 
-L'implémentation nécessite une clé d'accès enregistrée par appareil et un repli gracieux vers le modèle `localKey` standard pour les combinaisons non prises en charge. Suivi au [§18](#18-questions-ouvertes-et-travaux-futurs).
+L'implémentation nécessite une clé d'accès enregistrée par appareil. PRF est opt-in; les utilisateurs qui l'activent remplacent entièrement `localKey` plutôt que d'y revenir. Suivi au [§18](#18-questions-ouvertes-et-travaux-futurs).
 
 #### 9.2.3 Mesures de protection obligatoires
 
@@ -1011,7 +1012,7 @@ CREATE TABLE sessions (
     expires_at   TIMESTAMPTZ NOT NULL,
     revoked_at   TIMESTAMPTZ,
     user_agent   TEXT,
-    ip_network   CIDR
+    ip_network   INET
 );
 
 CREATE TABLE persistent_sessions (
