@@ -17,7 +17,18 @@ export default defineConfig({
   head: [["link", { rel: "icon", href: "/favicon.ico" }]],
   lastUpdated: true,
   cleanUrls: true,
-
+  rewrites: {
+    "AUTHENTICATION.md": "authentication.md",
+    "CRYPTO.md": "crypto.md",
+    "CRYPTO_ADDENDUM.md": "crypto-addendum.md",
+    "SECURITY.md": "security.md",
+    "AUTHOR.md": "author.md",
+    "fr/AUTHENTICATION.md": "fr/authentication.md",
+    "fr/CRYPTO.md": "fr/crypto.md",
+    "fr/CRYPTO_ADDENDUM.md": "fr/crypto-addendum.md",
+    "fr/SECURITY.md": "fr/security.md",
+    "fr/AUTHOR.md": "fr/author.md",
+  },
   locales: {
     root: {
       label: "English",
@@ -34,13 +45,13 @@ export default defineConfig({
           {
             text: "Documentation",
             items: [
-              { text: "Authentification", link: "/fr/AUTHENTICATION" },
+              { text: "Authentification", link: "/fr/authentication" },
               {
                 text: "Cryptographie",
                 collapsed: false,
                 items: [
-                  { text: "Spécification", link: "/fr/CRYPTO" },
-                  { text: "Addenda", link: "/fr/CRYPTO_ADDENDUM" },
+                  { text: "Spécification", link: "/fr/crypto" },
+                  { text: "Addenda", link: "/fr/crypto-addendum" },
                 ],
               },
             ],
@@ -48,8 +59,8 @@ export default defineConfig({
           {
             text: "Projet",
             items: [
-              { text: "Sécurité", link: "/fr/SECURITY" },
-              { text: "Auteur", link: "/fr/AUTHOR" },
+              { text: "Sécurité", link: "/fr/security" },
+              { text: "Auteur", link: "/fr/author" },
             ],
           },
         ],
@@ -71,13 +82,13 @@ export default defineConfig({
       {
         text: "Documentation",
         items: [
-          { text: "Authentication", link: "/AUTHENTICATION" },
+          { text: "Authentication", link: "/authentication" },
           {
             text: "Cryptography",
             collapsed: false,
             items: [
-              { text: "Specification", link: "/CRYPTO" },
-              { text: "Addendum", link: "/CRYPTO_ADDENDUM" },
+              { text: "Specification", link: "/crypto" },
+              { text: "Addendum", link: "/crypto-addendum" },
             ],
           },
         ],
@@ -85,8 +96,8 @@ export default defineConfig({
       {
         text: "Project",
         items: [
-          { text: "Security", link: "/SECURITY" },
-          { text: "Author", link: "/AUTHOR" },
+          { text: "Security", link: "/security" },
+          { text: "Author", link: "/author" },
         ],
       },
     ],

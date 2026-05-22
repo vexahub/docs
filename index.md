@@ -8,23 +8,23 @@ hero:
   actions:
     - theme: brand
       text: Get Started
-      link: /AUTHENTICATION
+      link: /authentication
 
 
 features:
   - icon: 🔐
     title: Authentication
     details: Authentication protocols and best practices for VexaHub, including OPAQUE rationale and crypto spec guidelines.
-    link: /AUTHENTICATION
+    link: /authentication
     linkText: Read more
   - icon: 🔒
     title: Cryptography
     details: Cryptographic specifications and standards used across VexaHub services and infrastructure.
-    link: /CRYPTO
+    link: /crypto
     linkText: Read more
   - icon: ✍️
     title: Author
     details: Authorship guidelines, contributor information, and documentation style standards.
-    link: /AUTHOR
+    link: /author
     linkText: Read more
 ---
