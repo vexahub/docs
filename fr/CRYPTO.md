@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique
 
-> **Version du document:** 12
+> **Version du document:** 13
 >
 > **Version du protocole:** 1
 >
@@ -64,21 +64,23 @@ L'intermédiaire `masterKeyWrapper` existe par souci d'uniformité avec toutes l
 
 ### 3.1 Récapitulatif des clés
 
-| Clé                                 | Taille | Origine                                         | Durée de vie                      | Le serveur voit     |
-|-------------------------------------|--------|-------------------------------------------------|-----------------------------------|---------------------|
-| password                            | var    | Saisie utilisateur                              | Frappe                            | Jamais              |
-| exportKey                           | 64     | Sortie OPAQUE                                   | Session                           | Jamais              |
-| masterKeyWrapper                    | 32     | HKDF(exportKey)                                 | Session                           | Jamais              |
-| sessionKey                          | 64     | Sortie OPAQUE                                   | Session                           | Oui (pour cookie)   |
-| masterKey                           | 32     | CSPRNG à l'inscription                          | Permanent                         | Encapsulé seulement |
-| localKey                            | 32     | CSPRNG à l'activation de « Se souvenir de moi » | Jusqu'à révocation ou déconnexion | Jamais              |
-| collectionKey                       | 32     | CSPRNG à la création de collection              | Jusqu'à rotation                  | Encapsulé seulement |
-| fileKey                             | 32     | CSPRNG à la création de fichier                 | Jusqu'à rotation                  | Encapsulé seulement |
-| recoveryKey                         | 32     | HKDF(graine BIP39)                              | Récupération                      | Jamais              |
-| Clé de désencapsulation X-Wing      | 32     | CSPRNG à l'inscription                          | Permanent                         | Encapsulé seulement |
-| Clé d'encapsulation X-Wing (pub)    | 1216   | Dérivée de la clé de désencapsulation           | Permanent                         | En clair            |
-| Graine de signature ML-DSA-65       | 32     | CSPRNG à l'inscription                          | Permanent                         | Encapsulé seulement |
-| Clé de vérification ML-DSA-65 (pub) | 1952   | Dérivée de la graine de signature               | Permanent                         | En clair            |
+| Clé                                 | Taille | Origine                                         | Durée de vie                      | Le serveur voit                          |
+|-------------------------------------|--------|-------------------------------------------------|-----------------------------------|------------------------------------------|
+| password                            | var    | Saisie utilisateur                              | Frappe                            | Jamais                                   |
+| exportKey                           | 64     | Sortie OPAQUE                                   | Session                           | Jamais                                   |
+| masterKeyWrapper                    | 32     | HKDF(exportKey)                                 | Session                           | Jamais                                   |
+| sessionKey                          | 64     | Sortie OPAQUE                                   | Session                           | Oui (pour cookie)                        |
+| masterKey                           | 32     | CSPRNG à l'inscription                          | Permanent                         | Encapsulé seulement                      |
+| localKey                            | 32     | CSPRNG à l'activation de « Se souvenir de moi » | Jusqu'à révocation ou déconnexion | Jamais                                   |
+| collectionKey                       | 32     | CSPRNG à la création de collection              | Jusqu'à rotation                  | Encapsulé seulement                      |
+| fileKey                             | 32     | CSPRNG à la création de fichier                 | Jusqu'à rotation                  | Encapsulé seulement                      |
+| recoveryKey                         | 32     | HKDF(graine BIP39)                              | Récupération                      | Jamais                                   |
+| Clé de désencapsulation X-Wing      | 32     | CSPRNG à l'inscription                          | Permanent                         | Encapsulé seulement                      |
+| Clé d'encapsulation X-Wing (pub)    | 1216   | Dérivée de la clé de désencapsulation           | Permanent                         | En clair                                 |
+| Graine de signature ML-DSA-65       | 32     | CSPRNG à l'inscription                          | Permanent                         | Encapsulé seulement                      |
+| Clé de vérification ML-DSA-65 (pub) | 1952   | Dérivée de la graine de signature               | Permanent                         | En clair                                 |
+| linkKey                             | 32     | CSPRNG (sans mdp) ou Argon2id (avec mdp)        | Accès au lien                     | Jamais (fragment ou dérivée côté client) |
+| publicLinkWrapKey                   | 32     | HKDF(linkKey)                                   | Accès au lien                     | Jamais                                   |
 
 ## 4. Séparation de domaine HKDF
 
@@ -102,6 +104,7 @@ Pour `shareWrapKey`, l'**IKM** est le secret partagé **X-Wing** (sortie d'**un 
 | segmentNonce depuis fileContentKey                 | `vexahub:v1:segmentNonce:` ‖ uint32_be(generation) ‖ uint64_be(segment_index)         | 24                           |
 | recoveryKey depuis la graine BIP39                 | `vexahub:v1:recoveryKey:{user_uuid}`                                                  | 32                           |
 | shareWrapKey depuis le secret partagé X-Wing       | `vexahub:v1:shareWrap:{share_uuid}`                                                   | 32 (sel aléatoire 32 octets) |
+| publicLinkWrapKey depuis linkKey                   | `vexahub:v1:publicLink:{link_id}`                                                     | 32                           |
 
 > Les sels HKDF ne sont pas des secrets ; l'unicité est assurée exclusivement par le champ `info`.
 >
@@ -139,6 +142,8 @@ fileKeyWrapKey = HKDF-SHA-512(
     L    = 32
 )
 ```
+
+> `linkKey` est soit une sortie CSPRNG brute (lien sans mot de passe), soit une sortie Argon2id (lien protégé par mot de passe). Dans les deux cas, la séparation de domaine HKDF via `link_id` garantit des clés d'enveloppement distinctes par lien. Le sel zéro s'applique (même politique que pour les autres dérivations dont l'IKM provient du CSPRNG).
 
 ## 5. Formats de blob binaires
 
@@ -448,6 +453,96 @@ L'ordre dans lequel l'encodeur *reçoit* les champs n'a pas d'importance ; ce qu
 Il s'agit d'une **défense en profondeur** aux côtés de la signature **ML-DSA-65**. Si une vérification de signature est **accidentellement** omise en raison d'un bug, la liaison **AAD** **empêche** quand même le serveur de rediriger des partages entre utilisateurs.
 
 > Les parseurs **DOIVENT** rejeter les entrées **CBOR** non canoniques. Tout blob ou charge utile non conforme à l'encodage déterministe du [RFC 8949 §4.2.1][cbor_rfc] **DOIT** provoquer une erreur critique, **jamais** une acceptation silencieuse ou une recanonicali­sation.
+
+### 5.11 `VXPL` - Blob de lien public
+
+Enveloppe une `collectionKey` ou une `fileKey` pour un accès anonyme via un lien public. Le blob est agnostique du type (les deux font 32 octets) ; l'enregistrement `public_links` côté serveur indique si la cible est un fichier ou une collection.
+
+```rs
+Offset  Taille  Champ
+------  ------  ---------------------------------------
+0       4       Magic "VXPL" (0x56 0x58 0x50 0x4C)
+4       1       Version du format (0x01)
+5       1       ID algorithme (0x01)
+6       24      Nonce (aléatoire)
+30      48      Texte chiffré (32 o clé + 16 o tag)
+------
+Total : 78 octets
+```
+
+```rs
+AAD : link_id (16 octets, UUID brut)
+```
+
+**Dérivation de la clé d'enveloppement :**
+
+```rs
+publicLinkWrapKey = HKDF-SHA-512(
+    ikm  = linkKey,
+    salt = 32 octets zéro,
+    info = "vexahub:v1:publicLink:" || link_id,
+    L    = 32
+)
+```
+
+`linkKey` est dérivée selon l'un des deux chemins, selon que le lien est protégé par mot de passe ou non :
+
+**Lien sans mot de passe :**
+
+```rs
+linkKey = CSPRNG(32)
+URL : /link/{token}#key={base64url(linkKey)}
+```
+
+La `linkKey` est placée dans le fragment de l'URL, qui n'est jamais envoyé au serveur. Le `token` est une valeur opaque aléatoire de 32 octets générée côté serveur, distincte de `link_id`.
+
+**Lien protégé par mot de passe :**
+
+```rs
+linkKey = Argon2id(
+    password  = mot de passe fourni par l'utilisateur (UTF-8, normalisé NFC),
+    salt      = passwordSalt (32 octets, CSPRNG, stocké côté serveur),
+    m         = 131072 Kio (128 Mio),
+    t         = 3,
+    p         = 4,
+    L         = 32
+)
+URL : /link/{token}
+```
+
+Pas de fragment dans l'URL. Le visiteur accède au lien via `token`, le serveur renvoie `passwordSalt` (et `link_id`), et le client dérive `linkKey` à partir du mot de passe saisi par le visiteur. Le serveur ne voit jamais le mot de passe.
+
+> **Les paramètres Argon2id** sont identiques à ceux de l'enregistrement OPAQUE dans [§2](#2-primitives). C'est intentionnel : la même implémentation WASM/native est réutilisée, et le coût est approprié pour une opération de déverrouillage unique.
+
+**Schéma côté serveur :**
+
+```sql
+CREATE TABLE public_links (
+    id              UUID PRIMARY KEY,        -- link_id, généré côté client
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    file_id         UUID REFERENCES files(id) ON DELETE CASCADE,
+    collection_id   UUID REFERENCES collections(id) ON DELETE CASCADE,
+    token           TEXT NOT NULL UNIQUE,     -- 32 octets aléatoires, base64url
+    vxpl            BYTEA NOT NULL,           -- 78 octets
+    password_salt   BYTEA,                    -- 32 octets ou NULL (sans mot de passe)
+    max_downloads   INTEGER,                  -- NULL = illimité
+    download_count  INTEGER NOT NULL DEFAULT 0,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at      TIMESTAMPTZ,              -- NULL = pas d'expiration
+    revoked_at      TIMESTAMPTZ,
+    CONSTRAINT public_links_target_check CHECK (
+        (file_id IS NOT NULL AND collection_id IS NULL)
+        OR (file_id IS NULL AND collection_id IS NOT NULL)
+    )
+);
+
+CREATE INDEX ON public_links (token) WHERE revoked_at IS NULL;
+CREATE INDEX ON public_links (user_id) WHERE revoked_at IS NULL;
+```
+
+**Révocation :** définir `revoked_at` révoque l'accès API immédiatement. La clé enveloppée dans `VXPL` est la **vraie** `fileKey` ou `collectionKey`. Un attaquant ayant capturé le blob `VXPL` et la `linkKey` avant la révocation conserve la capacité de déchiffrer le contenu précédemment téléchargé. C'est la même limitation inhérente au E2EE que la révocation de partage ([§11.1](#111-révocation-de-partage)). Le mécanisme optionnel de re-chiffrement de [§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation) s'applique de manière identique à la révocation de lien public.
+
+> **`link_id` vs `token` :** `link_id` (UUID) est généré côté client et utilisé dans la chaîne `info` HKDF et l'AAD. `token` (32 octets aléatoires) est généré côté serveur comme valeur opaque de recherche pour le chemin URL. Cette séparation empêche le serveur de manipuler la liaison cryptographique : même si le serveur intervertit les valeurs `token` entre les liens, la non-correspondance de l'AAD sur `link_id` provoque l'échec du déchiffrement.
 
 ## 6. Chiffrement de fichier
 
@@ -794,6 +889,10 @@ Un job planifié **DOIT** périodiquement (recommandé : toutes les heures) supp
 | Le serveur tente de corréler des fichiers entre collections pour le même utilisateur              | Bloqué : `contentIdKey` est par collection, le même texte clair produit des `content_id` différents dans des collections différentes                                                                                |
 | Le serveur observe des valeurs `content_id` inchangées après une rotation de `collectionKey`      | Accepté : fuite de métadonnées mineure (ensemble de fichiers inchangé), négligeable par rapport à ce que le serveur sait déjà (nombre de fichiers, tailles de texte chiffré). Le contenu reste entièrement protégé. |
 | Le serveur met à niveau `permission` sur un enregistrement de partage pour accorder un accès élevé| Détecté : le destinataire **DOIT** vérifier que le `"p"` déchiffré correspond à la colonne `permission` visible par le serveur; non-correspondance -> partage rejeté                                                |
+| Le serveur intervertit les blobs VXPL entre les liens publics                                     | Bloqué par la liaison AAD sur `link_id`                                                                                                                                                                             |
+| Le serveur tente de forcer un lien protégé par mot de passe                                       | Bloqué : Argon2id 128 Mio ; le serveur ne voit jamais le mot de passe ni la `linkKey`                                                                                                                               |
+| Le serveur capture le fragment URL d'un lien sans mot de passe                                    | Impossible : les fragments URL ne sont jamais envoyés au serveur selon la spécification HTTP                                                                                                                        |
+| Un attaquant capture l'URL complète avant la révocation du lien                                   | Limitation inhérente au E2EE : identique à la révocation de partage ([§11.1](#111-révocation-de-partage))                                                                                                           |
 
 ## 7. Protocole OPAQUE
 

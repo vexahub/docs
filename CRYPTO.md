@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-> **Document version:** 12
+> **Document version:** 13
 >
 > **Protocol version:** 1
 >
@@ -64,21 +64,23 @@ The intermediate `masterKeyWrapper` exists for uniformity with all other derivat
 
 ### 3.1 Key summary
 
-| Key                        | Size  | Origin                               | Lifetime                   | Server sees            |
-|----------------------------|-------|--------------------------------------|----------------------------|------------------------|
-| password                   | var   | User input                           | Typing                     | Never                  |
-| exportKey                  | 64    | OPAQUE output                        | Session                    | Never                  |
-| masterKeyWrapper           | 32    | HKDF(exportKey)                      | Session                    | Never                  |
-| sessionKey                 | 64    | OPAQUE output                        | Session                    | Yes (used for cookie)  |
-| masterKey                  | 32    | CSPRNG at registration               | Permanent                  | Wrapped only           |
-| localKey                   | 32    | CSPRNG at `"Remember me"` activation | Until revocation or logout | Never                  |
-| collectionKey              | 32    | CSPRNG at collection creation        | Until rotation             | Wrapped only           |
-| fileKey                    | 32    | CSPRNG at file creation              | Until rotation             | Wrapped only           |
-| recoveryKey                | 32    | HKDF(BIP39 seed)                     | Recovery                   | Never                  |
-| X-Wing decaps key          | 32    | CSPRNG at registration               | Permanent                  | Wrapped only           |
-| X-Wing encaps key (pub)    | 1216  | Derived from decaps key              | Permanent                  | Plaintext              |
-| ML-DSA-65 signing seed     | 32    | CSPRNG at registration               | Permanent                  | Wrapped only           |
-| ML-DSA-65 verify key (pub) | 1952  | Derived from signing seed            | Permanent                  | Plaintext              |
+| Key                        | Size  | Origin                                  | Lifetime                   | Server sees                        |
+|----------------------------|-------|-----------------------------------------|----------------------------|------------------------------------|
+| password                   | var   | User input                              | Typing                     | Never                              |
+| exportKey                  | 64    | OPAQUE output                           | Session                    | Never                              |
+| masterKeyWrapper           | 32    | HKDF(exportKey)                         | Session                    | Never                              |
+| sessionKey                 | 64    | OPAQUE output                           | Session                    | Yes (used for cookie)              |
+| masterKey                  | 32    | CSPRNG at registration                  | Permanent                  | Wrapped only                       |
+| localKey                   | 32    | CSPRNG at `"Remember me"` activation    | Until revocation or logout | Never                              |
+| collectionKey              | 32    | CSPRNG at collection creation           | Until rotation             | Wrapped only                       |
+| fileKey                    | 32    | CSPRNG at file creation                 | Until rotation             | Wrapped only                       |
+| recoveryKey                | 32    | HKDF(BIP39 seed)                        | Recovery                   | Never                              |
+| X-Wing decaps key          | 32    | CSPRNG at registration                  | Permanent                  | Wrapped only                       |
+| X-Wing encaps key (pub)    | 1216  | Derived from decaps key                 | Permanent                  | Plaintext                          |
+| ML-DSA-65 signing seed     | 32    | CSPRNG at registration                  | Permanent                  | Wrapped only                       |
+| ML-DSA-65 verify key (pub) | 1952  | Derived from signing seed               | Permanent                  | Plaintext                          |
+| linkKey                    | 32    | CSPRNG (keyless) or Argon2id (password) | Link access                | Never (fragment or client-derived) |
+| publicLinkWrapKey          | 32    | HKDF(linkKey)                           | Link access                | Never                              |
 
 ## 4. HKDF Domain Separation
 
@@ -102,6 +104,7 @@ For `shareWrapKey`, the **IKM** is the **X-Wing** shared secret (output of **a K
 | segmentNonce from fileContentKey             | `vexahub:v1:segmentNonce:` ‖ uint32_be(generation) ‖ uint64_be(segment_index) | 24                    |
 | recoveryKey from BIP39 seed                  | `vexahub:v1:recoveryKey:{user_uuid}`                                          | 32                    |
 | shareWrapKey from X-Wing shared secret       | `vexahub:v1:shareWrap:{share_uuid}`                                           | 32 (RNG 32-byte salt) |
+| publicLinkWrapKey from linkKey               | `vexahub:v1:publicLink:{link_id}`                                             | 32                    |
 
 > HKDF salts are not secrets; uniqueness is enforced exclusively by the `info` field.
 >
@@ -139,6 +142,8 @@ fileKeyWrapKey = HKDF-SHA-512(
     L    = 32
 )
 ```
+
+> `linkKey` is either raw CSPRNG output (keyless link) or Argon2id output (password-protected link). In both cases, HKDF domain separation via `link_id` ensures distinct wrapping keys per link. Zero salt applies (same policy as other CSPRNG-sourced IKM derivations).
 
 ## 5. Binary Blob Formats
 
@@ -454,6 +459,96 @@ The order in which the encoder *receives* the fields does not matter; what matte
 This is **defense-in-depth** alongside the **ML-DSA-65** signature. If a signature verification is **accidentally** skipped due to a bug, the **AAD** binding still **prevents** the server from redirecting shares between users.
 
 > Parsers **MUST** reject non-canonical **CBOR** input. Any blob or payload that does not conform to [RFC 8949 §4.2.1][cbor_rfc] deterministic encoding **MUST** cause a hard error, **never** silent acceptance or re-canonicalization.
+
+### 5.11 `VXPL` - Public Link Blob
+
+Wraps a `collectionKey` or `fileKey` for anonymous access via a public link. The blob is type-agnostic (both are 32 bytes); the server's `public_links` record indicates whether the target is a file or collection.
+
+```rs
+Offset  Size  Field
+------  ----  ---------------------------------------
+0       4     Magic "VXPL" (0x56 0x58 0x50 0x4C)
+4       1     Format version (0x01)
+5       1     Algorithm ID (0x01)
+6       24    Nonce (random)
+30      48    Ciphertext (32 B key + 16 B tag)
+------
+Total: 78 bytes
+```
+
+```rs
+AAD: link_id (16 bytes, raw UUID)
+```
+
+**Wrapping key derivation:**
+
+```rs
+publicLinkWrapKey = HKDF-SHA-512(
+    ikm  = linkKey,
+    salt = 32 zero bytes,
+    info = "vexahub:v1:publicLink:" || link_id,
+    L    = 32
+)
+```
+
+`linkKey` is derived via one of two paths depending on whether the link is password-protected:
+
+**Keyless link (no password):**
+
+```rs
+linkKey = CSPRNG(32)
+URL: /link/{token}#key={base64url(linkKey)}
+```
+
+The `linkKey` is placed in the URL fragment, which is never sent to the server. The `token` is an opaque 32-byte random lookup value generated server-side, distinct from `link_id`.
+
+**Password-protected link:**
+
+```rs
+linkKey = Argon2id(
+    password  = user-supplied password (UTF-8, NFC-normalized),
+    salt      = passwordSalt (32 bytes, CSPRNG, stored server-side),
+    m         = 131072 KiB (128 MiB),
+    t         = 3,
+    p         = 4,
+    L         = 32
+)
+URL: /link/{token}
+```
+
+No fragment in the URL. The visitor requests the link via `token`, the server returns `passwordSalt` (and `link_id`), and the client derives `linkKey` from the password entered by the visitor. The server never sees the password.
+
+> **Argon2id parameters** are identical to the OPAQUE registration parameters in [§2](#2-primitives). This is intentional: the same WASM/native implementation is reused, and the cost is appropriate for a one-time unlock operation.
+
+**Server-side schema:**
+
+```sql
+CREATE TABLE public_links (
+    id              UUID PRIMARY KEY,        -- link_id, generated client-side
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    file_id         UUID REFERENCES files(id) ON DELETE CASCADE,
+    collection_id   UUID REFERENCES collections(id) ON DELETE CASCADE,
+    token           TEXT NOT NULL UNIQUE,     -- 32 random bytes, base64url
+    vxpl            BYTEA NOT NULL,           -- 78 bytes
+    password_salt   BYTEA,                    -- 32 bytes or NULL (keyless)
+    max_downloads   INTEGER,                  -- NULL = unlimited
+    download_count  INTEGER NOT NULL DEFAULT 0,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at      TIMESTAMPTZ,              -- NULL = no expiry
+    revoked_at      TIMESTAMPTZ,
+    CONSTRAINT public_links_target_check CHECK (
+        (file_id IS NOT NULL AND collection_id IS NULL)
+        OR (file_id IS NULL AND collection_id IS NOT NULL)
+    )
+);
+
+CREATE INDEX ON public_links (token) WHERE revoked_at IS NULL;
+CREATE INDEX ON public_links (user_id) WHERE revoked_at IS NULL;
+```
+
+**Revocation:** setting `revoked_at` revokes API access immediately. The wrapped key inside `VXPL` is the **real** `fileKey` or `collectionKey`. An attacker who captured the `VXPL` blob and `linkKey` before revocation retains the ability to decrypt previously downloaded content. This is the same inherent E2EE limitation as share revocation ([§11.1](#111-share-revocation)). The opt-in re-encryption mechanism in [§11.1.1](#1111-optional-content-re-encryption-after-revocation) applies identically to public link revocation.
+
+> **`link_id` vs `token`:** `link_id` (UUID) is generated client-side and used in the HKDF `info` string and AAD. `token` (32 random bytes) is generated server-side as an opaque lookup value for the URL path. The separation prevents the server from manipulating the cryptographic binding: even if the server swaps `token` values between links, the AAD mismatch on `link_id` causes decryption to fail.
 
 ## 6. File Encryption
 
@@ -800,6 +895,10 @@ A scheduled job **MUST** periodically (recommended: hourly) remove rows from `tu
 | Server tries to correlate files across collections for the same user         | Blocked: `contentIdKey` is per-collection, same plaintext produces different `content_id` in different collections                                             |
 | Server observes unchanged `content_id` values after `collectionKey` rotation | Accepted: minor metadata leak (file set unchanged), negligible over what server already knows (file count, ciphertext sizes). Content remains fully protected. |
 | Server upgrades `permission` on a share record to grant elevated access      | Detected: recipient **MUST** verify decrypted `"p"` matches server-visible `permission` column; mismatch -> share rejected                                     |
+| Server swaps VXPL blobs between public links                                 | Blocked by AAD binding on `link_id`                                                                                                                            |
+| Server tries to brute-force password-protected link                          | Blocked: Argon2id 128 MiB; server never sees password or `linkKey`                                                                                             |
+| Server captures URL fragment from keyless link                               | Not possible: URL fragments are never sent to the server per HTTP spec                                                                                         |
+| Attacker captures full URL before link revocation                            | Accepted E2EE limitation: same as share revocation ([§11.1](#111-share-revocation))                                                                            |
 
 ## 7. OPAQUE Protocol
 
