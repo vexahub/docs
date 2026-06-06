@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-> **Document version:** 13
+> **Document version:** 14
 >
 > **Protocol version:** 1
 >
@@ -688,15 +688,43 @@ Server responses:
 
     The client **MUST** proceed with a fresh tus `POST /uploads` to create a new upload resource.
 
-- **200 OK** with `{ "kind": "incomplete", "tus_url": "...", "upload_offset": <int>, "generation": <int>, "expires_at": "..." }`:
+- **200 OK** with `{ "kind": "incomplete", "uploadId": "...", "tusId": "...", "upload_offset": <int>, "generation": <int>, "expires_at": "..." }`:
 
-    An incomplete upload exists for this user with this `content_id`. The client SHOULD send a tus `HEAD` to `tus_url` to confirm the offset, then resume with `PATCH` requests.
+    An incomplete upload exists for this user with this `content_id`. The client SHOULD send a tus `HEAD` to the upload URL (constructed from `uploadId`) to confirm the offset, then resume with `PATCH` requests.
 
-- **200 OK** with `{ "kind": "committed", "file_id": "...", "generation": <int> }`:
+- **200 OK** with `{ "kind": "committed", "fileId": "...", "generation": <int> }`:
 
     The file already exists fully committed in the user's account. The client **MUST** prompt the user to choose between skip, replace (creates generation+1), or duplicate (creates a new `file_id`).
 
 The server **MUST** scope the lookup to the authenticated user. Cross-user lookups by `content_id` **MUST** return 404 even if a match exists in another account.
+
+### 6.5.6.1 Commit
+
+After the tus upload is fully transferred (`uploadOffset == uploadLength`), the client **MUST** commit it via:
+
+```rs
+POST /api/v1/uploads/{upload_id}/commit
+Content-Type: application/json
+
+{
+    "vxfk": "<base64url>",   // VXFK blob (78 bytes)
+    "vxfm": "<base64url>"    // VXFM blob (>=46 bytes)
+}
+```
+
+The commit endpoint performs the following atomically within a single transaction:
+
+1. Verifies the upload is fully transferred.
+2. Checks storage quota.
+3. Creates the `files` row (new file) or updates it (existing file, generation bump), including `vxfm`.
+4. Creates the `file_keys` row with `vxfk`, `vxfm`, `keyGeneration`, and `collectionKeyGeneration` (pinned to the current collection key generation for public link support, see [§5.11](#511-vxpl---public-link-blob)).
+5. Marks the `tus_uploads` row as completed.
+
+For **new files**, `keyGeneration` starts at `0`. For **file updates** (generation bump), `keyGeneration` is incremented from the current maximum.
+
+The client **MUST** generate `fileKey` via CSPRNG, derive `fileKeyWrapKey` from the parent `collectionKey`, wrap `fileKey` into the `VXFK` blob, derive `fileMetadataKey` from `fileKey`, and encrypt the file metadata into the `VXFM` blob **before** calling commit. The server validates blob magic and minimum sizes but cannot verify cryptographic correctness (zero-knowledge).
+
+If the upload targets an existing file (`file_id` set in tus metadata), the server enforces monotonic generation and optional optimistic concurrency (`expected_current_generation`) as described in [§6.3](#63-file-generation-counter-mutability) and [§11.5.2](#1152-resolution-flow).
 
 ### 6.5.7 Resume alignment
 
@@ -812,6 +840,7 @@ If the user modifies a file locally while an upload for that file is still in pr
 2. Recompute `content_id` for the new plaintext.
 3. Increment the file's `generation` counter by 1.
 4. Create a new tus upload via `POST /uploads` with the new `content_id`, the new `Upload-Length`, and the incremented `generation` in the upload metadata.
+5. After full transfer, commit with fresh `VXFK` and `VXFM` blobs via `POST /uploads/{id}/commit` ([§6.5.6.1](#6561-commit)).
 
 The server **MUST NOT** allow two concurrent uploads for the same `(user_id, file_id)` pair. The unique constraint defined in [§6.5.10](#6510-server-side-schema) enforces this.
 
@@ -1521,6 +1550,7 @@ CREATE TABLE collections (
     parent_id       UUID REFERENCES collections(id) ON DELETE RESTRICT,
     vxcm            BYTEA NOT NULL,
     trashed_at      TIMESTAMPTZ,
+    trash_root_id   UUID,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -1533,6 +1563,10 @@ CREATE TABLE files (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id                 UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     collection_id           UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
+    vxfm                    BYTEA,
+    storage_path            TEXT,
+    storage_bytes           BIGINT,
+    original_bytes          BIGINT,
     generation              INTEGER NOT NULL DEFAULT 0,
     content_id              BYTEA,
     upload_length           BIGINT,
@@ -1540,6 +1574,7 @@ CREATE TABLE files (
     content_key_generation  INTEGER NOT NULL DEFAULT 0,
     pending_key_rotation    BOOLEAN NOT NULL DEFAULT FALSE,
     trashed_at              TIMESTAMPTZ,
+    trash_root_id           UUID,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -1559,6 +1594,7 @@ CREATE TABLE collection_keys (
     collection_id   UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     vxck            BYTEA NOT NULL,
+    vxcm            BYTEA,
     key_generation  INTEGER NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     rotated_at      TIMESTAMPTZ
@@ -1571,13 +1607,15 @@ CREATE INDEX collection_keys_owner_active
     ON collection_keys (collection_id, user_id, key_generation DESC);
 
 CREATE TABLE file_keys (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    file_id         UUID NOT NULL REFERENCES files(id) ON DELETE RESTRICT,
-    collection_id   UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
-    vxfk            BYTEA NOT NULL,
-    key_generation  INTEGER NOT NULL DEFAULT 0,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    rotated_at      TIMESTAMPTZ
+    id                          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    file_id                     UUID NOT NULL REFERENCES files(id) ON DELETE RESTRICT,
+    collection_id               UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
+    vxfk                        BYTEA NOT NULL,
+    vxfm                        BYTEA,
+    key_generation              INTEGER NOT NULL DEFAULT 0,
+    collection_key_generation   INTEGER NOT NULL DEFAULT 0,
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    rotated_at                  TIMESTAMPTZ
 );
 
 CREATE UNIQUE INDEX file_keys_active
@@ -1585,6 +1623,9 @@ CREATE UNIQUE INDEX file_keys_active
 
 CREATE INDEX file_keys_lookup
     ON file_keys (file_id, key_generation DESC);
+
+CREATE INDEX file_keys_collection_gen
+    ON file_keys (collection_key_generation, file_id);
 ```
 
 > **Multiple `file_keys` rows per file:** This introduces a model where multiple `file_keys` rows coexist for the same `file_id` during the window between key rotation and content re-encryption. The `key_generation DESC` index supports the "latest key" lookup. Server-side GC of old rows is described in [§11.1.1](#1111-optional-content-re-encryption-after-revocation).
@@ -1650,9 +1691,13 @@ CREATE TABLE shares (
     signature       BYTEA NOT NULL,         -- ML-DSA-65 signature over canonical payload
     signed_payload  BYTEA NOT NULL,         -- canonical CBOR of the signed fields
     permission      INTEGER NOT NULL,
+    revoked_at      TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT shares_permission_check CHECK (permission > 0 AND permission <= 7)
 );
+
+CREATE INDEX ON shares (recipient_id) WHERE revoked_at IS NULL;
+CREATE INDEX ON shares (sender_id) WHERE revoked_at IS NULL;
 ```
 
 ### 11.1 Share Revocation
@@ -1725,16 +1770,6 @@ Revocation removes a recipient's access and rotates keys so new content is crypt
 - The server **MUST** reject any data request from a recipient whose share has `revoked_at IS NOT NULL`.
 - The client **MUST** delete cached keys for revoked shares on next sync.
 - The sender's UI **MUST** indicate that revocation cannot undo prior access and that key rotation is in progress.
-
-**Schema:**
-
-```sql
-ALTER TABLE shares ADD COLUMN revoked_at TIMESTAMPTZ;
-CREATE INDEX ON shares (recipient_id) WHERE revoked_at IS NULL;
-
-ALTER TABLE files ADD COLUMN pending_key_rotation BOOLEAN NOT NULL DEFAULT FALSE;
-CREATE INDEX ON files (collection_id) WHERE pending_key_rotation = TRUE;
-```
 
 #### 11.1.1 Optional content re-encryption after revocation
 
@@ -1990,24 +2025,28 @@ The client has two paths depending on whether the local version is newer than th
     3. Client re-encrypts local content under generation `M+1` nonce space.
     4. Client creates a new tus upload via `POST /uploads` with metadata fields `generation = M+1` AND `expected_current_generation = M`. The server **MUST** persist `expected_current_generation = M` on the resulting `tus_uploads` row.
     5. The client uploads ciphertext via `PATCH` requests as usual. The `expected_current_generation` value is **NOT** re-checked on each PATCH (which would be racy and pointless); it is checked exactly once, at commit.
-    6. On commit, the server validates: if `files.generation != tus_uploads.expected_current_generation`, the server returns HTTP 409 with the actual current generation in the response body and discards the upload. The client **MUST** re-enter conflict resolution from step 1, AND the user **MUST** be re-prompted because their previous decision was based on stale state.
-    7. On successful validation, the server commits atomically: increments `files.generation` to `M+1`, replaces ciphertext, returns 204.
+    6. Client generates fresh `fileKey` via CSPRNG, wraps it into a new `VXFK` blob under the parent `collectionKey`, and encrypts metadata into a new `VXFM` blob.
+    7. On commit (`POST /uploads/{id}/commit` with `{ vxfk, vxfm }`, see [§6.5.6.1](#6561-commit)), the server validates: if `files.generation != tus_uploads.expected_current_generation`, the server returns HTTP 409 with the actual current generation in the response body and discards the upload. The client **MUST** re-enter conflict resolution from step 1, AND the user **MUST** be re-prompted because their previous decision was based on stale state.
+    8. On successful validation, the server commits atomically: increments `files.generation` to `M+1`, replaces ciphertext, stores the `VXFK` and `VXFM` blobs in `file_keys`, returns 204.
 
    **Keep both (conflicted copy):**
-   - Client sends `DELETE {tus_url}` to discard the failed upload.
-   - Client creates a **new file** from the local version:
-     - Generates new `file_id` via server: `POST /api/v1/files` in the same collection.
-     - Server generates new `file_id`, client generates new `fileKey` via CSPRNG.
-     - Client wraps new `fileKey` -> new `VXFK` blob under destination `collectionKey`.
-     - Client constructs `VXFM` for the conflicted copy with a modified filename:
+   1. Client sends `DELETE {tus_url}` to discard the failed upload.
+   2. Client creates a **new file** from the local version via the normal upload flow:
 
-       ```sh
-       "{original_name} (conflicted copy - {device_label} - {date})"
-       ```
+        - Client generates new `fileKey` via CSPRNG.
+        - Client wraps new `fileKey` -> new `VXFK` blob under the destination `collectionKey`.
+        - Client constructs `VXFM` for the conflicted copy with a modified filename:
 
-       The filename is encrypted inside `VXFM` so the server never sees it.
-     - Client uploads the conflicted copy as `generation = 0` under the new `file_id`.
-   - The user now has two files: the server's committed version and their local version as a new file. Both are fully accessible and independently modifiable going forward.
+        ```sh
+        "{original_name} (conflicted copy - {device_label} - {date})"
+        ```
+
+        The filename is encrypted inside `VXFM` so the server never sees it.
+        - Client creates a new tus upload via `POST /uploads` with `generation = 0` and **no** `file_id` in metadata (new file, not an update).
+        - Client uploads ciphertext via `PATCH` requests.
+        - Client commits via `POST /uploads/{id}/commit` with the new `{ vxfk, vxfm }` ([§6.5.6.1](#6561-commit)). The server creates a new `files` row and `file_keys` row atomically.
+
+   3. The user now has two files: the server's committed version and their local version as a new file. Both are fully accessible and independently modifiable going forward.
 
 #### 11.5.3 Crypto properties of the conflicted copy
 

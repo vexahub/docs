@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique
 
-> **Version du document:** 13
+> **Version du document:** 14
 >
 > **Version du protocole:** 1
 >
@@ -682,15 +682,43 @@ Réponses du serveur :
 
     Le client **DOIT** procéder avec un nouveau tus `POST /uploads` pour créer une nouvelle ressource d'envoi.
 
-- **200 OK** avec `{ "kind": "incomplete", "tus_url": "...", "upload_offset": <int>, "generation": <int>, "expires_at": "..." }` :
+- **200 OK** avec `{ "kind": "incomplete", "uploadId": "...", "tusId": "..." "upload_offset": <int>, "generation": <int>, "expires_at": "..." }` :
 
     Un envoi incomplet existe pour cet utilisateur avec ce `content_id`. Le client DEVRAIT envoyer un tus `HEAD` vers `tus_url` pour confirmer le décalage, puis reprendre avec des requêtes `PATCH`.
 
-- **200 OK** avec `{ "kind": "committed", "file_id": "...", "generation": <int> }` :
+- **200 OK** avec `{ "kind": "committed", "fileId": "...", "generation": <int> }` :
 
     Le fichier existe déjà entièrement validé dans le compte de l'utilisateur. Le client **DOIT** inviter l'utilisateur à choisir entre passer, remplacer (crée generation+1), ou dupliquer (crée un nouveau `file_id`).
 
 Le serveur **DOIT** restreindre la recherche à l'utilisateur authentifié. Les recherches inter-utilisateurs par `content_id` **DOIVENT** retourner 404 même si une correspondance existe dans un autre compte.
+
+### 6.5.6.1 Commit
+
+Une fois le transfert tus terminé (`uploadOffset == uploadLength`), le client **DOIT** finaliser l'upload via :
+
+```rs
+POST /api/v1/uploads/{upload_id}/commit
+Content-Type: application/json
+
+{
+    "vxfk": "<base64url>",   // blob VXFK (78 octets)
+    "vxfm": "<base64url>"    // blob VXFM (>=46 octets)
+}
+```
+
+Le endpoint de commit effectue les opérations suivantes de manière atomique au sein d'une seule transaction :
+
+1. Vérifie que le transfert est complet.
+2. Vérifie le quota de stockage.
+3. Crée la ligne `files` (nouveau fichier) ou la met à jour (fichier existant, incrémentation de génération), incluant `vxfm`.
+4. Crée la ligne `file_keys` avec `vxfk`, `vxfm`, `keyGeneration` et `collectionKeyGeneration` (épinglé à la génération de clé de collection courante pour le support des liens publics, voir [§5.11](#511-vxpl---blob-de-lien-public)).
+5. Marque la ligne `tus_uploads` comme terminée.
+
+Pour les **nouveaux fichiers**, `keyGeneration` commence à `0`. Pour les **mises à jour** (incrémentation de génération), `keyGeneration` est incrémenté à partir du maximum actuel.
+
+Le client **DOIT** générer `fileKey` via CSPRNG, dériver `fileKeyWrapKey` depuis la `collectionKey` parente, envelopper `fileKey` dans le blob `VXFK`, dériver `fileMetadataKey` depuis `fileKey`, et chiffrer les métadonnées du fichier dans le blob `VXFM` **avant** d'appeler le commit. Le serveur valide le magic et les tailles minimales des blobs mais ne peut pas vérifier l'exactitude cryptographique (zero-knowledge).
+
+Si l'upload cible un fichier existant (`file_id` défini dans les métadonnées tus), le serveur applique la génération monotone et la concurrence optimiste optionnelle (`expected_current_generation`) tel que décrit dans [§6.3](#63-compteur-de-génération-de-fichier-mutabilité) et [§11.5.2](#1152-flux-de-résolution).
 
 ### 6.5.7 Alignement de reprise
 
@@ -806,6 +834,7 @@ Si l'utilisateur modifie un fichier localement pendant qu'un envoi pour ce fichi
 2. Recalculer `content_id` pour le nouveau texte clair.
 3. Incrémenter le compteur `generation` du fichier de 1.
 4. Créer un nouvel envoi tus via `POST /uploads` avec le nouveau `content_id`, le nouveau `Upload-Length`, et le `generation` incrémenté dans les métadonnées d'envoi.
+5. Une fois le transfert terminé, finaliser avec de nouveaux blobs `VXFK` et `VXFM` via `POST /uploads/{id}/commit` ([§6.5.6.1](#6561-commit)).
 
 Le serveur **NE DOIT PAS** autoriser deux envois concurrents pour la même paire `(user_id, file_id)`. La contrainte d'unicité définie en [§6.5.10](#6510-schéma-côté-serveur) l'impose.
 
@@ -1411,6 +1440,7 @@ CREATE TABLE collections (
     parent_id       UUID REFERENCES collections(id) ON DELETE RESTRICT,
     vxcm            BYTEA NOT NULL,
     trashed_at      TIMESTAMPTZ,
+    trash_root_id   UUID,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -1423,6 +1453,10 @@ CREATE TABLE files (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id                 UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     collection_id           UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
+    vxfm                    BYTEA,
+    storage_path            TEXT,
+    storage_bytes           BIGINT,
+    original_bytes          BIGINT,
     generation              INTEGER NOT NULL DEFAULT 0,
     content_id              BYTEA,
     upload_length           BIGINT,
@@ -1430,6 +1464,7 @@ CREATE TABLE files (
     content_key_generation  INTEGER NOT NULL DEFAULT 0,
     pending_key_rotation    BOOLEAN NOT NULL DEFAULT FALSE,
     trashed_at              TIMESTAMPTZ,
+    trash_root_id           UUID,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -1449,6 +1484,7 @@ CREATE TABLE collection_keys (
     collection_id   UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     vxck            BYTEA NOT NULL,
+    vxcm            BYTEA,
     key_generation  INTEGER NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     rotated_at      TIMESTAMPTZ
@@ -1461,13 +1497,15 @@ CREATE INDEX collection_keys_owner_active
     ON collection_keys (collection_id, user_id, key_generation DESC);
 
 CREATE TABLE file_keys (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    file_id         UUID NOT NULL REFERENCES files(id) ON DELETE RESTRICT,
-    collection_id   UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
-    vxfk            BYTEA NOT NULL,
-    key_generation  INTEGER NOT NULL DEFAULT 0,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    rotated_at      TIMESTAMPTZ
+    id                          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    file_id                     UUID NOT NULL REFERENCES files(id) ON DELETE RESTRICT,
+    collection_id               UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
+    vxfk                        BYTEA NOT NULL,
+    vxfm                        BYTEA,
+    key_generation              INTEGER NOT NULL DEFAULT 0,
+    collection_key_generation   INTEGER NOT NULL DEFAULT 0,
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    rotated_at                  TIMESTAMPTZ
 );
 
 CREATE UNIQUE INDEX file_keys_active
@@ -1475,6 +1513,9 @@ CREATE UNIQUE INDEX file_keys_active
 
 CREATE INDEX file_keys_lookup
     ON file_keys (file_id, key_generation DESC);
+
+CREATE INDEX file_keys_collection_gen
+    ON file_keys (collection_key_generation, file_id);
 ```
 
 > **Plusieurs lignes `file_keys` par fichier :** ce modèle permet à plusieurs lignes `file_keys` de coexister pour le même `file_id` pendant la fenêtre entre la rotation de clé et le rechiffrement du contenu. L'index `key_generation DESC` permet la recherche de la « clé la plus récente ». Le GC côté serveur des anciennes lignes est décrit au [§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation).
@@ -1540,9 +1581,13 @@ CREATE TABLE shares (
     signature       BYTEA NOT NULL,         -- signature ML-DSA-65 sur la charge utile canonique
     signed_payload  BYTEA NOT NULL,         -- CBOR canonique des champs signés
     permission      INTEGER NOT NULL,
+    revoked_at      TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT shares_permission_check CHECK (permission > 0 AND permission <= 7)
 );
+
+CREATE INDEX ON shares (recipient_id) WHERE revoked_at IS NULL;
+CREATE INDEX ON shares (sender_id) WHERE revoked_at IS NULL;
 ```
 
 ### 11.1 Révocation de partage
@@ -1596,16 +1641,6 @@ La révocation supprime l'accès d'un destinataire et effectue une rotation des 
 - Le serveur **DOIT** rejeter toute demande de données d'un destinataire dont le partage a `revoked_at IS NOT NULL`.
 - Le client **DOIT** supprimer les clés mises en cache pour les partages révoqués à la prochaine synchronisation.
 - L'interface de l'expéditeur **DOIT** indiquer que la révocation ne peut pas annuler les accès antérieurs et que la rotation des clés est en cours.
-
-**Schéma :**
-
-```sql
-ALTER TABLE shares ADD COLUMN revoked_at TIMESTAMPTZ;
-CREATE INDEX ON shares (recipient_id) WHERE revoked_at IS NULL;
-
-ALTER TABLE files ADD COLUMN pending_key_rotation BOOLEAN NOT NULL DEFAULT FALSE;
-CREATE INDEX ON files (collection_id) WHERE pending_key_rotation = TRUE;
-```
 
 #### 11.1.1 Rechiffrement optionnel du contenu après révocation
 
@@ -1861,24 +1896,28 @@ Le client dispose de deux chemins selon que sa version locale est plus récente 
    3. Le client rechiffre le contenu local sous l'espace de nonces de génération `M+1`.
    4. Le client crée un nouveau téléversement tus via `POST /uploads` avec les champs de métadonnées `generation = M+1` ET `expected_current_generation = M`. Le serveur **DOIT** persister `expected_current_generation = M` sur la ligne `tus_uploads` résultante.
    5. Le client téléverse le texte chiffré via des requêtes `PATCH` comme d'habitude. La valeur `expected_current_generation` **n'est PAS** revérifiée à chaque PATCH (ce qui serait sujet aux courses et inutile) ; elle est vérifiée exactement une fois, à la validation.
-   6. À la validation, le serveur vérifie : si `files.generation != tus_uploads.expected_current_generation`, le serveur retourne HTTP 409 avec la génération actuelle réelle dans le corps de la réponse et abandonne le téléversement. Le client **DOIT** réentrer dans la résolution de conflit depuis l'étape 1, ET l'utilisateur **DOIT** être reinvité car sa décision précédente était basée sur un état périmé.
-   7. Après validation réussie, le serveur valide atomiquement : incrémente `files.generation` à `M+1`, remplace le texte chiffré, retourne 204.
+   6. Le client génère une nouvelle `fileKey` via CSPRNG, l'enveloppe dans un nouveau blob `VXFK` sous la `collectionKey` parente, et chiffre les métadonnées dans un nouveau blob `VXFM`.
+   7. Au commit (`POST /uploads/{id}/commit` avec `{ vxfk, vxfm }`, voir [§6.5.6.1](#6561-commit)), le serveur vérifie : si `files.generation != tus_uploads.expected_current_generation`, le serveur retourne HTTP 409 avec la génération actuelle réelle dans le corps de la réponse et abandonne le téléversement. Le client **DOIT** réentrer dans la résolution de conflit depuis l'étape 1, ET l'utilisateur **DOIT** être reinvité car sa décision précédente était basée sur un état périmé.
+   8. Après validation réussie, le serveur valide atomiquement : incrémente `files.generation` à `M+1`, remplace le texte chiffré, stocke les blobs `VXFK` et `VXFM` dans `file_keys`, retourne 204.
 
    **Conserver les deux (copie en conflit) :**
-   - Le client envoie `DELETE {tus_url}` pour annuler le téléversement échoué.
-   - Le client crée un **nouveau fichier** à partir de la version locale :
-     - Génère un nouveau `file_id` via le serveur : `POST /api/v1/files` dans la même collection.
-     - Le serveur génère un nouveau `file_id`, le client génère une nouvelle `fileKey` via CSPRNG.
-     - Le client encapsule la nouvelle `fileKey` -> nouveau blob `VXFK` sous la `collectionKey` de destination.
-     - Le client construit `VXFM` pour la copie en conflit avec un nom de fichier modifié :
+   1. Le client envoie `DELETE {tus_url}` pour annuler le téléversement échoué.
+   2. Le client crée un **nouveau fichier** à partir de la version locale via le flux normal d'upload :
+
+      - Le client génère une nouvelle `fileKey` via CSPRNG.
+      - Le client enveloppe la nouvelle `fileKey` -> nouveau blob `VXFK` sous la `collectionKey` de destination.
+      - Le client construit `VXFM` pour la copie en conflit avec un nom de fichier modifié :
 
         ```sh
-            "{nom_original} (copie en conflit - {label_appareil} - {date})"
+        "{nom_original} (copie en conflit - {label_appareil} - {date})"
         ```
 
         Le nom de fichier est chiffré dans `VXFM` et le serveur ne le voit jamais.
-     - Le client téléverse la copie en conflit sous `generation = 0` avec le nouveau `file_id`.
-   - L'utilisateur dispose désormais de deux fichiers : la version validée par le serveur et sa version locale comme nouveau fichier. Les deux sont entièrement accessibles et indépendamment modifiables à l'avenir.
+      - Le client crée un nouveau téléversement tus via `POST /uploads` avec `generation = 0` et **sans** `file_id` dans les métadonnées (nouveau fichier, pas une mise à jour).
+      - Le client téléverse le texte chiffré via des requêtes `PATCH`.
+      - Le client finalise via `POST /uploads/{id}/commit` avec les nouveaux `{ vxfk, vxfm }` ([§6.5.6.1](#6561-commit)). Le serveur crée une nouvelle ligne `files` et une nouvelle ligne `file_keys` de manière atomique.
+
+   3. L'utilisateur dispose désormais de deux fichiers : la version validée par le serveur et sa version locale comme nouveau fichier. Les deux sont entièrement accessibles et indépendamment modifiables à l'avenir.
 
 #### 11.5.3 Propriétés cryptographiques de la copie en conflit
 
