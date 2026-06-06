@@ -389,7 +389,7 @@ AAD : collection_id ‖ file_id (32 octets, UUIDs bruts)
 Décalage  Taille   Champ
 --------  ------   ---------------------------------------
 0         4        Magique "VXSH"
-4         1        Version de format (0x02)
+4         1        Version de format (0x01)
 5         1        Identifiant d'algorithme KEM (0x02 = X-Wing)
 6         24       Nonce (aléatoire)
 30        N+16     Texte chiffré (CBOR { "k": bstr, "kind": "collection"|"file", "id": bstr }) + tag

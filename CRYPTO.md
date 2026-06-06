@@ -395,7 +395,7 @@ AAD: collection_id ‖ file_id (32 bytes, both raw UUID)
 Offset  Size   Field
 ------  ----  ---------------------------------------
 0       4      Magic "VXSH"
-4       1      Format version (0x02)
+4       1      Format version (0x01)
 5       1      KEM algorithm ID (0x02 = X-Wing)
 6       24     Nonce (random)
 30      N+16   Ciphertext (CBOR { "k": bstr, "kind": "collection"|"file", "id": bstr }) + tag
