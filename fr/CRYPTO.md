@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique
 
-> **Version du document:** 14
+> **Version du document:** 15
 >
 > **Version du protocole:** 1
 >
@@ -722,29 +722,38 @@ Si l'upload cible un fichier existant (`file_id` défini dans les métadonnées 
 
 ### 6.5.7 Alignement de reprise
 
-Un tus `PATCH` **PEUT** contenir n'importe quel nombre d'octets, et peut s'interrompre à n'importe quelle limite d'octet. Lorsqu'un envoi interrompu est repris via `HEAD` suivi de `PATCH`, le `Upload-Offset` rapporté par le serveur peut se trouver au milieu d'un segment crypto **VexaHub**. Le client **NE DOIT PAS** soumettre du texte chiffré commençant à ce décalage arbitraire, car `XChaCha20-Poly1305` ne supporte pas les écritures **AEAD** partielles. Un segment est une unité de chiffrement atomique unique.
+Un tus `PATCH` **PEUT** contenir n'importe quel nombre d'octets, et peut s'interrompre à n'importe quelle limite d'octet. Lorsqu'un envoi interrompu est repris via `HEAD` suivi de `PATCH`, le `Upload-Offset` rapporté par le serveur peut se trouver au milieu d'un segment crypto **VexaHub** ou d'une part de stockage. Le client **NE DOIT PAS** soumettre du texte chiffré commençant à ce décalage arbitraire, car `XChaCha20-Poly1305` ne supporte pas les écritures **AEAD** partielles et le backend de stockage exige que toutes les parts non terminales aient une taille identique.
+
+La cible de rembobinage **DOIT** satisfaire deux contraintes d'alignement :
+
+1. **Alignement segment** : le décalage **DOIT** tomber sur une limite de segment chiffré (`offset % SEGMENT_CIPHERTEXT_SIZE_FULL == 0`), car `XChaCha20-Poly1305` ne supporte pas les écritures **AEAD** partielles. Un segment est une unité de chiffrement atomique unique.
+
+2. **Alignement part de stockage** : le décalage **DOIT** tomber sur une limite de part de stockage. Le backend de stockage découpe les envois en parts de taille fixe pour le transfert multipart ; toutes les parts non terminales doivent avoir une taille identique. Reprendre au milieu d'une part produit une part sous-dimensionnée qui provoque l'échec de la finalisation multipart. La taille de part est définie comme `STORAGE_PART_SIZE = SEGMENT_CIPHERTEXT_SIZE_FULL * STORAGE_PART_SEGMENTS` (actuellement `STORAGE_PART_SEGMENTS = 8`).
+
+L'alignement sur les parts de stockage satisfait automatiquement l'alignement sur les segments.
 
 Procédure de reprise :
 
 1. Le client envoie `HEAD {tus_url}` et lit `Upload-Offset` (`O`).
-2. Le client calcule l'index du segment qui contient l'octet `O` :
+2. Le client calcule le décalage de reprise aligné sur les parts de stockage :
 
     ```rs
-        segment_index = floor(O / SEGMENT_CIPHERTEXT_SIZE_FULL)
-        segment_start = segment_index x SEGMENT_CIPHERTEXT_SIZE_FULL
+        raw_segment  = floor(O / SEGMENT_CIPHERTEXT_SIZE_FULL)
+        aligned_seg  = raw_segment - (raw_segment % STORAGE_PART_SEGMENTS)
+        aligned_off  = aligned_seg * SEGMENT_CIPHERTEXT_SIZE_FULL
     ```
 
-3. Si `O > segment_start`, le serveur détient un segment partiel. Le client **DOIT** demander au serveur de tronquer l'envoi jusqu'à `segment_start` via l'endpoint personnalisé :
+3. Si `O > aligned_off`, le serveur détient une part de stockage partielle. Le client **DOIT** demander au serveur de tronquer l'envoi jusqu'à `aligned_off` via l'endpoint personnalisé :
 
     ```rs
         POST /api/v1/uploads/{upload_id}/rewind
-        { "to_offset": <segment_start> }
+        { "to_offset": <aligned_off> }
     ```
 
-   Le serveur **DOIT** vérifier que le décalage demandé est aligné sur un segment, tronquer l'objet de stockage sous-jacent, mettre à jour `tus_uploads.upload_offset`, et répondre 204.
-4. Le client reprend avec `PATCH` depuis `segment_start`, en re-dérivant chaque nonce de segment depuis `(generation, segment_index)` tel que défini en [§6.2](#62-dérivation-de-nonce-par-segment).
+   Le serveur **DOIT** vérifier que le décalage demandé est aligné sur une part de stockage, tronquer l'objet de stockage sous-jacent, mettre à jour `tus_uploads.upload_offset`, et répondre 204.
+4. Le client reprend avec `PATCH` depuis `aligned_off`, en re-dérivant chaque nonce de segment depuis `(generation, segment_index)` tel que défini en [§6.2](#62-dérivation-de-nonce-par-segment).
 
-L'endpoint rewind ne fait **PAS** partie du standard tus. C'est une extension **VexaHub** nécessaire car tus seul ne peut pas exprimer la contrainte que les envois doivent être alignés sur les limites de segment **AEAD**.
+L'endpoint rewind ne fait **PAS** partie du standard tus. C'est une extension **VexaHub** nécessaire car tus seul ne peut pas exprimer la contrainte que les envois doivent être alignés sur les limites de segment **AEAD** et de part de stockage.
 
 #### 6.5.7.1 Alignement de la couche de stockage backend
 
@@ -1896,7 +1905,12 @@ Le client dispose de deux chemins selon que sa version locale est plus récente 
    3. Le client rechiffre le contenu local sous l'espace de nonces de génération `M+1`.
    4. Le client crée un nouveau téléversement tus via `POST /uploads` avec les champs de métadonnées `generation = M+1` ET `expected_current_generation = M`. Le serveur **DOIT** persister `expected_current_generation = M` sur la ligne `tus_uploads` résultante.
    5. Le client téléverse le texte chiffré via des requêtes `PATCH` comme d'habitude. La valeur `expected_current_generation` **n'est PAS** revérifiée à chaque PATCH (ce qui serait sujet aux courses et inutile) ; elle est vérifiée exactement une fois, à la validation.
-   6. Le client génère une nouvelle `fileKey` via CSPRNG, l'enveloppe dans un nouveau blob `VXFK` sous la `collectionKey` parente, et chiffre les métadonnées dans un nouveau blob `VXFM`.
+   6. Le client désencapsule la `fileKey` existante à la `key_generation` courante
+   (ou utilise celle en cache si encore en mémoire), l'enveloppe dans un blob
+   `VXFK` sous la `collectionKey` parente, et chiffre les métadonnées dans un
+   nouveau blob `VXFM` sous la même `fileKey` avec la génération `M+1`.
+   La `key_generation` dans `file_keys` **n'est PAS** incrémentée. Il s'agit
+   d'une mise à jour de contenu, pas d'une rotation de clé.
    7. Au commit (`POST /uploads/{id}/commit` avec `{ vxfk, vxfm }`, voir [§6.5.6.1](#6561-commit)), le serveur vérifie : si `files.generation != tus_uploads.expected_current_generation`, le serveur retourne HTTP 409 avec la génération actuelle réelle dans le corps de la réponse et abandonne le téléversement. Le client **DOIT** réentrer dans la résolution de conflit depuis l'étape 1, ET l'utilisateur **DOIT** être reinvité car sa décision précédente était basée sur un état périmé.
    8. Après validation réussie, le serveur valide atomiquement : incrémente `files.generation` à `M+1`, remplace le texte chiffré, stocke les blobs `VXFK` et `VXFM` dans `file_keys`, retourne 204.
 
@@ -2149,7 +2163,9 @@ Les changements incompatibles (l'un quelconque des suivants) nécessitent un inc
 > - Le propriétaire révoque un partage, effectue une rotation de clés -> `key_generation = 1`, `crypto_version` inchangé.
 > - Le protocole migre de **v1** à **v2**, le propriétaire rechiffre -> `crypto_version = 2`, `key_generation` peut également s'incrémenter mais pour des raisons indépendantes.
 >
-> En conséquence : la paire `(crypto_version, key_generation)` d'un fichier identifie de manière unique quelle encapsulation est actuellement en vigueur. Les deux doivent être vérifiés lors de la récupération de clé ; une discordance indique un bug ou une migration en cours.
+> En conséquence : pour un fichier donné, la paire `(crypto_version, key_generation)`
+> identifie de manière unique quel schéma de dérivation de clé et quelle génération
+> d'encapsulation sont actuellement en vigueur.
 
 Ce qui **NE PEUT PAS** être modifié sans rechiffrer les données utilisateur : la `masterKey` elle-même, les chemins de dérivation de génération de fichier, la dérivation de nonce de segment. La rotation de `serverSetup` invalide tous les comptes.
 
@@ -2406,6 +2422,7 @@ Déclenchée soit par l'utilisateur vidant explicitement la corbeille, soit auto
 2. Le serveur procède atomiquement :
    - Supprime la ligne `files`.
    - Supprime toutes les lignes `file_keys` pour ce `file_id`.
+   - Supprime toutes les lignes `file_versions` pour ce `file_id`.
    - Supprime toutes les lignes `shares` où la ressource partagée est ce `file_id`.
    - Annule toutes les lignes `tus_uploads` en cours pour ce `file_id` et planifie la suppression de leurs objets de stockage.
    - Planifie la suppression de tous les blobs de stockage aux chemins de stockage du fichier. La suppression des blobs PEUT être asynchrone tant que la ligne du fichier est supprimée atomiquement et que les blobs deviennent immédiatement inaccessibles à toute requête API.
@@ -2436,6 +2453,13 @@ Un serveur conforme **ne peut pas** faire resurgir un contenu supprimé. Un serv
 
 Les collections sont déplacées vers la corbeille avant la suppression définitive, en miroir de la sémantique de corbeille des fichiers ([§19.1](#191-suppression-de-fichier)).
 
+Chaque élément mis à la corbeille porte une colonne `trash_root_id` pointant
+vers la collection ayant initié la cascade de mise à la corbeille. Les fichiers
+mis à la corbeille individuellement ont `trash_root_id = NULL`. Les collections
+mises à la corbeille individuellement ont `trash_root_id = leur propre id`.
+Les éléments mis à la corbeille via une cascade de collection ont
+`trash_root_id` = l'id de la collection ancêtre.
+
 #### Flux de mise à la corbeille
 
 1. Le client envoie `DELETE /api/v1/collections/{collection_id}`.
@@ -2447,10 +2471,15 @@ La mise à jour anticipée (écriture de `trashed_at` sur chaque descendant) est
 
 #### Flux de restauration
 
-1. Le client envoie `POST /api/v1/collections/{collection_id}/restore`.
-2. Le serveur vérifie que l'utilisateur authentifié détient la collection visé. Retourne `403` si non.
-3. Le serveur efface atomiquement `trashed_at = NULL` sur la collection cible UNIQUEMENT. **Les collections et fichiers descendants conservent leurs propres valeurs `trashed_at`.**
-4. Le serveur répond 204.
+1. Le client envoie `POST /api/v1/collections/{id}/restore`.
+2. Le serveur vérifie que le `trash_root_id` de la collection est égal
+   à son propre `id` (elle est la racine de sa cascade de mise à la
+   corbeille). Sinon, retourne 409 « Restaurez plutôt la collection parente ».
+3. Le serveur vérifie que la collection parente n'est pas dans la corbeille.
+   Retourne 409 si c'est le cas.
+4. Le serveur efface atomiquement `trashed_at` et `trash_root_id` sur
+   TOUTES les collections et fichiers partageant ce `trash_root_id`.
+5. Le serveur répond 204.
 
 Cela signifie : si l'utilisateur met à la corbeille le dossier `A`, puis met indépendamment à la corbeille le sous-dossier `A/B`, puis restaure `A`, seul `A` revient. `A/B` et son contenu restent dans la corbeille car ils ont été mis à la corbeille par une action utilisateur séparée. C'est le comportement attendu : les actions utilisateur indépendantes ne sont pas annulées par la restauration d'un ancêtre.
 
@@ -2460,25 +2489,28 @@ Si l'utilisateur veut tout restaurer, le client itère : restaure la racine, pui
 
 #### Suppression définitive
 
-Déclenchée soit par l'utilisateur vidant explicitement la corbeille, soit automatiquement après le TTL de la corbeille (recommandé : 30 jours à partir de `trashed_at`).
+Déclenchée soit par l'utilisateur vidant explicitement la corbeille,
+soit automatiquement après le TTL de la corbeille (recommandé : 30 jours
+à partir de `trashed_at`).
 
-Le client parcourt l'arbre mis à la corbeille en profondeur d'abord (enfants en premier). Pour chaque collection, le client envoie :
-
-```sh
-DELETE /api/v1/collections/{collection_id}/permanent
-```
-
-Le serveur effectue les opérations atomiques :
-
-- Supprime la ligne `collections`.
-- Supprime toutes les lignes `collection_keys` pour ce `collection_id`.
-- Supprime toutes les lignes `shares` où la ressource partagée est ce `collection_id`.
-- Supprime le blob `VXCM`.
+1. Le client envoie `DELETE /v1/storage/collections/{id}`.
+2. Le serveur vérifie que la collection est dans la corbeille.
+   Retourne **409** si non.
+3. Le serveur collecte récursivement tous les IDs de collections descendantes.
+4. Le serveur procède atomiquement en une seule transaction :
+   - Supprime tous les `shares`, `file_keys`, `file_versions`, `files`
+     dans ces collections.
+   - Supprime tous les `collection_keys`, `public_links`, `tus_uploads`
+     pour ces collections.
+   - Supprime toutes les lignes de collections (avec contrainte FK différée).
+5. Le serveur planifie la suppression des blobs de manière asynchrone.
+6. Le serveur répond **204**.
 
 Validation côté serveur :
 
-- La collection **DOIT** être dans la corbeille (`trashed_at IS NOT NULL`). La suppression définitive d'une collection non mise à la corbeille est rejetée avec **HTTP 409**.
-- La collection **DOIT** n'avoir aucune ligne `files` restante (dans la corbeille ou non) et aucune ligne `collections` enfant restante. Le client est responsable du parcours de l'arbre en profondeur d'abord ; le serveur applique l'invariant. Si l'une ou l'autre vérification échoue, le serveur retourne **HTTP 409**.
+- La collection **DOIT** être dans la corbeille (`trashed_at IS NOT NULL`).
+  La suppression définitive d'une collection non mise à la corbeille est
+  rejetée avec **HTTP 409**.
 
 #### Purge planifiée de la corbeille
 
@@ -2503,7 +2535,9 @@ La suppression de compte supprime définitivement l'utilisateur et toutes les do
 3. L'utilisateur clique sur le lien de confirmation.
 4. Le serveur exécute une transaction atomique unique :
 
-   - Supprime toutes les lignes `file_keys`, `collection_keys`, `tus_uploads` et `shares` pour cet utilisateur.
+   - Supprime toutes les lignes `file_keys`, `file_versions`,
+    `collection_keys`, `tus_uploads`, `public_links` et `shares`
+    pour cet utilisateur.
    - Supprime toutes les lignes `collections` pour cet utilisateur.
    - Supprime toutes les lignes `sessions` et `persistent_sessions` pour cet utilisateur.
    - Supprime `VXWM`, `VXRM`, `VXSK` et `registration_record` de la ligne `users`.
@@ -2530,8 +2564,10 @@ DELETE /api/v1/trash
 
 **Comportement du serveur :**
 
-1. Collecte **toutes les** lignes `collections` mises à la corbeille de niveau racine pour l'utilisateur, c'est-à-dire les collections où `trashed_at IS NOT NULL` et dont le `parent_id` est soit `NULL` soit pointe vers une collection qui n'est **pas** elle-même dans la corbeille.
-2. Collecte toutes les lignes `files` mises à la corbeille pour l'utilisateur où `trashed_at IS NOT NULL` et le fichier n'appartient pas à une collection mise à la corbeille (pour éviter une double suppression avec le balayage de collection).
+1. Le serveur collecte les collections mises à la corbeille de niveau racine
+   (`trashed_at IS NOT NULL AND trash_root_id = son propre id`).
+2. Le serveur collecte les fichiers mis à la corbeille individuellement
+   (`trashed_at IS NOT NULL AND trash_root_id IS NULL`).
 3. Pour **chaque collection mise à la corbeille**, effectue la suppression définitive en profondeur d'abord définie au [§19.2](#192-suppression-de-collection).
 4. Pour **chaque fichier mis à la corbeille restant**, effectue la suppression définitive définie au [§19.1](#191-suppression-de-fichier).
 5. Les éléments **PEUVENT** être traités en parallèle. La suppression de chaque élément **DOIT** être sa propre transaction atomique.

@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-> **Document version:** 14
+> **Document version:** 15
 >
 > **Protocol version:** 1
 >
@@ -728,29 +728,38 @@ If the upload targets an existing file (`file_id` set in tus metadata), the serv
 
 ### 6.5.7 Resume alignment
 
-A tus `PATCH` **MAY** contain any number of bytes, and may interrupt at any byte boundary. When an interrupted upload is resumed via `HEAD` followed by `PATCH`, the server-reported `Upload-Offset` may fall in the middle of a **VexaHub** crypto segment. The client **MUST NOT** submit ciphertext starting at that arbitrary offset, because `XChaCha20-Poly1305` does not support partial **AEAD** writes. A segment is a single atomic encryption unit.
+A tus `PATCH` **MAY** contain any number of bytes, and may interrupt at any byte boundary. When an interrupted upload is resumed via `HEAD` followed by `PATCH`, the server-reported `Upload-Offset` may fall in the middle of a **VexaHub** crypto segment or a storage part. The client **MUST NOT** submit ciphertext starting at that arbitrary offset, because `XChaCha20-Poly1305` does not support partial **AEAD** writes and the storage backend requires all non-trailing parts to have identical size.
+
+The rewind target **MUST** satisfy two alignment constraints:
+
+1. **Segment-aligned**: the offset **MUST** fall on a segment ciphertext boundary (`offset % SEGMENT_CIPHERTEXT_SIZE_FULL == 0`), because `XChaCha20-Poly1305` does not support partial **AEAD** writes. A segment is a single atomic encryption unit.
+
+2. **Storage-part-aligned**: the offset **MUST** fall on a storage part boundary. The storage backend splits uploads into fixed-size parts for multipart transfer; all non-trailing parts must have identical size. Resuming mid-part produces an undersized part that causes the multipart finalization to fail. The part size is defined as `STORAGE_PART_SIZE = SEGMENT_CIPHERTEXT_SIZE_FULL * STORAGE_PART_SEGMENTS` (currently `STORAGE_PART_SEGMENTS = 8`).
+
+Since `STORAGE_PART_SEGMENTS` is a multiple of 1, aligning to storage parts automatically satisfies segment alignment.
 
 Resume procedure:
 
 1. Client sends `HEAD {tus_url}` and reads `Upload-Offset` (`O`).
-2. Client computes the index of the segment that contains byte `O`:
+2. Client computes the storage-part-aligned resume offset:
 
     ```rs
-        segment_index = floor(O / SEGMENT_CIPHERTEXT_SIZE_FULL)
-        segment_start = segment_index x SEGMENT_CIPHERTEXT_SIZE_FULL
+        raw_segment  = floor(O / SEGMENT_CIPHERTEXT_SIZE_FULL)
+        aligned_seg  = raw_segment - (raw_segment % STORAGE_PART_SEGMENTS)
+        aligned_off  = aligned_seg * SEGMENT_CIPHERTEXT_SIZE_FULL
     ```
 
-3. If `O > segment_start`, the server holds a partial segment. The client **MUST** request the server to truncate the upload back to `segment_start` via the custom endpoint:
+3. If `O > aligned_off`, the server holds a partial storage part. The client **MUST** request the server to truncate the upload back to `aligned_off` via the custom endpoint:
 
     ```rs
         POST /api/v1/uploads/{upload_id}/rewind
-        { "to_offset": <segment_start> }
+        { "to_offset": <aligned_off> }
     ```
 
-   The server **MUST** verify the requested offset is segment-aligned, truncate the underlying storage object, update `tus_uploads.upload_offset`, and respond 204.
-4. Client resumes with `PATCH` from `segment_start`, re-deriving each segment nonce from `(generation, segment_index)` as defined in [§6.2](#62-per-segment-nonce-derivation).
+   The server **MUST** verify the requested offset is storage-part-aligned, truncate the underlying storage object, update `tus_uploads.upload_offset`, and respond 204.
+4. Client resumes with `PATCH` from `aligned_off`, re-deriving each segment nonce from `(generation, segment_index)` as defined in [§6.2](#62-per-segment-nonce-derivation).
 
-The rewind endpoint is **NOT** part of the tus standard. It is a **VexaHub** extension necessary because tus alone cannot express the constraint that uploads must be aligned to **AEAD** segment boundaries.
+The rewind endpoint is **NOT** part of the tus standard. It is a **VexaHub** extension necessary because tus alone cannot express the constraint that uploads must be aligned to **AEAD** segment and storage part boundaries.
 
 #### 6.5.7.1 Backend Storage Layer Alignment
 
@@ -2025,7 +2034,12 @@ The client has two paths depending on whether the local version is newer than th
     3. Client re-encrypts local content under generation `M+1` nonce space.
     4. Client creates a new tus upload via `POST /uploads` with metadata fields `generation = M+1` AND `expected_current_generation = M`. The server **MUST** persist `expected_current_generation = M` on the resulting `tus_uploads` row.
     5. The client uploads ciphertext via `PATCH` requests as usual. The `expected_current_generation` value is **NOT** re-checked on each PATCH (which would be racy and pointless); it is checked exactly once, at commit.
-    6. Client generates fresh `fileKey` via CSPRNG, wraps it into a new `VXFK` blob under the parent `collectionKey`, and encrypts metadata into a new `VXFM` blob.
+    6. Client unwraps the existing `fileKey` at the current `key_generation`
+    (or uses the cached one if still in memory), wraps it into a `VXFK`
+    blob under the parent `collectionKey`, and encrypts metadata into a
+    new `VXFM` blob under the same `fileKey` with generation `M+1`.
+    The `key_generation` in `file_keys` does NOT increment. This is a
+    content update, not a key rotation.
     7. On commit (`POST /uploads/{id}/commit` with `{ vxfk, vxfm }`, see [§6.5.6.1](#6561-commit)), the server validates: if `files.generation != tus_uploads.expected_current_generation`, the server returns HTTP 409 with the actual current generation in the response body and discards the upload. The client **MUST** re-enter conflict resolution from step 1, AND the user **MUST** be re-prompted because their previous decision was based on stale state.
     8. On successful validation, the server commits atomically: increments `files.generation` to `M+1`, replaces ciphertext, stores the `VXFK` and `VXFM` blobs in `file_keys`, returns 204.
 
@@ -2281,15 +2295,21 @@ Breaking changes (any of the following) require a version bump:
 >
 > `crypto_version` tracks which **protocol-version key derivation scheme and parameters** produced the file's keys. It changes **only during a protocol migration** (e.g. **v1** -> **v2** if **Argon2id parameters change**, or **X-Wing wire format changes**).
 >
-> Key rotation under [§11.1](#111-share-revocation) (**share revocation**) generates new keys under the **same** protocol version. The `key_generation` counter on `collection_keys` / `file_keys` increments; `crypto_version` on the `files` row does not.
+> Key rotation under [§11.1](#111-share-revocation) (**share revocation**) generates
+> new keys under the **same** protocol version.
+> The `key_generation` counter on `collection_keys` / `file_keys` increments; `crypto_version`
+> on the `files` row does not.
 >
 > Examples:
 >
 > - File created on protocol **v1** -> `files.crypto_version = 1`, `key_generation = 0`.
 > - Owner revokes a share, rotates keys -> `key_generation = 1`, `crypto_version` unchanged.
-> - Protocol migrates **v1** -> **v2**, owner re-encrypts -> `crypto_version = 2`, `key_generation` may also increment but for unrelated reasons.
+> - Protocol migrates **v1** -> **v2**, owner re-encrypts -> `crypto_version = 2`, `key_generation`
+> may also increment but for unrelated reasons.
 >
-> A consequence: a single file's `(crypto_version, key_generation)` pair uniquely identifies which key wrapping is currently in effect. Both must be checked on key fetch; mismatch indicates a bug or migration in progress.
+> A consequence: for a given file, the `(crypto_version, key_generation)` pair
+> uniquely identifies which key derivation scheme and wrapping generation are
+> currently in effect.
 
 What **CANNOT** be changed without re-encrypting user data: `masterKey` itself, file generation derivation paths, segment nonce derivation. `serverSetup` rotation invalidates all accounts.
 
@@ -2596,6 +2616,7 @@ Triggered either by the user explicitly emptying trash, or automatically after t
 2. Server atomically:
    - Deletes the `files` row.
    - Deletes all `file_keys` rows for that `file_id`.
+   - Deletes all `file_versions` rows for that `file_id`.
    - Deletes all `shares` rows where the shared resource is this `file_id`.
    - Cancels any in-progress `tus_uploads` rows for this `file_id` and schedules their storage objects for deletion.
    - Schedules deletion of all storage blobs at the file's storage paths. Blob deletion MAY be asynchronous as long as the file row is removed atomically and the blobs become unreachable to any API request immediately.
@@ -2626,6 +2647,12 @@ A compliant server **cannot** re-surface deleted content. An adversarial server 
 
 Collections are moved to trash before permanent deletion, mirroring file trash semantics ([§19.1](#191-file-deletion)).
 
+Each trashed item carries a `trash_root_id` column pointing to the
+collection that initiated the trash cascade. Items trashed individually
+have `trash_root_id = NULL` (files) or `trash_root_id = own id`
+(collections). Items trashed via a collection cascade have
+`trash_root_id` = the ancestor collection's id.
+
 #### Trash flow
 
 1. Client sends `DELETE /api/v1/collections/{collection_id}`.
@@ -2637,10 +2664,14 @@ The eager update (writing `trashed_at` to every descendant) is acceptable becaus
 
 #### Restore flow
 
-1. Client sends `POST /api/v1/collections/{collection_id}/restore`.
-2. Server verifies the authenticated user owns the target collection. Returns `403` if not.
-3. Server atomically clears `trashed_at = NULL` on the target collection ONLY. **Descendant collections and files retain their own `trashed_at` values.**
-4. Server responds 204.
+1. Client sends `POST /api/v1/collections/{id}/restore`.
+2. Server verifies the collection's `trash_root_id` equals its own `id`
+   (it is the root of its trash cascade). If not, returns 409
+   "Restore the parent collection instead".
+3. Server verifies the parent collection is not trashed. Returns 409 if so.
+4. Server atomically clears `trashed_at` and `trash_root_id` on ALL
+   collections and files that share this `trash_root_id`.
+5. Server responds 204.
 
 This means: if the user trashes folder `A`, then independently trashes subfolder `A/B`, then restores `A`, only `A` comes back. `A/B` and its contents stay in trash because they were trashed by a separate user action. This is the expected behavior: independent user actions are not undone by restoring an ancestor.
 
@@ -2652,23 +2683,23 @@ If the user wants to restore everything, the client iterates: restore the root, 
 
 Triggered either by the user explicitly emptying trash, or automatically after the trash TTL (recommended: 30 days from `trashed_at`).
 
-The client walks the trashed tree depth-first (children first). For each collection, the client sends:
-
-```sh
-DELETE /api/v1/collections/{collection_id}/permanent
-```
-
-The server performs the atomic operations:
-
-- Deletes the `collections` row.
-- Deletes all `collection_keys` rows for that `collection_id`.
-- Deletes all `shares` rows where the shared resource is this `collection_id`.
-- Deletes the `VXCM` blob.
+1. Client sends `DELETE /api/v1/collections/{id}`.
+2. Server verifies the collection is trashed. Returns **409** if not.
+3. Server recursively collects all descendant collection IDs.
+4. Server atomically in a single transaction:
+   - Deletes all `shares`, `file_keys`, `file_versions`, `files`
+     within those collections.
+   - Deletes all `collection_keys`, `public_links`, `tus_uploads`
+     for those collections.
+   - Deletes all collection rows (with deferred FK constraint).
+5. Server schedules blob deletion asynchronously.
+6. Server responds **204**.
 
 Server-side validation:
 
-- The collection **MUST** be trashed (`trashed_at IS NOT NULL`). Permanent deletion of a non-trashed collection is rejected with **HTTP 409**.
-- The collection **MUST** have no remaining `files` rows (trashed or not) and no remaining child `collections` rows. The client is responsible for walking the tree depth-first; the server enforces the invariant. If either check fails, the server returns **HTTP 409**.
+- The collection **MUST** be trashed (`trashed_at IS NOT NULL`).
+  Permanent deletion of a non-trashed collection is rejected
+  with **HTTP 409**.
 
 #### Scheduled trash purge
 
@@ -2693,7 +2724,7 @@ Account deletion permanently removes the user and all associated data.
 3. User clicks the confirmation link.
 4. Server executes a single atomic database transaction:
 
-   - Deletes all `file_keys`, `collection_keys`, `tus_uploads`, and `shares` rows for this user.
+   - Deletes all `file_keys`, `file_versions`, `collection_keys`, `tus_uploads`, `public_links`, and `shares` rows for this user.
    - Deletes all `collections` rows for this user.
    - Deletes all `sessions` and `persistent_sessions` rows for this user.
    - Clears `VXWM`, `VXRM`, `VXSK`, and `registration_record` from the `users` row.
@@ -2720,8 +2751,10 @@ DELETE /api/v1/trash
 
 **Server behavior:**
 
-1. Collects **all root-level** trashed `collections` rows for the user, collections where `trashed_at IS NOT NULL` and whose `parent_id` is either `NULL` or points to a collection that is **not** itself trashed.
-2. Collects all trashed `files` rows for the user where `trashed_at IS NOT NULL` and the file does not belong to a trashed collection (to avoid double-deletion with the collection sweep).
+1. Server collects root-level trashed collections
+   (`trashed_at IS NOT NULL AND trash_root_id = own id`).
+2. Server collects individually trashed files
+   (`trashed_at IS NOT NULL AND trash_root_id IS NULL`).
 3. For **each trashed collection**, performs the depth-first permanent deletion defined in [§19.2](#192-collection-deletion).
 4. For **each remaining trashed file**, performs the permanent deletion defined in [§19.1](#191-file-deletion).
 5. Items **MAY** be processed in parallel. Each item's deletion **MUST** be its own atomic transaction.
