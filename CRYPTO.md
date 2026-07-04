@@ -765,7 +765,7 @@ The rewind endpoint is **NOT** part of the tus standard. It is a **VexaHub** ext
 
 **VexaHub** uses a backend server to persist upload data to storage. The server internally translates tus `PATCH` requests into multipart upload parts. This section specifies constraints that bridge the cryptographic segment model with the **server's multipart** upload mechanics.
 
-**Client-side invariant:** Every tus `PATCH` request **MUST** contain one or more **complete** `VXFC` ciphertext segments. The client **MUST NOT** send a partial segment in a `PATCH` body. This is enforced by the client's encryption pipeline: the client encrypts a full plaintext segment into a `VXFC` blob and only then writes it to the `PATCH` stream. The last `PATCH` of an upload MAY contain a final segment shorter than `SEGMENT_CIPHERTEXT_SIZE_FULL` (because the last plaintext segment may be shorter than 1 MiB), but it is still a **complete** `VXFC` blob.
+**Client-side invariant:** Every tus `PATCH` request **MUST** contain one or more **complete** `VXFC` ciphertext segments. The client **MUST NOT** send a partial segment in a `PATCH` body. This is enforced by the client's encryption pipeline: the client encrypts a full plaintext segment into a `VXFC` blob and only then writes it to the `PATCH` stream. The last `PATCH` of an upload **MAY** contain a final segment shorter than `SEGMENT_CIPHERTEXT_SIZE_FULL` (because the last plaintext segment may be shorter than 1 MiB), but it is still a **complete** `VXFC` blob.
 
 **Consequence:** If a network interruption occurs mid-`PATCH`, the bytes received by the backend server may end at an arbitrary offset. The server stores trailing bytes that fall below the minimum part size as an **incomplete part** (a separate `.part` object). These bytes may contain zero or more complete `VXFC` segments followed optionally by a partial segment. Partial segment bytes are **not usable**.
 
@@ -945,7 +945,7 @@ A scheduled job **MUST** periodically (recommended: hourly) remove rows from `tu
 VexaHub implements **OPAQUE** ([RFC 9807][opaque_rfc]) in Rust crates, which serves as the cryptographic source of truth for all clients and the server. The crates are compiled to:
 
 - **WebAssembly** via `wasm-bindgen` for the **SvelteKit** webapp.
-- **Native** Rust linkage for the **Tauri** desktop application.
+- **Native** Rust linkage for the **desktop** application.
 - **NAPI-RS** bindings for the **backend**.
 - **UniFFI** bindings for future **Android (Kotlin)** and **iOS (Swift)** clients.
 
@@ -966,6 +966,9 @@ This ciphersuite is identical across every client and the server. Any change is 
 > This ensures session keys are quantum-resistant: an attacker must break both the Ristretto255 DH and ML-KEM-768 to recover a session key from a recorded login transcript. The OPRF (Ristretto255) remains classical. See [§17](#17-threat-model-summary) for the residual threat model.
 
 ### 7.3 Server setup
+
+> `serverSetup` **MUST** be encrypted at rest and loaded into memory at process startup.
+> It **MUST NOT** persist unencrypted on disk.
 
 At first deployment, the server generates a one-time `serverSetup` containing the **OPRF** secret key (the global pepper) and the server's static **AKE** keypair.
 
@@ -1036,7 +1039,7 @@ This defends against a substituted server, contingent on the client distribution
 12. Client -> Server: `POST /auth/login/finish { continuationToken, finishLoginRequest }`.
 13. Server: retrieves and immediately deletes `serverLoginState` from Valkey.
 14. Server: `opaque.server.finishLogin(...)` -> `{ sessionKey }`.
-15. Server: derives an HTTP session token from `sessionKey`, stores a hashed session row in Postgres, returns `HttpOnly; Secure; SameSite=Strict` cookie.
+15. Server: derives an HTTP session token from `sessionKey`, stores a hashed session row in DB, returns `HttpOnly; Secure; SameSite=Strict` cookie.
 16. Client: zeroizes `password`, `exportKey`, `masterKeyWrapper`. `masterKey` and sharing private keys are loaded into the Crypto Web Worker.
 
 > **Password change note:** `VXSK` is wrapped under `masterKey`, not `masterKeyWrapper`. Since password changes re-wrap `masterKey` under a new `masterKeyWrapper` but do not change `masterKey` itself, the existing `VXSK` blob remains valid and does not need re-wrapping.
@@ -1194,7 +1197,7 @@ Both caches are held exclusively in **Worker** memory. They are never serialized
 |-----------------|------------------|------------|------------------------------------------------------------------------|
 | Web (browser)   | 32               | 128        | Constrained tab memory; weakest zeroization story                      |
 | Mobile (UniFFI) | 64               | 256        | Constrained device memory; native zeroization is reliable              |
-| Desktop (Tauri) | 128              | 512        | Larger working sets; native zeroization; less memory pressure          |
+| Desktop         | 128              | 512        | Larger working sets; native zeroization; less memory pressure          |
 
 Implementations **MAY** override these defaults for UX reasons (e.g., a desktop client with thousands of files would thrash on 128 collections). Overrides **MUST** be documented in the platform's security model. Implementations **MUST NOT** make caches unbounded. Implementations **MUST NOT** raise bounds purely to avoid implementing eviction logic.
 
@@ -1276,7 +1279,7 @@ On subsequent access to the same file within the session, steps 2 through 8 are 
 
 #### 9.5.3 Collection prefetch hint
 
-The main thread MAY send a prefetch hint to the Worker when the user navigates into a collection, to warm the collection key cache before any file is opened. A prefetch hint causes the Worker to unwrap and cache the `collectionKey` for that collection only. It does **NOT** trigger unwrapping of any `fileKey` values within the collection, since the user has not yet accessed any specific file.
+The main thread **MAY** send a prefetch hint to the Worker when the user navigates into a collection, to warm the collection key cache before any file is opened. A prefetch hint causes the Worker to unwrap and cache the `collectionKey` for that collection only. It does **NOT** trigger unwrapping of any `fileKey` values within the collection, since the user has not yet accessed any specific file.
 
 Prefetch hints are a performance optimisation only. The Worker treats a prefetch hint identically to a collection key cache miss triggered by a real operation. Prefetch hints **MUST NOT** be sent for collections the user has not explicitly navigated to.
 
@@ -1293,7 +1296,7 @@ Web clients have no persistent local storage of plaintext key material or plaint
 
 Web clients **MUST NOT** attempt to cache plaintext file content or unwrapped key material in IndexedDB, localStorage, or any other browser storage. The only persistent browser storage used by VexaHub is the `VXPS` blob ([§5.6](#56-vxps---persistent-session-blob)) for persistent sessions and the session cookie.
 
-#### 9.6.2 Desktop clients (Tauri)
+#### 9.6.2 Desktop clients
 
 Desktop clients use the OS keychain to store `masterKey` between sessions, achieving true zero-knowledge persistent sessions without server involvement. The keychain entry is created at first login and updated on password change.
 
@@ -1319,25 +1322,25 @@ If the keychain entry is missing (first install, or after the user manually clea
 
 **Offline operation on desktop:**
 
-Desktop clients MAY maintain an encrypted local cache of file content and metadata for offline access. If a local cache is implemented:
+Desktop clients **MAY** maintain an encrypted local cache of file content and metadata for offline access. If a local cache is implemented:
 
 - File content **MUST** be stored as the original `VXFC` ciphertext segments, not as plaintext. Decryption happens in the Worker at access time.
 - File metadata **MUST** be stored as the original `VXFM` blob, not as plaintext CBOR.
-- The local cache index (which files are cached, their sizes and generations) MAY be stored in plaintext, as this information is already known to the server.
+- The local cache index (which files are cached, their sizes and generations) **MAY** be stored in plaintext, as this information is already known to the server.
 - On reconnection, the client **MUST** fetch current `generation` values for all cached files and evict any whose cached generation is behind the server's current generation. Stale ciphertext **MUST NOT** be served to the user.
 - The local cache **MUST** be fully deleted on logout and on `reset_generation` mismatch.
 
-> **Argon2id on Tauri:**
+> **Argon2id:**
 >
-> Tauri's webview context does not use browser-origin isolation headers.
+> The app context does not use browser-origin isolation headers.
 > `crossOriginIsolated` as checked via `window.crossOriginIsolated` is not
-> applicable in the Tauri renderer.
+> applicable in the app renderer.
 >
-> Argon2id runs via the native Rust implementation on Tauri with `p = 4` as
-> specified in [§2](#2-primitives). The WASM path is not used on Tauri.
+> Argon2id runs via the native Rust implementation with `p = 4` as
+> specified in [§2](#2-primitives). The WASM path is not used.
 >
 > The `crossOriginIsolated` bootstrap check ([§16.2](#162-other-headers))
-> **MUST** be skipped on Tauri targets. Tauri builds **MUST** instead verify
+> **MUST** be skipped on the app. App builds **MUST** instead verify
 > at startup that the native Argon2id implementation is active and that the
 > parallelism parameter matches the spec value.
 
@@ -1355,7 +1358,7 @@ Multiple browser tabs for the same origin do not share Web Workers. Each tab spa
 
 The session cookie is shared across all tabs automatically by the browser. When a user explicitly logs out in one tab, the client **MUST**:
 
-1. Call the server logout endpoint to invalidate the session row in Postgres.
+1. Call the server logout endpoint to invalidate the session row in DB.
 2. Terminate its own Worker and zeroize its key material.
 3. Broadcast a logout signal to other tabs via `BroadcastChannel` (channel name: `"vexahub:session"`).
 
@@ -1830,7 +1833,7 @@ This sets correct expectations: the user understands a large file is in progress
 - After revocation, the client schedules progressive re-encryption of all `pending_key_rotation = TRUE` files in the collection.
 - Re-encryption runs in the background while the client is online and idle. **Concurrency is capped at 1 file at a time** to avoid saturating the user's upload bandwidth.
 - A persistent UI element shows progress: `"Re-encrypting collection: 47 / 1000 files"`.
-- The user MAY pause and resume at any time. Pausing leaves affected files in `pending_key_rotation = TRUE`; resuming continues from the next file.
+- The user **MAY** pause and resume at any time. Pausing leaves affected files in `pending_key_rotation = TRUE`; resuming continues from the next file.
 
 #### Re-encryption procedure for a single file
 
@@ -1859,8 +1862,8 @@ On every successful upload commit, the server sets `content_key_generation = key
 
 The owner's old-generation rows in `collection_keys` and `file_keys` **MUST** be retained until all files dependent on them have either been re-encrypted to a newer generation or are no longer referencing them. Specifically:
 
-- A `file_keys` row at `key_generation = K` MAY be deleted when no `files` row in its collection has `content_key_generation = K`.
-- A `collection_keys` row at `key_generation = K` MAY be deleted when no `file_keys` row exists with the same `collection_id` and `key_generation = K`.
+- A `file_keys` row at `key_generation = K` **MAY** be deleted when no `files` row in its collection has `content_key_generation = K`.
+- A `collection_keys` row at `key_generation = K` **MAY** be deleted when no `file_keys` row exists with the same `collection_id` and `key_generation = K`.
 
 This GC runs server-side and is triggered by re-encryption commits. It does not require client coordination.
 
@@ -2619,7 +2622,7 @@ Triggered either by the user explicitly emptying trash, or automatically after t
    - Deletes all `file_versions` rows for that `file_id`.
    - Deletes all `shares` rows where the shared resource is this `file_id`.
    - Cancels any in-progress `tus_uploads` rows for this `file_id` and schedules their storage objects for deletion.
-   - Schedules deletion of all storage blobs at the file's storage paths. Blob deletion MAY be asynchronous as long as the file row is removed atomically and the blobs become unreachable to any API request immediately.
+   - Schedules deletion of all storage blobs at the file's storage paths. Blob deletion **MAY** be asynchronous as long as the file row is removed atomically and the blobs become unreachable to any API request immediately.
 3. Server responds 204.
 
 **Schema addition:**

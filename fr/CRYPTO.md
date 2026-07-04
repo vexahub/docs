@@ -759,7 +759,7 @@ L'endpoint rewind ne fait **PAS** partie du standard tus. C'est une extension **
 
 **VexaHub** utilise un serveur backend pour persister les données d'envoi vers le stockage. Le serveur traduit en interne les requêtes tus `PATCH` en parties d'envoi multipart. Cette section spécifie les contraintes qui relient le modèle de segment cryptographique avec les mécanismes d'envoi **multipart du serveur**.
 
-**Invariant côté client :** Chaque requête tus `PATCH` **DOIT** contenir un ou plusieurs segments de texte chiffré `VXFC` **complets**. Le client **NE DOIT PAS** envoyer un segment partiel dans un corps de `PATCH`. Ceci est imposé par le pipeline de chiffrement du client : le client chiffre un segment de texte clair complet en un blob `VXFC` et ne l'écrit dans le flux `PATCH` qu'ensuite. Le dernier `PATCH` d'un envoi PEUT contenir un segment final plus court que `SEGMENT_CIPHERTEXT_SIZE_FULL` (car le dernier segment de texte clair peut être plus court que 1 Mio), mais c'est tout de même un blob `VXFC` **complet**.
+**Invariant côté client :** Chaque requête tus `PATCH` **DOIT** contenir un ou plusieurs segments de texte chiffré `VXFC` **complets**. Le client **NE DOIT PAS** envoyer un segment partiel dans un corps de `PATCH`. Ceci est imposé par le pipeline de chiffrement du client : le client chiffre un segment de texte clair complet en un blob `VXFC` et ne l'écrit dans le flux `PATCH` qu'ensuite. Le dernier `PATCH` d'un envoi **PEUT** contenir un segment final plus court que `SEGMENT_CIPHERTEXT_SIZE_FULL` (car le dernier segment de texte clair peut être plus court que 1 Mio), mais c'est tout de même un blob `VXFC` **complet**.
 
 **Conséquence :** Si une interruption réseau survient en plein milieu d'un `PATCH`, les octets reçus par le serveur backend peuvent se terminer à un décalage arbitraire. Le serveur stocke les octets de queue qui tombent en dessous de la taille minimale de partie comme une **partie incomplète** (un objet `.part` séparé). Ces octets peuvent contenir zéro ou plusieurs segments `VXFC` complets suivis optionnellement d'un segment partiel. Les octets de segment partiel ne sont **pas utilisables**.
 
@@ -939,7 +939,7 @@ Un job planifié **DOIT** périodiquement (recommandé : toutes les heures) supp
 VexaHub implémente **OPAQUE** ([RFC 9807][opaque_rfc]) dans des crates Rust, qui servent de source de vérité cryptographique pour tous les clients et le serveur. Les crates sont compilées vers :
 
 - **WebAssembly** via `wasm-bindgen` pour la webapp **SvelteKit**.
-- Liaison Rust **native** pour l'application desktop **Tauri**.
+- Liaison Rust **native** pour l'application **desktop**.
 - Liaisons **NAPI-RS** pour le **backend**.
 - Liaisons **UniFFI** pour les futurs clients **Android (Kotlin)** et **iOS (Swift)**.
 
@@ -960,6 +960,9 @@ Cette suite cryptographique est identique sur chaque client et le serveur. Tout 
 > Cela garantit que les clés de session sont résistantes aux quantiques : un attaquant doit casser à la fois le DH Ristretto255 et le ML-KEM-768 pour récupérer une clé de session depuis un transcript de connexion enregistré. L'OPRF (Ristretto255) reste classique. Voir [§17](#17-résumé-du-modèle-de-menace) pour le modèle de menace résiduel.
 
 ### 7.3 Configuration du serveur
+
+> Le `serverSetup` **DOIT** être chiffré au repos et chargé en mémoire au démarrage du processus.
+> Il ne **DOIT PAS** persister en clair sur le disque.
 
 Au premier déploiement, le serveur génère un `serverSetup` unique contenant la clé secrète **OPRF** (le poivre global) et la paire de clés **AKE** statique du serveur.
 
@@ -1030,7 +1033,7 @@ Cela défend contre un serveur substitué, sous réserve que le canal de distrib
 12. Client -> Serveur : `POST /auth/login/finish { continuationToken, finishLoginRequest }`.
 13. Serveur : récupère et supprime immédiatement `serverLoginState` de Valkey.
 14. Serveur : `opaque.server.finishLogin(...)` -> `{ sessionKey }`.
-15. Serveur : dérive un token de session HTTP depuis `sessionKey`, stocke une ligne de session hachée dans Postgres, retourne un cookie `HttpOnly; Secure; SameSite=Strict`.
+15. Serveur : dérive un token de session HTTP depuis `sessionKey`, stocke une ligne de session hachée dans DB, retourne un cookie `HttpOnly; Secure; SameSite=Strict`.
 16. Client : zéroïse `password`, `exportKey`, `masterKeyWrapper`. `masterKey` et les clés privées de partage sont chargés dans le Crypto Web Worker.
 
 > **Note sur le changement de mot de passe :** `VXSK` est enveloppé sous `masterKey`, pas sous `masterKeyWrapper`. Comme les changements de mot de passe ré-enveloppent `masterKey` sous un nouveau `masterKeyWrapper` mais ne changent pas `masterKey` lui-même, le blob `VXSK` existant reste valide et n'a pas besoin d'être ré-enveloppé.
@@ -1187,7 +1190,7 @@ Les deux caches résident exclusivement en **mémoire du Worker**. Ils ne sont j
 |------------------|---------------------|------------------|-----------------------------------------------------------------------------------|
 | Web (navigateur) | 32                  | 128              | Mémoire d'onglet contrainte ; modèle de zéroïsation le moins fiable               |
 | Mobile (UniFFI)  | 64                  | 256              | Mémoire d'appareil contrainte ; zéroïsation native fiable                         |
-| Bureau (Tauri)   | 128                 | 512              | Ensembles de travail plus grands ; zéroïsation native ; moins de pression mémoire |
+| Bureau           | 128                 | 512              | Ensembles de travail plus grands ; zéroïsation native ; moins de pression mémoire |
 
 Les implémentations **PEUVENT** remplacer ces valeurs par défaut pour des raisons d'expérience utilisateur (ex. un client bureau avec des milliers de fichiers se retrouverait en situation de cache-miss permanent avec 128 collections). Les remplacements **DOIVENT** être documentés dans le modèle de sécurité de la plateforme. Les implémentations **NE DOIVENT PAS** rendre les caches non bornés. Les implémentations **NE DOIVENT PAS** augmenter les limites uniquement pour éviter d'implémenter la logique d'éviction.
 
@@ -1269,7 +1272,7 @@ Lors des accès ultérieurs au même fichier dans la session, les étapes 2 à 8
 
 #### 9.5.3 Indication de prérécupération de collection
 
-Le thread principal PEUT envoyer une indication de prérécupération au Worker lorsque l'utilisateur navigue dans une collection, pour préchauffer le cache de clés de collection avant l'ouverture d'un fichier. Une indication de prérécupération amène le Worker à désencapsuler et mettre en cache uniquement la `collectionKey` de cette collection. Elle ne **déclenche PAS** la désencapsulation de valeurs de `fileKey` dans la collection, puisque l'utilisateur n'a encore accédé à aucun fichier spécifique.
+Le thread principal **PEUT** envoyer une indication de prérécupération au Worker lorsque l'utilisateur navigue dans une collection, pour préchauffer le cache de clés de collection avant l'ouverture d'un fichier. Une indication de prérécupération amène le Worker à désencapsuler et mettre en cache uniquement la `collectionKey` de cette collection. Elle ne **déclenche PAS** la désencapsulation de valeurs de `fileKey` dans la collection, puisque l'utilisateur n'a encore accédé à aucun fichier spécifique.
 
 Les indications de prérécupération sont une optimisation des performances uniquement. Le Worker traite une indication de prérécupération de manière identique à un cache-miss de clé de collection déclenché par une vraie opération. Les indications de prérécupération **NE DOIVENT PAS** être envoyées pour des collections vers lesquelles l'utilisateur n'a pas explicitement navigué.
 
@@ -1286,7 +1289,7 @@ Les clients web ne maintiennent aucun stockage local persistant de matériel de 
 
 Les clients web **NE DOIVENT PAS** tenter de mettre en cache le contenu de fichier en clair ni le matériel de clés désencapsulé dans IndexedDB, localStorage, ou tout autre stockage navigateur. Le seul stockage navigateur persistant utilisé par VexaHub est le blob `VXPS` ([§5.6](#56-vxps---blob-de-session-persistante)) pour les sessions persistantes et le cookie de session.
 
-#### 9.6.2 Clients bureau (Tauri)
+#### 9.6.2 Clients bureau
 
 Les clients bureau utilisent le trousseau du système d'exploitation pour stocker `masterKey` entre les sessions, permettant de véritables sessions persistantes à zéro connaissance sans implication du serveur. L'entrée du trousseau est créée à la première connexion et mise à jour lors d'un changement de mot de passe.
 
@@ -1316,17 +1319,17 @@ Les clients bureau PEUVENT maintenir un cache local chiffré de contenu de fichi
 
 - Le contenu des fichiers **DOIT** être stocké sous forme de segments de texte chiffré `VXFC` originaux, et non en clair. Le déchiffrement s'effectue dans le Worker au moment de l'accès.
 - Les métadonnées des fichiers **DOIVENT** être stockées sous forme de blob `VXFM` original, et non en CBOR en clair.
-- L'index du cache local (quels fichiers sont mis en cache, leurs tailles et générations) PEUT être stocké en clair, car cette information est déjà connue du serveur.
+- L'index du cache local (quels fichiers sont mis en cache, leurs tailles et générations) **PEUT** être stocké en clair, car cette information est déjà connue du serveur.
 - À la reconnexion, le client **DOIT** récupérer les valeurs de `generation` actuelles pour tous les fichiers mis en cache et évincer ceux dont la génération mise en cache est antérieure à la génération actuelle du serveur. Les textes chiffrés périmés **NE DOIVENT PAS** être servis à l'utilisateur.
 - Le cache local **DOIT** être entièrement supprimé à la déconnexion et en cas de discordance de `reset_generation`.
 
-> **Argon2id sur Tauri :**
+> **Argon2id :**
 >
-> Le contexte webview de Tauri n'utilise pas les en-têtes d'isolation d'origine navigateur. `crossOriginIsolated` tel que vérifié via `window.crossOriginIsolated` n'est pas applicable dans le moteur de rendu Tauri.
+> Le contexte de l'application bureau n'utilise pas les en-têtes d'isolation d'origine navigateur. `crossOriginIsolated` tel que vérifié via `window.crossOriginIsolated` n'est pas applicable dans le moteur de rendu de l'application.
 >
-> Argon2id s'exécute via l'implémentation Rust native sur Tauri avec `p = 4` tel que spécifié au [§2](#2-primitives). Le chemin WASM n'est pas utilisé sur Tauri.
+> Argon2id s'exécute via l'implémentation Rust native avec `p = 4` tel que spécifié au [§2](#2-primitives). Le chemin WASM n'est pas utilisé.
 >
-> La vérification de démarrage `crossOriginIsolated` ([§16.2](#162-autres-en-têtes)) **DOIT** être ignorée sur les cibles Tauri. Les builds Tauri **DOIVENT** plutôt vérifier au démarrage que l'implémentation Argon2id native est active et que le paramètre de parallélisme correspond à la valeur spécifiée.
+> La vérification de démarrage `crossOriginIsolated` ([§16.2](#162-autres-en-têtes)) **DOIT** être ignorée sur l'application. Les builds de l'application **DOIVENT** plutôt vérifier au démarrage que l'implémentation Argon2id native est active et que le paramètre de parallélisme correspond à la valeur spécifiée.
 
 ### 9.7 Comportement multi-onglets sur le web
 
@@ -1342,7 +1345,7 @@ Plusieurs onglets navigateur pour la même origine ne partagent pas les Web Work
 
 Le cookie de session est partagé entre tous les onglets automatiquement par le navigateur. Lorsqu'un utilisateur se déconnecte explicitement dans un onglet, le client **DOIT** :
 
-1. Appeler le point d'accès de déconnexion du serveur pour invalider la ligne de session dans Postgres.
+1. Appeler le point d'accès de déconnexion du serveur pour invalider la ligne de session dans DB.
 2. Terminer son propre Worker et zéroïser son matériel de clés.
 3. Diffuser un signal de déconnexion aux autres onglets via `BroadcastChannel` (nom du canal : `"vexahub:session"`).
 
@@ -1701,7 +1704,7 @@ Cela fixe des attentes correctes : l'utilisateur comprend qu'un fichier volumine
 - Après une révocation, le client planifie le rechiffrement progressif de tous les fichiers `pending_key_rotation = TRUE` de la collection.
 - Le rechiffrement s'exécute en arrière-plan lorsque le client est en ligne et inactif. **La concurrence est limitée à 1 fichier à la fois** pour éviter de saturer la bande passante de téléversement de l'utilisateur.
 - Un élément d'interface persistant affiche la progression : `« Rechiffrement de la collection : 47 / 1000 fichiers »`.
-- L'utilisateur PEUT mettre en pause et reprendre à tout moment. La pause laisse les fichiers concernés dans l'état `pending_key_rotation = TRUE` ; la reprise continue à partir du fichier suivant.
+- L'utilisateur **PEUT** mettre en pause et reprendre à tout moment. La pause laisse les fichiers concernés dans l'état `pending_key_rotation = TRUE` ; la reprise continue à partir du fichier suivant.
 
 #### Procédure de rechiffrement pour un seul fichier
 
@@ -1730,8 +1733,8 @@ Pour éviter que les clients n'aient à inspecter le texte chiffré pour découv
 
 Les anciennes lignes de génération du propriétaire dans `collection_keys` et `file_keys` **DOIVENT** être conservées jusqu'à ce que tous les fichiers qui en dépendent aient été rechiffrés vers une génération plus récente ou ne les référencent plus. Plus précisément :
 
-- Une ligne `file_keys` à `key_generation = K` PEUT être supprimée lorsqu'aucune ligne `files` dans sa collection n'a `content_key_generation = K`.
-- Une ligne `collection_keys` à `key_generation = K` PEUT être supprimée lorsqu'aucune ligne `file_keys` n'existe avec le même `collection_id` et `key_generation = K`.
+- Une ligne `file_keys` à `key_generation = K` **PEUT** être supprimée lorsqu'aucune ligne `files` dans sa collection n'a `content_key_generation = K`.
+- Une ligne `collection_keys` à `key_generation = K` **PEUT** être supprimée lorsqu'aucune ligne `file_keys` n'existe avec le même `collection_id` et `key_generation = K`.
 
 Ce GC s'exécute côté serveur et est déclenché par les validations de rechiffrement. Il ne nécessite pas de coordination avec le client.
 
@@ -2425,7 +2428,7 @@ Déclenchée soit par l'utilisateur vidant explicitement la corbeille, soit auto
    - Supprime toutes les lignes `file_versions` pour ce `file_id`.
    - Supprime toutes les lignes `shares` où la ressource partagée est ce `file_id`.
    - Annule toutes les lignes `tus_uploads` en cours pour ce `file_id` et planifie la suppression de leurs objets de stockage.
-   - Planifie la suppression de tous les blobs de stockage aux chemins de stockage du fichier. La suppression des blobs PEUT être asynchrone tant que la ligne du fichier est supprimée atomiquement et que les blobs deviennent immédiatement inaccessibles à toute requête API.
+   - Planifie la suppression de tous les blobs de stockage aux chemins de stockage du fichier. La suppression des blobs **PEUT** être asynchrone tant que la ligne du fichier est supprimée atomiquement et que les blobs deviennent immédiatement inaccessibles à toute requête API.
 3. Le serveur répond 204.
 
 **Ajout au schéma :**

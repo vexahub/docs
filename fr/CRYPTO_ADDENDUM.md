@@ -131,7 +131,7 @@ fn coarsen(client_ip: IpAddr) -> IpNet {
 }
 ```
 
-L'appel `.trunc()` met les bits d'hôte à zéro, ce qu'exige le type `CIDR` de PostgreSQL.
+L'appel `.trunc()` met les bits d'hôte à zéro.
 
 La table des `sessions` stockent l'IP exacte du client en tant que `INET`, puisque c'est utilisé pour des raisons de sécurité (affichage des sessions active, réponse aux incidents) et est automatiquement purgé quand la session expire.
 
