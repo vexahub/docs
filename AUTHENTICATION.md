@@ -1,10 +1,10 @@
 # VexaHub - Authentication & Key Material Reference
 
 > **Status:** (Draft) *Proposed*
->
-> This document covers the authentication system: the **OPAQUE** protocol, what gets **created at registration**, what gets **reconstructed at login**, and how sessions are managed.
->
-> For the **full cryptographic specification** see the [master crypto spec](CRYPTO.md).
+
+This document covers the authentication system: the **OPAQUE** protocol, what gets **created at registration**, what gets **reconstructed at login**, and how sessions are managed.
+
+For the **full cryptographic specification** see the [master crypto spec](CRYPTO.md).
 
 ## Table of Contents
 
@@ -170,7 +170,7 @@ The `exportKey` is stable: as long as the password is the same and `serverSetup`
 
 ### 4.4 Session Cookie
 
-The server derives an HTTP session token from `sessionKey` and stores a **SHA-256 hash** of it in Postgres. The raw token is returned to the client as a cookie. Cookie attributes:
+The server derives an HTTP session token from `sessionKey` and stores a **SHA-256 hash** of it in the database. The raw token is returned to the client as a cookie. Cookie attributes:
 
 ```rs
 HttpOnly; Secure; SameSite=Strict; Path=/

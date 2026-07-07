@@ -1,10 +1,10 @@
 # VexaHub - Authentification et référence du matériel de clés
 
 > **Statut :** (Brouillon) *Proposé*
->
-> Ce document couvre le système d'authentification : le protocole **OPAQUE**, ce qui est **créé à l'inscription**, ce qui est **reconstruit à la connexion**, et la gestion des sessions.
->
-> Pour la **spécification cryptographique complète**, voir la [spec crypto principale](/fr/CRYPTO.md).
+
+Ce document couvre le système d'authentification : le protocole **OPAQUE**, ce qui est **créé à l'inscription**, ce qui est **reconstruit à la connexion**, et la gestion des sessions.
+
+Pour la **spécification cryptographique complète**, voir la [spec crypto principale](/fr/CRYPTO.md).
 
 ## Table des matières
 
@@ -170,7 +170,7 @@ L'`exportKey` est stable : tant que le mot de passe est le même et que `serverS
 
 ### 4.4 Cookie de session
 
-Le serveur dérive un jeton de session HTTP depuis `sessionKey` et stocke son empreinte **SHA-256** dans Postgres. Le jeton brut est retourné au client sous forme de cookie. Attributs du cookie :
+Le serveur dérive un jeton de session HTTP depuis `sessionKey` et stocke son empreinte **SHA-256** dans la base de données. Le jeton brut est retourné au client sous forme de cookie. Attributs du cookie :
 
 ```rs
 HttpOnly; Secure; SameSite=Strict; Path=/
