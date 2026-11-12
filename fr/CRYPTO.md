@@ -675,7 +675,11 @@ Clé : childCollectionKeyWrapKey (§4)
 
 Le magique distinct indique à tout lecteur de désencapsuler avec la `collectionKey` parente, jamais avec une `masterKey`, et empêche tout usage croisé avec `VXCK`.
 
-**Transitoire côté propriétaire :** un `VXCC` dans les `collection_keys` du propriétaire **DOIT** être remplacé par un `VXCK` classique la prochaine fois que son client le désencapsule : désencapsulation avec la clé parente, réencapsulation avec `collectionKeyWrapKey` dérivée de `masterKey`, envoi ([Addenda §21.3](/fr/CRYPTO_ADDENDUM.md#213-accès)). La copie de l'éditeur dans `share_collection_keys` reste un `VXCC`.
+La clé est choisie d'après le magique. La séparation de domaine avec `VXCK` vient de la dérivation `childCollectionKeyWrap` et de l'AAD, pas du magique.
+
+Un `VXCC` est toujours encapsulé sous la **dernière** `key_generation` de la `collectionKey` de sa parente. Une rotation de la clé parente **DOIT** réencapsuler tous les `VXCC` qui en dépendent dans la même opération ([§11.1](#111-révocation-de-partage)).
+
+**Transitoire côté propriétaire :** le client du propriétaire remplace son `VXCC` par un `VXCK` classique la première fois qu'il le désencapsule ([Addenda §21.3](/fr/CRYPTO_ADDENDUM.md#213-accès)). Le remplacement est conditionnel : le serveur ne l'accepte que si le blob stocké est encore ce `VXCC`, à la même `key_generation`. En cas de refus (rotation concurrente, compte en lecture seule), le client continue avec le `VXCC` et réessaie plus tard.
 
 ## 6. Chiffrement de fichier
 
@@ -1836,6 +1840,8 @@ La révocation supprime l'accès d'un destinataire et effectue une rotation des 
 6. L'expéditeur rechiffre tous les blobs de métadonnées `VXFM` sous les nouvelles valeurs de `fileMetadataKey` (dérivées de la nouvelle `fileKey` via la chaîne d'info **HKDF** standard). Les métadonnées sont petites, c'est synchrone.
 
 7. L'expéditeur repartage la nouvelle `collectionKey` avec tous les destinataires restants via de nouvelles invitations **X-Wing** + **ML-DSA-65**.
+
+    7a. Pour chaque sous-collection dont la clé est encore détenue sous forme de `VXCC` sous cette collection ([§5.14](#514-vxcc---clé-de-collection-encapsulée-par-la-collection-parente)), l'expéditeur la désencapsule avec l'**ancienne** `collectionKey` et la réencapsule avec la **nouvelle** dans le même appel de rotation. Le serveur **DOIT** refuser la rotation s'il y manque un `VXCC` dépendant de la collection.
 
 8. Le contenu des fichiers **n'est PAS rechiffré par défaut**. Les fichiers sont marqués `pending_key_rotation = TRUE`. Le compteur de `generation` du fichier **n'est PAS** incrémenté (il suit les modifications utilisateur, **pas les rotations de clés**). La `fileKey` réelle utilisée pour le contenu reste l'ancienne jusqu'à ce que le **propriétaire opte explicitement pour le rechiffrement** ([§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation)).
 

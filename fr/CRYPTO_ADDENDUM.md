@@ -251,7 +251,7 @@ L'IKM est une sortie **CSPRNG** uniformément aléatoire (héritée de `collecti
    - Le partage est accepté, non révoqué, et a le bit `edit` (`0x02`). Rejet `HTTP 403` sinon.
    - Le parent est accessible via le partage et appartient au propriétaire du partage. Rejet `HTTP 404` sinon.
    - L'`id` fourni n'existe pas déjà. Rejet `HTTP 409` en cas de doublon.
-7. Le serveur crée la ligne de collection avec `user_id = parent_collection_owner_id` immédiatement, stocke `VXCC` dans `collection_keys` pour le propriétaire et dans `share_collection_keys` pour le partage de l'éditeur.
+7. Le serveur crée la ligne de collection avec `user_id = parent_collection_owner_id` immédiatement, stocke `VXCC` dans `collection_keys` pour le propriétaire, et copie le même `VXCC` dans `share_collection_keys` pour **chaque partage non révoqué** qui atteint la parente (la parente est la collection partagée ou lui est accordée). Un `VXCC` n'est lié à aucun utilisateur : les mêmes octets servent à tous les destinataires, et l'accès reste contrôlé côté serveur.
 8. Le serveur répond `201` avec la collection.
 
 ### 21.3 Accès
@@ -268,25 +268,26 @@ L'éditeur et le propriétaire dérivent tous deux `childCollectionKeyWrapKey` d
 La première fois que le client du propriétaire désencapsule un `VXCC` de ses propres `collection_keys`, il **DOIT** :
 
 1. Réencapsuler la même `collectionKey` avec `collectionKeyWrapKey` dérivée de `masterKey` -> `VXCK` classique (AAD `user_id ‖ collection_id`).
-2. Envoyer `PUT /api/v1/storage/collections/{id}/key { vxck }`.
+2. Envoyer `PUT /api/v1/storage/collections/{id}/key { vxck, keyGeneration }`, où `keyGeneration` est celle du `VXCC` désencapsulé.
 
-Le serveur **DOIT** l'accepter uniquement du propriétaire de la collection, uniquement tant que le blob stocké est un `VXCC`, et **DOIT** le remplacer sur place à la même `key_generation`. Ensuite, la sous-collection est une collection ordinaire pour le propriétaire, indépendante de la clé parente.
+Le serveur **DOIT** l'accepter uniquement du propriétaire de la collection, uniquement si le blob stocké est encore un `VXCC` à cette `keyGeneration`, et **DOIT** le remplacer sur place. Sinon il répond `HTTP 409` (blob changé, par exemple après une rotation) ou `HTTP 403` (compte en lecture seule) : le client continue avec le `VXCC` et réessaie lors d'un prochain déchiffrement.
 
-Le `VXCC` de l'éditeur dans `share_collection_keys` n'est pas touché.
+Les copies `VXCC` dans `share_collection_keys` ne sont pas touchées.
 
 > La vérification de la permission `edit` (bit `0x02`) est appliquée uniquement côté serveur. Un éditeur avec la permission `view` (`0x01`) détient techniquement `parentCollectionKey` et pourrait dériver `childCollectionKeyWrapKey` côté client, mais le serveur rejette toute tentative de création avec `HTTP 403`. Cela est cohérent avec [§11.6](/fr/CRYPTO.md#116-permissions-de-partage) : les permissions sont appliquées au niveau de la couche serveur, pas au niveau cryptographique.
 
-### 21.4 Révocation de partage et rotation de clé
+### 21.4 Révocation de partage, rotation de clé et déplacement
 
-Lorsque le partage de l'éditeur sur la collection parente est révoqué, la rotation des clés se déroule conformément au [§11.1](/fr/CRYPTO.md#111-révocation-de-partage) :
+**Rotation.** Lorsqu'un partage sur la collection parente est révoqué, la rotation des clés se déroule conformément au [§11.1](/fr/CRYPTO.md#111-révocation-de-partage) :
 
-1. La `parentCollectionKey` est renouvelée. Une nouvelle `collectionKey` est générée pour la collection parente.
-2. Pour chaque sous-collection qui porte encore un `VXCC` (pas encore réencapsulé, §21.3), le propriétaire désencapsule sa `collectionKey` avec l'**ancienne** `childCollectionKeyWrapKey` (dérivée de l'ancienne `parentCollectionKey`) et la réencapsule en `VXCK` classique sous `masterKey`. Les sous-collections déjà réencapsulées ne demandent rien au propriétaire.
-3. Pour chaque destinataire restant qui a accès à la sous-collection, le propriétaire encapsule à nouveau sa `collectionKey` via le flux d'accord classique ([§11.1](/fr/CRYPTO.md#111-révocation-de-partage)).
-4. Les lignes `share_collection_keys` de l'éditeur révoqué sont supprimées avec le partage.
-5. L'éditeur ne peut plus dériver `childCollectionKeyWrapKey`; il n'a pas accès à la nouvelle `parentCollectionKey`.
+1. La `parentCollectionKey` est renouvelée.
+2. Chaque `VXCC` sous la parente (copie du propriétaire pas encore remplacée, et copies des partages) est désencapsulé avec l'**ancienne** `childCollectionKeyWrapKey` et réencapsulé avec celle dérivée de la **nouvelle** `parentCollectionKey`, dans le même appel de rotation (CRYPTO §11.1 étape 7a). Le propriétaire peut à la place remplacer sa propre copie par un `VXCK` classique.
+3. Les lignes `share_collection_keys` de l'éditeur révoqué sont supprimées avec le partage. Il n'a pas accès à la nouvelle `parentCollectionKey`.
 
-Le coût est identique à la réencapsulation des blobs `VXFK` après révocation ([§11.1](/fr/CRYPTO.md#111-révocation-de-partage)). Les sous-collections sont traitées comme des ressources encapsulées supplémentaires aux côtés des fichiers.
+**Déplacement.** Un `VXCC` est lié à sa parente à la fois par la clé d'encapsulation et par l'AAD :
+
+1. Le serveur **DOIT** refuser de déplacer une collection dont la copie du propriétaire est encore un `VXCC` (`HTTP 409`). Le client du propriétaire la remplace d'abord par un `VXCK` (§21.3).
+2. Lors d'un déplacement, le serveur supprime les copies `VXCC` de cette collection dans `share_collection_keys`. Le propriétaire redonne l'accès par le flux d'accord classique, avec des clés encapsulées par partage.
 
 ### 21.5 Schéma
 

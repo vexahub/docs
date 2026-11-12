@@ -680,7 +680,11 @@ Key: childCollectionKeyWrapKey (§4)
 
 The distinct magic tells every reader to unwrap with the parent `collectionKey`, never with a `masterKey`, and prevents cross-use with `VXCK`.
 
-**Transitional for the owner:** a `VXCC` in the owner's `collection_keys` **MUST** be replaced by a regular `VXCK` the next time the owner's client unwraps it: unwrap with the parent key, re-wrap with `collectionKeyWrapKey` from `masterKey`, upload ([Addendum §21.3](CRYPTO_ADDENDUM.md#213-access)). The editor's copy in `share_collection_keys` stays a `VXCC`.
+The magic selects the unwrap key. Domain separation from `VXCK` comes from the `childCollectionKeyWrap` derivation and the AAD, not from the magic.
+
+A `VXCC` is always wrapped under the **latest** `key_generation` of its parent's `collectionKey`. Rotating the parent key **MUST** re-wrap every `VXCC` below it in the same operation ([§11.1](#111-share-revocation)).
+
+**Transitional for the owner:** the owner's client replaces its `VXCC` with a regular `VXCK` the first time it unwraps it ([Addendum §21.3](CRYPTO_ADDENDUM.md#213-access)). The replacement is conditional: the server accepts it only if the stored blob is still that `VXCC` at the same `key_generation`. If it is refused (concurrent rotation, read-only account), the client keeps using the `VXCC` and retries later.
 
 ## 6. File Encryption
 
@@ -1956,6 +1960,8 @@ Revocation removes a recipient's access and rotates keys so new content is crypt
 
 7. Sender re-shares the new `collectionKey` with all remaining
    recipients via fresh `X-Wing` + `ML-DSA-65` invitations.
+
+    7a. For every sub-collection whose key is still held as a `VXCC` under this collection ([§5.14](#514-vxcc---child-wrapped-collection-key)), the sender unwraps it with the **old** `collectionKey` and re-wraps it with the **new** one in the same rotation call. The server **MUST** reject the rotation if a `VXCC` below the collection is missing from it.
 
 8. File content is **NOT re-encrypted by default**. Files are marked
    `pending_key_rotation = TRUE`. The file `generation` counter is

@@ -280,7 +280,7 @@ All UUIDs in `info` strings are encoded as raw 16-byte big-endian binary.
    - The parent is reachable through the share and belongs to the share owner. Reject `HTTP 404` if not.
    - The provided `id` does not already exist. Reject `HTTP 409` if duplicate.
 7. Server creates the collection row with `user_id = parent_collection_owner_id`
-   immediately, stores `VXCC` in `collection_keys` for the owner and in `share_collection_keys` for the editor's share.
+   immediately, stores `VXCC` in `collection_keys` for the owner, and copies the same `VXCC` into `share_collection_keys` for **every non-revoked share** that reaches the parent (the parent is the shared collection or is granted to the share). A `VXCC` carries no user binding, so the same bytes work for every recipient; access stays enforced server-side.
 8. Server responds `201` with the collection.
 
 ### 21.3 Access
@@ -303,11 +303,11 @@ of `parentCollectionKey` and the `child_uuid`. Both can unwrap
 The first time the owner's client unwraps a `VXCC` from its own `collection_keys`, it **MUST**:
 
 1. Re-wrap the same `collectionKey` with `collectionKeyWrapKey` derived from `masterKey` -> regular `VXCK` (AAD `user_id ‖ collection_id`).
-2. Send `PUT /api/v1/storage/collections/{id}/key { vxck }`.
+2. Send `PUT /api/v1/storage/collections/{id}/key { vxck, keyGeneration }`, where `keyGeneration` is the one of the `VXCC` it unwrapped.
 
-The server **MUST** accept it only from the collection owner, only while the stored blob is a `VXCC`, and **MUST** replace it in place at the same `key_generation`. From then on the sub-collection is an ordinary collection for the owner, independent of the parent key.
+The server **MUST** accept it only from the collection owner, only while the stored blob is still a `VXCC` at that `keyGeneration`, and **MUST** replace it in place. Otherwise it answers `HTTP 409` (blob changed, for example after a rotation) or `HTTP 403` (read-only account): the client keeps using the `VXCC` and retries on a later unwrap.
 
-The editor's `VXCC` in `share_collection_keys` is not touched.
+The `VXCC` copies in `share_collection_keys` are not touched.
 
 > The `edit` permission check (`0x02` bit) is enforced server-side only.
 > An editor with `view` permission (`0x01`) technically holds `parentCollectionKey`
@@ -315,23 +315,18 @@ The editor's `VXCC` in `share_collection_keys` is not touched.
 > any creation attempt with `HTTP 403`. This is consistent with [§11.6](./CRYPTO.md#116-share-permissions): permissions
 > are enforced at the server layer, not the cryptographic layer.
 
-### 21.4 Share revocation and key rotation
+### 21.4 Share revocation, key rotation and move
 
-When the editor's share on the parent collection is revoked, key rotation
-proceeds per [§11.1](./CRYPTO.md#111-share-revocation):
+**Rotation.** When a share on the parent collection is revoked, key rotation proceeds per [§11.1](./CRYPTO.md#111-share-revocation):
 
-1. `parentCollectionKey` rotates. A new `collectionKey` is generated for
-   the parent collection.
-2. For each sub-collection still holding a `VXCC` (not yet re-wrapped, §21.3), the owner unwraps its `collectionKey` using the **old**
-   `childCollectionKeyWrapKey` (derived from the old `parentCollectionKey`) and re-wraps it as a regular `VXCK` under `masterKey`. Sub-collections already re-wrapped need nothing for the owner.
-3. For each remaining recipient with access to the sub-collection, the owner wraps its `collectionKey` again through the normal grant flow ([§11.1](./CRYPTO.md#111-share-revocation)).
-4. The revoked editor's `share_collection_keys` rows are deleted with the share.
-5. The editor can no longer derive `childCollectionKeyWrapKey`; they have no
-   access to the new `parentCollectionKey`.
+1. `parentCollectionKey` rotates.
+2. Every `VXCC` below the parent (owner copy not yet replaced, and share copies) is unwrapped with the **old** `childCollectionKeyWrapKey` and re-wrapped with the one derived from the **new** `parentCollectionKey`, in the same rotation call (CRYPTO §11.1 step 7a). The owner may instead replace its own copy with a regular `VXCK`.
+3. The revoked editor's `share_collection_keys` rows are deleted with the share. It has no access to the new `parentCollectionKey`.
 
-This is identical in cost to re-wrapping `VXFK` blobs after revocation
-([§11.1](./CRYPTO.md#111-share-revocation)). Sub-collections are treated as additional
-key-wrapped resources alongside files.
+**Move.** A `VXCC` is bound to its parent by both the wrap key and the AAD:
+
+1. The server **MUST** refuse to move a collection whose owner copy is still a `VXCC` (`HTTP 409`). The owner's client replaces it with a `VXCK` first (§21.3).
+2. On a move, the server deletes the `VXCC` copies of that collection from `share_collection_keys`. The owner grants access again through the normal grant flow, with keys wrapped per share.
 
 ### 21.5 Schema
 
