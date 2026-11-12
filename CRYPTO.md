@@ -609,7 +609,7 @@ Minimum: 46 bytes. Maximum accepted by the server: 50 MiB.
 ```
 
 ```rs
-AAD = header (6 bytes) ‖ user_id (22 bytes)
+AAD = header (6 bytes) ‖ user_id (16 bytes)   // 22 bytes
 ```
 
 ```rs
@@ -625,19 +625,21 @@ searchIndexKey = HKDF-SHA-512(
 
 ```json
 {
-  "d": [                       // entries
+  "d": [
     {
       "k":  uint,              // 0 = file, 1 = collection
-      "m":  tstr,              // mime type (files only, absent for collections)
+      "m":  tstr,              // mime type, absent for collections
       "n":  tstr,              // name
-      "p":  bstr .size 16 / null, // collection_id (file) or parent_id (collection), raw UUID
+      "p":  bstr .size 16,     // collection_id (file) or parent_id (collection), absent for root items
       "id": bstr .size 16,     // file_id or collection_id, raw UUID
       "mt": uint,              // modification time, unix seconds
     }
   ],
-  "v": uint,                   // plaintext schema version, 1
+  "v": uint,
 }
 ```
+
+A field without a value is omitted, never encoded as `null`.
 
 Canonical order: `d` < `v` at the top level, and `k` < `m` < `n` < `p` < `id` < `mt` in an entry. Parsers **MUST** reject non-canonical CBOR. An unknown `v` **MUST** cause a full rebuild, never a partial read. The plaintext is not compressed in protocol version 1.
 
@@ -646,7 +648,9 @@ Canonical order: `d` < `v` at the top level, and `k` < `m` < `n` < `p` < `id` < 
 **Writes:**
 
 - Every `PUT` **MUST** use a fresh random nonce: `searchIndexKey` is stable for the lifetime of `masterKey`.
-- The client rebuilds and uploads the index when `dataUpdatedAt` (returned by `GET`) is later than `indexUpdatedAt`, when decryption fails, or when `v` is unknown.
+- Every `PUT` carries `builtFrom`, the `dataUpdatedAt` the client read before building the index. The server stores it as the index watermark, refuses to replace an index built from newer data, and `GET` reports the index as stale when `dataUpdatedAt` is later than the watermark. Two devices racing, or a change landing during a build, therefore always lead to a rebuild.
+- `dataUpdatedAt` does not move on a permanent deletion (the row is gone). After a permanent deletion or an emptied trash, the client removes the entries and uploads the index again.
+- The client rebuilds and uploads the index when `GET` reports it as stale, when decryption fails, or when `v` is unknown.
 - A password change or a recovery leaves `VXSI` valid (`masterKey` does not change). A destructive reset and an account deletion delete it.
 
 **Trust model:** `VXSI` is a cache, never a source of truth.
@@ -654,6 +658,7 @@ Canonical order: `d` < `v` at the top level, and `k` < `m` < `n` < `p` < `id` < 
 - The server cannot read or forge entries (AEAD, key derived from `masterKey`, AAD bound to `user_id`).
 - The server can delete it or serve an older version. The client **MUST** therefore check every hit against live data (the item still exists and its `VXFM` / `VXCM` decrypts) before showing it, and drop entries that do not.
 - The server learns the blob size, which grows with the number and length of names, and when it changes. The number of files and collections is already known to it.
+- A server serving an older `VXSI` can make search **incomplete**: checking each hit removes entries that no longer exist, but cannot add ones the old index never had. The server can already hide items from listings, so this adds no new capability.
 
 `IndexedDB` may keep a local copy of the same blob ([§9.6.1](#961-web-clients)).
 

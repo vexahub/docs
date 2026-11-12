@@ -604,7 +604,7 @@ Minimum : 46 octets. Maximum accepté par le serveur : 50 Mio.
 ```
 
 ```rs
-AAD = en-tête (6 octets) ‖ user_id (22 octets)
+AAD = en-tête (6 octets) ‖ user_id (16 octets)   // 22 octets
 ```
 
 ```rs
@@ -620,19 +620,21 @@ searchIndexKey = HKDF-SHA-512(
 
 ```json
 {
-  "d": [                       // entrées
+  "d": [
     {
       "k":  uint,              // 0 = fichier, 1 = collection
-      "m":  tstr,              // type MIME (fichiers seulement, absent pour les collections)
+      "m":  tstr,              // type MIME, absent pour les collections
       "n":  tstr,              // nom
-      "p":  bstr .size 16 / null, // collection_id (fichier) ou parent_id (collection), UUID brut
+      "p":  bstr .size 16,     // collection_id (fichier) ou parent_id (collection), absent pour les éléments racine
       "id": bstr .size 16,     // file_id ou collection_id, UUID brut
       "mt": uint,              // date de modification, secondes unix
     }
   ],
-  "v": uint,                   // version du schéma du clair, 1
+  "v": uint,
 }
 ```
+
+Un champ sans valeur est omis, jamais encodé en `null`.
 
 Ordre canonique : `d` < `v` au premier niveau, et `k` < `m` < `n` < `p` < `id` < `mt` dans une entrée. Les parseurs **DOIVENT** rejeter un CBOR non canonique. Une valeur de `v` inconnue **DOIT** provoquer une reconstruction complète, jamais une lecture partielle. Le clair n'est pas compressé dans la version 1 du protocole.
 
@@ -641,7 +643,9 @@ Ordre canonique : `d` < `v` au premier niveau, et `k` < `m` < `n` < `p` < `id` <
 **Écritures :**
 
 - Chaque `PUT` **DOIT** utiliser un nonce aléatoire neuf : `searchIndexKey` est stable tant que `masterKey` ne change pas.
-- Le client reconstruit et renvoie l'index quand `dataUpdatedAt` (renvoyé par `GET`) est postérieur à `indexUpdatedAt`, quand le déchiffrement échoue, ou quand `v` est inconnu.
+- Chaque `PUT` porte `builtFrom`, le `dataUpdatedAt` lu par le client avant de construire l'index. Le serveur le stocke comme repère de l'index, refuse de remplacer un index construit à partir de données plus récentes, et `GET` signale l'index comme périmé quand `dataUpdatedAt` est postérieur à ce repère. Deux appareils en concurrence, ou une modification arrivée pendant une construction, mènent donc toujours à une reconstruction.
+- `dataUpdatedAt` ne bouge pas lors d'une suppression définitive (la ligne n'existe plus). Après une suppression définitive ou une corbeille vidée, le client retire les entrées et renvoie l'index.
+- Le client reconstruit et renvoie l'index quand `GET` le signale comme périmé, quand le déchiffrement échoue, ou quand `v` est inconnu.
 - Un changement de mot de passe ou une récupération laissent `VXSI` valide (`masterKey` ne change pas). Une réinitialisation destructive et une suppression de compte le suppriment.
 
 **Modèle de confiance :** `VXSI` est un cache, jamais une source de vérité.
@@ -649,6 +653,7 @@ Ordre canonique : `d` < `v` au premier niveau, et `k` < `m` < `n` < `p` < `id` <
 - Le serveur ne peut ni lire ni forger d'entrées (AEAD, clé dérivée de `masterKey`, AAD lié à `user_id`).
 - Le serveur peut le supprimer ou servir une version plus ancienne. Le client **DOIT** donc vérifier chaque résultat contre les données réelles (l'élément existe encore et son `VXFM` / `VXCM` se déchiffre) avant de l'afficher, et écarter les entrées qui ne passent pas.
 - Le serveur connaît la taille du blob, qui grandit avec le nombre et la longueur des noms, et le moment où il change. Le nombre de fichiers et de collections lui est déjà connu.
+- Un serveur qui sert un `VXSI` plus ancien peut rendre la recherche **incomplète** : la vérification de chaque résultat écarte les entrées qui n'existent plus, mais ne peut pas ajouter celles que l'ancien index n'a jamais eues. Le serveur peut déjà masquer des éléments dans les listes, ce n'est donc pas une capacité nouvelle.
 
 `IndexedDB` peut garder une copie locale du même blob ([§9.6.1](#961-clients-web)).
 
