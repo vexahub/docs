@@ -13,7 +13,7 @@ const slugify = (s: string) =>
 
 export default defineConfig({
   title: "VexaHub",
-  description: "Documentation for VexaHub to follow best practices.",
+  description: "The public cryptography and authentication specification of VexaHub.",
   head: [["link", { rel: "icon", href: "/favicon.ico" }]],
   lastUpdated: true,
   cleanUrls: true,
@@ -38,7 +38,7 @@ export default defineConfig({
       label: "Français",
       lang: "fr",
       description:
-        "Documentation VexaHub pour suivre les meilleures pratiques.",
+        "La spécification publique de la cryptographie et de l'authentification de VexaHub.",
       themeConfig: {
         nav: [{ text: "Accueil", link: "/fr/" }],
         sidebar: [

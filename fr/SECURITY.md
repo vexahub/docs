@@ -15,6 +15,9 @@ Temps de réponse attendu: **72 heures**. Nous accuserons réception, confirmero
 **Dans la portée:**
 
 - `app.vexahub.com`
+- L'API, servie sous `app.vexahub.com/api`
+- `checkout.vexahub.com`
+- Les pages de liens publics (`app.vexahub.com/share/...`)
 - Implémentation des protocoles cryptographiques
 - Authentification et gestion des sessions
 - Gestion des clés et flux de partage
@@ -31,16 +34,16 @@ Temps de réponse attendu: **72 heures**. Nous accuserons réception, confirmero
 
 VexaHub est un **service de stockage cloud E2EE à connaissance zéro**. Le serveur n'a jamais accès aux mots de passe des utilisateurs, aux fichiers en clair, aux noms de fichiers, ni aux clés de chiffrement lors d'une utilisation normale.
 
-| Couche                     | Algorithme                                                            |
-|----------------------------|-----------------------------------------------------------------------|
-| Authentification           | `OPAQUE (RFC 9807)` : Ristretto255, TripleDhKem (3DH + ML-KEM-768)    |
-| Étirement de clé           | `Argon2id` : 128 Mio / t=3 / p=4                                      |
-| Chiffrement symétrique     | `XChaCha20-Poly1305` : nonces de 24 octets                            |
-| Dérivation de clé          | `HKDF-SHA-512` : séparation par domaine                               |
-| KEM de partage             | `X-Wing` (ML-KEM-768 + X25519)                                        |
-| Signatures                 | `ML-DSA-65` (FIPS 204, niveau 3 NIST)                                 |
+| Couche                 | Algorithme                                                         |
+| ---------------------- | ------------------------------------------------------------------ |
+| Authentification       | `OPAQUE (RFC 9807)` : Ristretto255, TripleDhKem (3DH + ML-KEM-768) |
+| Étirement de clé       | `Argon2id` : 128 Mio / t=3 / p=4                                   |
+| Chiffrement symétrique | `XChaCha20-Poly1305` : nonces de 24 octets                         |
+| Dérivation de clé      | `HKDF-SHA-512` : séparation par domaine                            |
+| KEM de partage         | `X-Wing` (ML-KEM-768 + X25519)                                     |
+| Signatures             | `ML-DSA-65` (FIPS 204, niveau 3 NIST)                              |
 
-La spécification complète est publiée sur [docs.vexahub.dev](https://docs.vexahub.dev).
+La spécification complète est publiée sur [docs.vexahub.io](https://docs.vexahub.io).
 
 **Résistance post-quantique :** le KEM hybride `X-Wing` est sûr si **X25519 ou ML-KEM-768** l'est. Les signatures `ML-DSA-65` protègent l'authenticité des partages au niveau de sécurité correspondant. Les transcriptions de connexion sont résistantes aux attaques quantiques via `TripleDhKem` dans l'échange de clés OPAQUE.
 
@@ -64,9 +67,9 @@ Il s'agit de compromis documentés et acceptés : ce ne sont pas des vulnérabil
 
 **Accès physique à l'appareil :** un attaquant ayant accès physique à un appareil déverrouillé peut accéder aux clés en mémoire.
 
-**Mode « Se souvenir de moi » :** stocke une copie chiffrée de la clé maître sur l'appareil, la clé de déverrouillage étant détenue par les serveurs VexaHub. Compromis documenté, désactivé par défaut.
+**Mode « Se souvenir de moi » :** la copie chiffrée de la clé maître (`VXPS`) est stockée sur les serveurs VexaHub, et la clé qui la déchiffre (`localKey`) reste sur l'appareil. Compromis documenté, désactivé par défaut.
 
-**Contenu de fichier après révocation :** la révocation d'un partage bloque immédiatement l'accès à l'API et effectue une rotation des clés, mais ne re-chiffre pas le contenu existant par défaut. Un paramètre de re-chiffrement optionnel est disponible. Les copies téléchargées ne peuvent pas être invalidées rétroactivement : limitation inhérente à l'E2EE.
+**Contenu de fichier après révocation :** la révocation d'un partage bloque immédiatement l'accès à l'API et effectue une rotation des clés, mais ne re-chiffre pas le contenu existant par défaut. Un paramètre de re-chiffrement optionnel est prévu. Les copies téléchargées ne peuvent pas être invalidées rétroactivement : limitation inhérente à l'E2EE.
 
 ## Versions supportées
 

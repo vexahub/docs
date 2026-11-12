@@ -18,7 +18,7 @@ What protects users against **realistic** threats, what stays usable for normal 
 >
 > - **X-Wing** means sharing survives the arrival of quantum computers.
 >
-> A single Rust crate as the **cryptographic** source of truth means every VexaHub client (web, desktop, mobile) speaks exactly the same language down to the last byte.
+> Standard, well-reviewed primitives, a public specification, and test vectors that will guarantee every VexaHub client (web, desktop, mobile) produces the same output down to the last byte.
 
 ## Notes
 

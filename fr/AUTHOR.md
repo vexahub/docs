@@ -18,7 +18,7 @@ Ce qui protège les utilisateurs contre les menaces **réalistes**, ce qui reste
 >
 > - **X-Wing** garantit que le partage survit à l'avènement des ordinateurs quantiques.
 >
-> Une seule crate Rust comme **source de vérité cryptographique** signifie que chaque client VexaHub (web, bureau, mobile) parle exactement le même langage jusqu'au dernier octet.
+> Des primitives standard et éprouvées, une spécification publique, et des vecteurs de test qui garantiront que chaque client VexaHub (web, bureau, mobile) produit le même résultat jusqu'au dernier octet.
 
 ## Notes
 

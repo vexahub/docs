@@ -4,12 +4,11 @@ layout: home
 hero:
   name: "VexaHub"
   text: "Documentation"
-  tagline: Documents importants pour VexaHub afin de suivre les meilleures pratiques.
+  tagline: La spécification publique de la cryptographie et de l'authentification de VexaHub.
   actions:
     - theme: brand
       text: Commencer
       link: /fr/authentication
-
 
 features:
   - icon: 🔐
@@ -22,9 +21,9 @@ features:
     details: Spécifications et standards cryptographiques utilisés dans les services et l'infrastructure VexaHub.
     link: /fr/crypto
     linkText: Lire la suite
-  - icon: ✍️
-    title: Auteur
-    details: Directives d'auteur, informations sur les contributeurs et standards de style de documentation.
-    link: /fr/author
+  - icon: 🛡
+    title: Sécurité
+    details: Comment signaler une vulnérabilité, ce qui est dans la portée, et les limites connues de la conception.
+    link: /fr/security
     linkText: Lire la suite
 ---

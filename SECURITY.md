@@ -15,6 +15,9 @@ Expected response time: **72 hours**. We will acknowledge receipt, confirm the s
 **In scope:**
 
 - `app.vexahub.com`
+- The API, served under `app.vexahub.com/api`
+- `checkout.vexahub.com`
+- Public link pages (`app.vexahub.com/share/...`)
 - Cryptographic protocol implementation
 - Authentication and session management
 - Key management and sharing flows
@@ -31,16 +34,16 @@ Expected response time: **72 hours**. We will acknowledge receipt, confirm the s
 
 VexaHub is a **zero-knowledge E2EE cloud storage service**. The server never has access to user passwords, plaintext files, file names, or encryption keys during normal operation.
 
-| Layer                 | Algorithm                                                         |
-|-----------------------|-------------------------------------------------------------------|
-| Authentication        | `OPAQUE (RFC 9807)`: Ristretto255, TripleDhKem (3DH + ML-KEM-768) |
-| Key stretching        | `Argon2id`: 128 MiB / t=3 / p=4                                   |
-| Symmetric encryption  | `XChaCha20-Poly1305`: 24-byte nonces                              |
-| Key derivation        | `HKDF-SHA-512`: domain-separated                                  |
-| Sharing KEM           | `X-Wing` (ML-KEM-768 + X25519)                                    |
-| Signatures            | `ML-DSA-65` (FIPS 204, NIST Level 3)                              |
+| Layer                | Algorithm                                                         |
+| -------------------- | ----------------------------------------------------------------- |
+| Authentication       | `OPAQUE (RFC 9807)`: Ristretto255, TripleDhKem (3DH + ML-KEM-768) |
+| Key stretching       | `Argon2id`: 128 MiB / t=3 / p=4                                   |
+| Symmetric encryption | `XChaCha20-Poly1305`: 24-byte nonces                              |
+| Key derivation       | `HKDF-SHA-512`: domain-separated                                  |
+| Sharing KEM          | `X-Wing` (ML-KEM-768 + X25519)                                    |
+| Signatures           | `ML-DSA-65` (FIPS 204, NIST Level 3)                              |
 
-The full specification is published at [docs.vexahub.dev](https://docs.vexahub.dev).
+The full specification is published at [docs.vexahub.io](https://docs.vexahub.io).
 
 **Post-quantum resistance:** `X-Wing` hybrid KEM is secure if either **X25519 or ML-KEM-768** is secure. `ML-DSA-65` signatures protect share authenticity at matching security level. Login transcripts are quantum-resistant via `TripleDhKem` in the OPAQUE key exchange.
 
@@ -64,9 +67,9 @@ These are documented, accepted trade-offs: not vulnerabilities.
 
 **Physical device access:** an attacker with physical access to an unlocked device can access in-memory key material.
 
-**"Remember me" mode:** stores an encrypted copy of the master key on the device with the unlock key held by VexaHub servers. Documented trade-off, off by default.
+**"Remember me" mode:** the encrypted copy of the master key (`VXPS`) is stored on VexaHub servers, and the key that decrypts it (`localKey`) stays on the device. Documented trade-off, off by default.
 
-**File content after revocation:** revoking a share immediately blocks API access and rotates keys, but does not re-encrypt existing file content by default. An opt-in re-encryption setting is available. Downloaded copies cannot be retroactively invalidated: inherent E2EE limitation.
+**File content after revocation:** revoking a share immediately blocks API access and rotates keys, but does not re-encrypt existing file content by default. An opt-in re-encryption setting is planned. Downloaded copies cannot be retroactively invalidated: inherent E2EE limitation.
 
 ## Supported Versions
 
