@@ -110,7 +110,7 @@ For `shareWrapKey`, the **IKM** is the **X-Wing** shared secret (output of **a K
 | session token from sessionKey (server side)      | `vexahub:v1:sessionToken`                                                                                                                           | 32                    |
 | localCacheKey from masterKey                     | `vexahub:v1:localCacheKey`                                                                                                                          | 32                    |
 | searchIndexKey from masterKey                    | `vexahub:v1:searchIndexKey`                                                                                                                         | 32                    |
-| childCollectionKeyWrap from parent collectionKey | `vexahub:v1:childCollectionKeyWrap:{child_uuid}` (see [Addendum §21](CRYPTO_ADDENDUM.md#21-sub-collection-creation-by-an-editor-subject-to-change)) | 32                    |
+| childCollectionKeyWrap from parent collectionKey | `vexahub:v1:childCollectionKeyWrap:{child_uuid}` (see [Addendum §21](CRYPTO_ADDENDUM.md#21-sub-collection-creation-by-an-editor)) | 32                    |
 
 > HKDF salts are not secrets; uniqueness is enforced exclusively by the `info` field.
 >
@@ -463,7 +463,7 @@ Encrypted blob total:
     File share:       6 (header) + 24 (nonce) + 70 (plaintext) + 16 (tag) = 116 bytes
 ```
 
-The order in which the encoder _receives_ the fields does not matter; what matters is that the **canonical-CBOR** encoder emits them in length-then-lexicographic order. Both `serde_cbor` (with deterministic option) and `cbor4ii` (with the `canonical` feature) produce this ordering. Test vectors in [§14](#14-test-vectors) **MUST** verify byte-identical output across implementations.
+The order in which the encoder _receives_ the fields does not matter; what matters is that the **canonical-CBOR** encoder emits them in length-then-lexicographic order. Any encoder that implements [RFC 8949 §4.2.1][cbor_rfc] deterministic encoding produces this ordering; implementations **MUST NOT** rely on a library default that is not deterministic. Test vectors in [§14](#14-test-vectors) **MUST** verify byte-identical output across implementations.
 
 This is **defense-in-depth** alongside the **ML-DSA-65** signature. If a signature verification is **accidentally** skipped due to a bug, the **AAD** binding still **prevents** the server from redirecting shares between users.
 
@@ -609,7 +609,7 @@ Minimum: 46 bytes. Maximum accepted by the server: 50 MiB.
 ```
 
 ```rs
-AAD = header (6 bytes) ‖ user_id (16 bytes)   // 22 bytes
+AAD = header (6 bytes) ‖ user_id (16 bytes, raw UUID) // 22 bytes
 ```
 
 ```rs
@@ -630,7 +630,7 @@ searchIndexKey = HKDF-SHA-512(
       "k":  uint,              // 0 = file, 1 = collection
       "m":  tstr,              // mime type, absent for collections
       "n":  tstr,              // name
-      "p":  bstr .size 16,     // collection_id (file) or parent_id (collection), absent for root items
+      "p":  bstr .size 16,     // collection_id (file) or parent_id (collection), raw UUID, absent for the root collection
       "id": bstr .size 16,     // file_id or collection_id, raw UUID
       "mt": uint,              // modification time, unix seconds
     }
@@ -639,18 +639,17 @@ searchIndexKey = HKDF-SHA-512(
 }
 ```
 
-A field without a value is omitted, never encoded as `null`.
-
-Canonical order: `d` < `v` at the top level, and `k` < `m` < `n` < `p` < `id` < `mt` in an entry. Parsers **MUST** reject non-canonical CBOR. An unknown `v` **MUST** cause a full rebuild, never a partial read. The plaintext is not compressed in protocol version 1.
+Optional fields (`m`, `p`) are omitted when they have no value, never encoded as `null`. Canonical order: `d` < `v` at the top level, and `k` < `m` < `n` < `p` < `id` < `mt` in an entry. Parsers **MUST** reject non-canonical CBOR. An unknown `v` **MUST** cause a full rebuild, never a partial read. The plaintext is not compressed in protocol version 1.
 
 **Scope:** only the user's own files and collections that are not in the trash. Items shared with the user are not indexed.
 
 **Writes:**
 
 - Every `PUT` **MUST** use a fresh random nonce: `searchIndexKey` is stable for the lifetime of `masterKey`.
-- Every `PUT` carries `builtFrom`, the `dataUpdatedAt` the client read before building the index. The server stores it as the index watermark, refuses to replace an index built from newer data, and `GET` reports the index as stale when `dataUpdatedAt` is later than the watermark. Two devices racing, or a change landing during a build, therefore always lead to a rebuild.
-- `dataUpdatedAt` does not move on a permanent deletion (the row is gone). After a permanent deletion or an emptied trash, the client removes the entries and uploads the index again.
-- The client rebuilds and uploads the index when `GET` reports it as stale, when decryption fails, or when `v` is unknown.
+- `PUT` carries `{ vxsi, builtFrom }`. `builtFrom` is the server timestamp of the user's data the index was built from: the client reads it before building, never from its own clock.
+- `GET` returns `{ vxsi, builtFrom, stale }`. `stale` is `true` when the user's files or collections changed after `builtFrom`.
+- The server keeps a `PUT` only if its `builtFrom` is not older than the stored one, so a slow client cannot overwrite a newer index with an older build.
+- The client rebuilds and uploads the index when `stale` is `true`, when decryption fails, or when `v` is unknown.
 - A password change or a recovery leaves `VXSI` valid (`masterKey` does not change). A destructive reset and an account deletion delete it.
 
 **Trust model:** `VXSI` is a cache, never a source of truth.
@@ -664,7 +663,7 @@ Canonical order: `d` < `v` at the top level, and `k` < `m` < `n` < `p` < `id` < 
 
 ### 5.14 `VXCC` - Child-wrapped Collection Key
 
-Wraps the `collectionKey` of a sub-collection created by an editor ([Addendum §21](CRYPTO_ADDENDUM.md#21-sub-collection-creation-by-an-editor-subject-to-change)) under the parent `collectionKey`. The editor cannot produce a `VXCK`, which requires the owner's `masterKey`.
+Wraps the `collectionKey` of a sub-collection created by an editor ([Addendum §21](CRYPTO_ADDENDUM.md#21-sub-collection-creation-by-an-editor)) under the parent `collectionKey`. The editor cannot produce a `VXCK`, which requires the owner's `masterKey`.
 
 ```rs
 Offset  Size  Field
@@ -683,7 +682,7 @@ AAD: parent_id ‖ collection_id (32 bytes, both raw UUID)
 Key: childCollectionKeyWrapKey (§4)
 ```
 
-The distinct magic tells every reader to unwrap with the parent `collectionKey`, never with a `masterKey`, and prevents cross-use with `VXCK`.
+The distinct magic tells every reader to unwrap with the parent `collectionKey`, never with a `masterKey`. Cross-use with `VXCK` is prevented by the different key and AAD; the magic makes the mistake fail early with a clear error instead of an AEAD failure.
 
 The magic selects the unwrap key. Domain separation from `VXCK` comes from the `childCollectionKeyWrap` derivation and the AAD, not from the magic.
 
@@ -1137,9 +1136,9 @@ This defends against a substituted server, contingent on the client distribution
 1. Client: user enters email, display name and password. The email is canonicalized (`NFC_normalize(lowercase(email))`) before use.
 2. Client: `opaque.client.startRegistration({ password })` -> `{ clientRegistrationState, registrationRequest }`.
 3. Client -> Server: `POST /api/v1/auth/signup/start { email, registrationRequest }`.
-4. Server: rejects a non-canonical email, and refuses an email that is already registered or still under suppression after an account deletion ([§19.3](#193-account-deletion)), with the same error shape in both cases.
+4. Server: rejects a non-canonical email. An email that is already registered or still under suppression after an account deletion ([§19.3](#193-account-deletion)) is **not** refused: the server answers exactly as for a free email but sends no code, so `signup/start` does not reveal whether an address has an account.
 5. Server: `opaque.server.createRegistrationResponse({ serverSetup, userIdentifier: email, registrationRequest })` -> `{ registrationResponse }`.
-6. Server: allocates the new `userId` and keeps the pending registration for 30 minutes (the user writes down the recovery phrase in between).
+6. Server: allocates the new `userId`, keeps the pending registration for 30 minutes (the user writes down the recovery phrase in between) and emails a verification code to the address. No user row exists yet. A new code can be requested with `POST /api/v1/auth/resend-verification { email }`.
 7. Server -> Client: `{ registrationResponse, userId }`. `userId` is the AAD of `VXWM`, `VXRM` and `VXSK` ([§5](#5-binary-blob-formats)), so the client needs it before wrapping anything.
 
    > **OPAQUE identifiers:** `client` = canonical email, `server` = `vexahub.com`, on both registration and login. Changing either is a protocol change.
@@ -1153,9 +1152,9 @@ This defends against a substituted server, contingent on the client distribution
 14. Client: wraps sharing private keys with `masterKey` -> `VXSK` blob (AAD `userId`).
 15. Client: generates a 24-word BIP39 recovery phrase, derives `recoveryKey`, wraps `masterKey` -> `VXRM` blob (see [§12](#12-account-recovery)).
 16. Client: creates the **root collection**: generates its UUID v7 and `collectionKey`, wraps the key -> `VXCK`, encrypts its metadata -> `VXCM`.
-17. Client: requires the user to confirm the recovery phrase by re-entering specific word positions.
-18. Client -> Server: `POST /api/v1/auth/signup/finish { userId, email, displayName, registrationRecord, vxwm, vxsk, vxrm, sharingPublicXwing, sharingPublicSignature, rootCollectionId, rootVxck, rootVxcm }`.
-19. Server: stores the user row and the root collection atomically, then sends a verification code by email. The code is entered at `POST /api/v1/auth/signup/verify-email`; the pending verification is tied to an `HttpOnly` cookie, never to the JSON body. Login stays blocked until the email is verified ([§8.2](#82-login)).
+17. Client: requires the user to confirm the recovery phrase by re-entering specific word positions, then asks for the code received by email.
+18. Client -> Server: `POST /api/v1/auth/signup/finish { userId, email, displayName, code, registrationRecord, vxwm, vxsk, vxrm, sharingPublicXwing, sharingPublicSignature, rootCollectionId, rootVxck, rootVxcm }`.
+19. Server: checks `code` against the pending registration. A wrong code counts as a failed attempt, and the pending registration is deleted after 5. If the code is right, the server stores the user row (email already verified) and the root collection atomically, then deletes the pending registration. No session is created: the client logs in normally ([§8.2](#82-login)). If the tab is closed before this step, nothing is stored and the registration starts over.
 20. Client: zeroizes `password`, `exportKey`, `masterKeyWrapper`, plaintext private keys, recovery phrase, `recoveryKey`. Keeps `masterKey` and sharing private keys live in the Crypto Worker.
 
 ### 8.2 Login
@@ -1177,11 +1176,10 @@ This defends against a substituted server, contingent on the client distribution
 10. Client -> Server: `POST /api/v1/auth/signin/finish { loginSessionId, authFinish }`.
 11. Server: retrieves and immediately deletes `serverLoginState` from Valkey.
 12. Server: `opaque.server.finishLogin(...)` -> `{ sessionKey }`. The password is now proven.
-13. Server: one of four outcomes:
+13. Server: one of three outcomes:
 
     - **Account suspended:** error, no session is created. This is only revealed after the password is proven.
-    - **Email verification required:** a code is sent by email, the pending verification is tied to an `HttpOnly` cookie and the response is `{ requiresEmailVerification: true }`. No session yet.
-    - **2FA required:** the response carries a short-lived `twoFactorToken`; the client completes with `POST /api/v1/auth/2fa/verify` ([AUTHENTICATION §4.5](AUTHENTICATION.md#45-email-verification-and-two-factor-authentication)). No session yet.
+    - **2FA required:** the response carries a short-lived `twoFactorToken`; the client completes with `POST /api/v1/auth/2fa/verify` ([AUTHENTICATION §4.5](AUTHENTICATION.md#45-two-factor-authentication)). No session yet.
     - **Success:** see step 14.
 
 14. Server: derives the session token, stores a hashed session row and sets the cookie:
@@ -2652,7 +2650,6 @@ All authentication cookies: `HttpOnly; Secure; SameSite=Strict; Path=/`. In prod
 | ------------------ | ------------------------------------------------------------------------------ | ---------- |
 | `APPSESSID`        | Session cookie, `{session_id}.{token}`                                         | Yes        |
 | `PS-AUTH`          | Persistent session cookie ([§9.2](#92-persistent-sessions-remember-me-opt-in)) | Yes        |
-| `VEXAHUB_VE_TOK`   | Pending email verification                                                     | Yes        |
 | `APPAUTHENTICATED` | Witness cookie read by the webapp to know a session exists. Carries no secret  | No         |
 
 ### 16.4 API media type
@@ -2941,7 +2938,7 @@ The value is capped by the plan's maximum. A scheduled job deletes versions whos
 
 ## Changelog
 
-- **16:** aligned with the current code. API paths under `/api/v1` (same-origin), UUID v7 mostly everywhere, real routes and schemas. Client-generated `session_id` for `VXPS` (§5.6, §9.2). `vxwm` and `vxsk` returned only after `signin/finish`, uniform `signin/start` (§8.2). `ts` informative, no mandatory check (§11.2). New `VXMC` (§5.12) and `VXSI` (§5.13), `localCacheKey`, `sessionToken` and `childCollectionKeyWrap` derivations (§4). Direct upload for small files (§6.5). Rewritten recovery flow (§12.1), CSP (§16.1), account deletion (§19.3). New file versions section (§19.5). Re-encryption after revocation (§11.1.1) and web persistent sessions (§9.2) marked as planned. New `VXCC` blob for editor-created sub-collections, transitional on the owner side (§5.14).
+- **16:** aligned with the current code. API paths under `/api/v1` (same-origin), UUID v7 mostly everywhere, real routes and schemas. Client-generated `session_id` for `VXPS` (§5.6, §9.2). `vxwm` and `vxsk` returned only after `signin/finish`, uniform `signin/start` (§8.2). `ts` informative, no mandatory check (§11.2). New `VXMC` (§5.12) and `VXSI` (§5.13), `localCacheKey`, `sessionToken` and `childCollectionKeyWrap` derivations (§4). Direct upload for small files (§6.5). Rewritten recovery flow (§12.1), CSP (§16.1), account deletion (§19.3). New file versions section (§19.5). Re-encryption after revocation (§11.1.1) and web persistent sessions (§9.2) marked as planned. New `VXCC` blob for editor-created sub-collections, transitional on the owner side (§5.14). Email verified by code before the account is created, uniform `signup/start` (§8.1).
 
 [//]: # "LINKS"
 [opaque_rfc]: https://www.rfc-editor.org/info/rfc9807

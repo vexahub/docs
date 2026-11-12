@@ -228,11 +228,9 @@ Canonical order: `event` < `metadata` < `ip_network` < `user_agent` (length firs
 
 **HKDF domain separation:** the info string `"vexahub:v1:auditLog:"` is distinct from all info strings in [CRYPTO §4](./CRYPTO.md#4-hkdf-domain-separation).
 
-## 21 Sub-collection creation by an editor (subject to change)
+## 21 Sub-collection creation by an editor
 
-> Planned, not implemented in protocol version 1
->
-> The key derivation is defined in `engine.ts` (`deriveChildCollectionKeyWrapKey`) but is not called by the webapp yet.
+> Implemented on the server (`POST /api/v1/shares/{shareId}/subcollections`). Not used by the webapp yet: the key derivation is defined in `engine.ts` (`deriveChildCollectionKeyWrapKey`) but is not called.
 
 When a recipient with `edit` permission creates a **sub-collection** inside a
 shared collection, the sub-collection is owned by the parent collection owner

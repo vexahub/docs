@@ -206,11 +206,9 @@ Ordre canonique : `event` < `metadata` < `ip_network` < `user_agent` (longueur d
 
 **Séparation de domaine HKDF :** la chaîne d'info `"vexahub:v1:auditLog:"` est distincte de toutes les chaînes d'info du [CRYPTO §4](/fr/CRYPTO.md#4-séparation-de-domaine-hkdf).
 
-## 21 Création de sous-collection par un éditeur (susceptible d'être modifiée)
+## 21 Création de sous-collection par un éditeur
 
-> Prévu, non implémenté dans la version 1 du protocole
->
-> La dérivation de clé est définie dans `engine.ts` (`deriveChildCollectionKeyWrapKey`) mais n'est pas encore appelée par la webapp.
+> Implémenté côté serveur (`POST /api/v1/shares/{shareId}/subcollections`). Pas encore utilisé par la webapp : la dérivation de clé est définie dans `engine.ts` (`deriveChildCollectionKeyWrapKey`) mais n'est pas appelée.
 
 Lorsqu'un destinataire disposant de la permission `edit` crée une **sous-collection** dans une collection partagée, la sous-collection appartient au propriétaire de la collection parente **immédiatement à la création**. Aucune fenêtre d'attente, aucun TTL, aucun transfert requis.
 

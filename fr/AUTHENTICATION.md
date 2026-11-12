@@ -1,6 +1,6 @@
 # VexaHub - Authentification et référence du matériel de clés
 
-> **Statut :** (Brouillon) _Proposé_
+> **Statut :** (Brouillon) Proposé
 
 Ce document couvre le système d'authentification : le protocole **OPAQUE**, ce qui est **créé à l'inscription**, ce qui est **reconstruit à la connexion**, et la gestion des sessions.
 
@@ -86,9 +86,9 @@ L'inscription est le seul moment où la majorité du **matériel de clés perman
 >
 > **Étapes** : saisie utilisateur -> `POST /api/v1/auth/signup/start` (renvoie `registrationResponse` et `userId`) -> échange **OPAQUE** ->
 > vérification de l'épingle -> génération des clés (`masterKey`, **X-Wing**, **ML-DSA-65**) -> encapsulation des blobs
-> (`VXWM`, `VXSK`, `VXRM`, AAD `userId`) -> collection racine (`VXCK`, `VXCM`) -> confirmation de la phrase de récupération -> `POST /api/v1/auth/signup/finish` -> **effacement** -> vérification de l'email par code (`POST /api/v1/auth/signup/verify-email`).
+> (`VXWM`, `VXSK`, `VXRM`, AAD `userId`) -> collection racine (`VXCK`, `VXCM`) -> confirmation de la phrase de récupération -> code reçu par email -> `POST /api/v1/auth/signup/finish` (avec le code) -> **effacement**.
 >
-> `userId` est renvoyé par `signup/start` parce qu'il sert d'AAD à `VXWM`, `VXRM` et `VXSK`. Le flux complet est en [CRYPTO §8.1](/fr/CRYPTO.md#81-inscription).
+> `userId` est renvoyé par `signup/start` parce qu'il sert d'AAD à `VXWM`, `VXRM` et `VXSK`. `signup/start` envoie aussi le code de vérification par email, et le compte n'est créé par `signup/finish` qu'une fois le code correct : son email est donc vérifié dès le départ. `signup/start` répond de la même façon que l'email soit déjà pris ou non. Le flux complet est en [CRYPTO §8.1](/fr/CRYPTO.md#81-inscription).
 
 <!-- markdownlint-disable MD033 -->
 <img src="/public/vexahub-registration-flow.svg" alt="Flux d'inscription" width="1000" />
@@ -127,7 +127,7 @@ La `masterKey` est désencapsulée et chargée dans le **Crypto Worker**, puis �
 ### 4.1 Flux de connexion complet
 
 > Voir le diagramme dans la documentation rendue. Étapes : saisie utilisateur -> `POST /api/v1/auth/signin/start` (renvoie `loginResponse` et `loginSessionId`) -> échange **OPAQUE** ->
-> vérification de l'épingle -> `POST /api/v1/auth/signin/finish { loginSessionId, authFinish }` -> vérification d'email ou 2FA si requise ([§4.5](#45-vérification-demail-et-authentification-à-deux-facteurs))
+> vérification de l'épingle -> `POST /api/v1/auth/signin/finish { loginSessionId, authFinish }` -> 2FA si requise ([§4.5](#45-authentification-à-deux-facteurs))
 > -> cookie de session, `vxwm` et `vxsk` renvoyés -> dérivation de `masterKeyWrapper` -> désencapsulation de `VXWM`/`VXSK` -> **effacement** -> chargement dans le Crypto Worker.
 >
 > `signin/start` renvoie la même forme de réponse que le compte existe ou non ; `vxwm` et `vxsk` ne sont renvoyés qu'une fois le mot de passe prouvé. `loginSessionId` expire après 120 secondes (401). Le flux complet est en [CRYPTO §8.2](/fr/CRYPTO.md#82-connexion).
@@ -168,13 +168,12 @@ Domain=.vexahub.com   // en production uniquement, partagé avec checkout.vexahu
 
 Durée de vie absolue : 24 heures, renouvelée à l'activité. Le `sessionKey` brut est effacé côté client et serveur immédiatement après l'émission du cookie. Le serveur ne le stocke jamais.
 
-### 4.5 Vérification d'email et authentification à deux facteurs
+### 4.5 Authentification à deux facteurs
 
 Une fois le mot de passe prouvé par `signin/finish`, le serveur peut encore arrêter la connexion avant de créer une session :
 
 1. **Compte suspendu :** une erreur, pas de session. Ce n'est révélé qu'après la preuve du mot de passe.
-2. **Email non vérifié :** le serveur envoie un code de vérification par email et répond `{ requiresEmailVerification: true }`. La vérification en attente est liée à un cookie `HttpOnly`, jamais au corps JSON. Le client envoie le code à `POST /api/v1/auth/signup/verify-email`. Un nouveau code se demande avec `POST /api/v1/auth/resend-verification`.
-3. **2FA activée :** le serveur répond avec un `twoFactorToken` de courte durée et sans session. Le client termine avec `POST /api/v1/auth/2fa/verify { twoFactorToken, code }`, où `code` est un code TOTP ou l'un des **codes de secours** à usage unique. Ce n'est qu'alors que le cookie de session est émis.
+2. **2FA activée :** le serveur répond avec un `twoFactorToken` de courte durée et sans session. Le client termine avec `POST /api/v1/auth/2fa/verify { twoFactorToken, code }`, où `code` est un code TOTP ou l'un des **codes de secours** à usage unique. Ce n'est qu'alors que le cookie de session est émis.
 
 La 2FA s'active depuis les paramètres du compte (`POST /api/v1/account/2fa/setup`, puis `POST /api/v1/account/2fa/verify`), les codes de secours se renouvellent avec `POST /api/v1/account/2fa/recovery-codes`, et la 2FA se désactive avec `DELETE /api/v1/account/2fa`. Certaines actions sensibles du compte demandent un code 2FA récent (`POST /api/v1/auth/2fa/elevate`).
 

@@ -1,6 +1,6 @@
 # VexaHub - Authentication & Key Material Reference
 
-> **Status:** (Draft) _Proposed_
+> **Status:** (Draft) Proposed
 
 This document covers the authentication system: the **OPAQUE** protocol, what gets **created at registration**, what gets **reconstructed at login**, and how sessions are managed.
 
@@ -86,9 +86,9 @@ Registration is the only time most **permanent key material is generated**. Ever
 >
 > **Steps**: user input -> `POST /api/v1/auth/signup/start` (returns `registrationResponse` and `userId`) -> **OPAQUE** exchange ->
 > pin verification -> key generation (`masterKey`, **X-Wing**, **ML-DSA-65**) -> blob wrapping
-> (`VXWM`, `VXSK`, `VXRM`, AAD `userId`) -> root collection (`VXCK`, `VXCM`) -> recovery phrase confirmation -> `POST /api/v1/auth/signup/finish` -> **zeroize** -> email verification by code (`POST /api/v1/auth/signup/verify-email`).
+> (`VXWM`, `VXSK`, `VXRM`, AAD `userId`) -> root collection (`VXCK`, `VXCM`) -> recovery phrase confirmation -> code received by email -> `POST /api/v1/auth/signup/finish` (with the code) -> **zeroize**.
 >
-> `userId` is returned by `signup/start` because it is the AAD of `VXWM`, `VXRM` and `VXSK`. The full flow is in [CRYPTO §8.1](./CRYPTO.md#81-registration).
+> `userId` is returned by `signup/start` because it is the AAD of `VXWM`, `VXRM` and `VXSK`. `signup/start` also emails the verification code, and the account is only created by `signup/finish` once the code is correct, so its email is verified from the start. `signup/start` answers the same way whether or not the email is already taken. The full flow is in [CRYPTO §8.1](./CRYPTO.md#81-registration).
 
 <!-- markdownlint-disable MD033 -->
 <img src="/public/vexahub-registration-flow.svg" alt="Registration Flow" width="1000" />
@@ -127,7 +127,7 @@ The `masterKey` is unwrapped and loaded into the **Crypto Worker**, then discard
 ### 4.1 Full Login Flow
 
 > See diagram in the rendered documentation. Steps: user input -> `POST /api/v1/auth/signin/start` (returns `loginResponse` and `loginSessionId`) -> **OPAQUE** exchange ->
-> pin verification -> `POST /api/v1/auth/signin/finish { loginSessionId, authFinish }` -> email verification or 2FA if required ([§4.5](#45-email-verification-and-two-factor-authentication))
+> pin verification -> `POST /api/v1/auth/signin/finish { loginSessionId, authFinish }` -> 2FA if required ([§4.5](#45-two-factor-authentication))
 > -> session cookie, `vxwm` and `vxsk` returned -> `masterKeyWrapper` derivation -> `VXWM`/`VXSK` unwrap -> **zeroize** -> Crypto Worker load.
 >
 > `signin/start` returns the same response shape whether the account exists or not; `vxwm` and `vxsk` are only returned once the password is proven. `loginSessionId` expires after 120 seconds (401). The full flow is in [CRYPTO §8.2](./CRYPTO.md#82-login).
@@ -168,13 +168,12 @@ Domain=.vexahub.com   // production only, shared with checkout.vexahub.com
 
 Absolute lifetime: 24 hours, renewed on activity. The raw `sessionKey` is zeroized on both client and server immediately after the cookie is issued. The server never stores it.
 
-### 4.5 Email verification and two-factor authentication
+### 4.5 Two-factor authentication
 
 After `signin/finish` has proven the password, the server can still stop the login before creating a session:
 
 1. **Account suspended:** an error, no session. This is only revealed after the password is proven.
-2. **Email not verified:** the server sends a verification code by email and answers `{ requiresEmailVerification: true }`. The pending verification is tied to an `HttpOnly` cookie, never to the JSON body. The client sends the code to `POST /api/v1/auth/signup/verify-email`. A new code can be requested with `POST /api/v1/auth/resend-verification`.
-3. **2FA enabled:** the server answers with a short-lived `twoFactorToken` and no session. The client completes with `POST /api/v1/auth/2fa/verify { twoFactorToken, code }`, where `code` is a TOTP code or one of the single-use **recovery codes**. Only then is the session cookie issued.
+2. **2FA enabled:** the server answers with a short-lived `twoFactorToken` and no session. The client completes with `POST /api/v1/auth/2fa/verify { twoFactorToken, code }`, where `code` is a TOTP code or one of the single-use **recovery codes**. Only then is the session cookie issued.
 
 2FA is set up from the account settings (`POST /api/v1/account/2fa/setup`, then `POST /api/v1/account/2fa/verify`), recovery codes are renewed with `POST /api/v1/account/2fa/recovery-codes`, and 2FA is turned off with `DELETE /api/v1/account/2fa`. Some sensitive account actions require a fresh 2FA code (`POST /api/v1/auth/2fa/elevate`).
 

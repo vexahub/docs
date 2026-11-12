@@ -4,7 +4,7 @@
 >
 > **Version du protocole :** 1
 >
-> **Status:** (Brouillon) Accepté
+> **Statut :** (Brouillon) Accepté
 
 **Voir aussi:** [Spécification cryptographique | Addenda](/fr/CRYPTO_ADDENDUM.md)
 
@@ -110,7 +110,7 @@ Pour `shareWrapKey`, l'**IKM** est le secret partagé **X-Wing** (sortie d'**un 
 | jeton de session depuis sessionKey (côté serveur)      | `vexahub:v1:sessionToken`                                                                                                                                              | 32                           |
 | localCacheKey depuis masterKey                         | `vexahub:v1:localCacheKey`                                                                                                                                             | 32                           |
 | searchIndexKey depuis masterKey                        | `vexahub:v1:searchIndexKey`                                                                                                                                            | 32                           |
-| childCollectionKeyWrap depuis la collectionKey parente | `vexahub:v1:childCollectionKeyWrap:{child_uuid}` (voir [Addenda §21](/fr/CRYPTO_ADDENDUM.md#21-création-de-sous-collection-par-un-éditeur-susceptible-dêtre-modifiée)) | 32                           |
+| childCollectionKeyWrap depuis la collectionKey parente | `vexahub:v1:childCollectionKeyWrap:{child_uuid}` (voir [Addenda §21](/fr/CRYPTO_ADDENDUM.md#21-création-de-sous-collection-par-un-éditeur)) | 32                           |
 
 > Les sels HKDF ne sont pas des secrets ; l'unicité est assurée exclusivement par le champ `info`.
 >
@@ -458,7 +458,7 @@ Total du blob chiffré :
     Partage de fichier :    6 (en-tête) + 24 (nonce) + 70 (texte en clair) + 16 (tag) = 116 octets
 ```
 
-L'ordre dans lequel l'encodeur _reçoit_ les champs n'a pas d'importance ; ce qui compte, c'est que l'encodeur **CBOR canonique** les émette dans l'ordre longueur-puis-lexicographique. `serde_cbor` (avec l'option déterministe) et `cbor4ii` (avec la fonctionnalité `canonical`) produisent tous deux cet ordonnancement. Les vecteurs de test au [§14](#14-vecteurs-de-test) **DOIVENT** vérifier une sortie identique octet par octet entre les implémentations.
+L'ordre dans lequel l'encodeur _reçoit_ les champs n'a pas d'importance ; ce qui compte, c'est que l'encodeur **CBOR canonique** les émette dans l'ordre longueur-puis-lexicographique. Tout encodeur qui implémente l'encodage déterministe du [RFC 8949 §4.2.1][cbor_rfc] produit cet ordonnancement ; une implémentation **NE DOIT PAS** se fier à un comportement par défaut de bibliothèque qui ne serait pas déterministe. Les vecteurs de test au [§14](#14-vecteurs-de-test) **DOIVENT** vérifier une sortie identique octet par octet entre les implémentations.
 
 Il s'agit d'une **défense en profondeur** aux côtés de la signature **ML-DSA-65**. Si une vérification de signature est **accidentellement** omise en raison d'un bug, la liaison **AAD** **empêche** quand même le serveur de rediriger des partages entre utilisateurs.
 
@@ -604,7 +604,7 @@ Minimum : 46 octets. Maximum accepté par le serveur : 50 Mio.
 ```
 
 ```rs
-AAD = en-tête (6 octets) ‖ user_id (16 octets)   // 22 octets
+AAD = en-tête (6 octets) ‖ user_id (16 octets, UUID brut) // 22 octets
 ```
 
 ```rs
@@ -625,7 +625,7 @@ searchIndexKey = HKDF-SHA-512(
       "k":  uint,              // 0 = fichier, 1 = collection
       "m":  tstr,              // type MIME, absent pour les collections
       "n":  tstr,              // nom
-      "p":  bstr .size 16,     // collection_id (fichier) ou parent_id (collection), absent pour les éléments racine
+      "p":  bstr .size 16,     // collection_id (fichier) ou parent_id (collection), UUID brut, absent pour la collection racine
       "id": bstr .size 16,     // file_id ou collection_id, UUID brut
       "mt": uint,              // date de modification, secondes unix
     }
@@ -634,18 +634,17 @@ searchIndexKey = HKDF-SHA-512(
 }
 ```
 
-Un champ sans valeur est omis, jamais encodé en `null`.
-
-Ordre canonique : `d` < `v` au premier niveau, et `k` < `m` < `n` < `p` < `id` < `mt` dans une entrée. Les parseurs **DOIVENT** rejeter un CBOR non canonique. Une valeur de `v` inconnue **DOIT** provoquer une reconstruction complète, jamais une lecture partielle. Le clair n'est pas compressé dans la version 1 du protocole.
+Les champs optionnels (`m`, `p`) sont omis quand ils n'ont pas de valeur, jamais encodés en `null`. Ordre canonique : `d` < `v` au premier niveau, et `k` < `m` < `n` < `p` < `id` < `mt` dans une entrée. Les parseurs **DOIVENT** rejeter un CBOR non canonique. Une valeur de `v` inconnue **DOIT** provoquer une reconstruction complète, jamais une lecture partielle. Le clair n'est pas compressé dans la version 1 du protocole.
 
 **Périmètre :** uniquement les fichiers et collections de l'utilisateur qui ne sont pas dans la corbeille. Les éléments partagés avec l'utilisateur ne sont pas indexés.
 
 **Écritures :**
 
 - Chaque `PUT` **DOIT** utiliser un nonce aléatoire neuf : `searchIndexKey` est stable tant que `masterKey` ne change pas.
-- Chaque `PUT` porte `builtFrom`, le `dataUpdatedAt` lu par le client avant de construire l'index. Le serveur le stocke comme repère de l'index, refuse de remplacer un index construit à partir de données plus récentes, et `GET` signale l'index comme périmé quand `dataUpdatedAt` est postérieur à ce repère. Deux appareils en concurrence, ou une modification arrivée pendant une construction, mènent donc toujours à une reconstruction.
-- `dataUpdatedAt` ne bouge pas lors d'une suppression définitive (la ligne n'existe plus). Après une suppression définitive ou une corbeille vidée, le client retire les entrées et renvoie l'index.
-- Le client reconstruit et renvoie l'index quand `GET` le signale comme périmé, quand le déchiffrement échoue, ou quand `v` est inconnu.
+- `PUT` porte `{ vxsi, builtFrom }`. `builtFrom` est l'horodatage serveur des données de l'utilisateur à partir desquelles l'index a été construit : le client le lit avant de construire, jamais depuis sa propre horloge.
+- `GET` renvoie `{ vxsi, builtFrom, stale }`. `stale` vaut `true` quand les fichiers ou collections de l'utilisateur ont changé après `builtFrom`.
+- Le serveur ne garde un `PUT` que si son `builtFrom` n'est pas plus ancien que celui stocké : un client lent ne peut pas écraser un index récent par une construction plus ancienne.
+- Le client reconstruit et renvoie l'index quand `stale` vaut `true`, quand le déchiffrement échoue, ou quand `v` est inconnu.
 - Un changement de mot de passe ou une récupération laissent `VXSI` valide (`masterKey` ne change pas). Une réinitialisation destructive et une suppression de compte le suppriment.
 
 **Modèle de confiance :** `VXSI` est un cache, jamais une source de vérité.
@@ -659,7 +658,7 @@ Ordre canonique : `d` < `v` au premier niveau, et `k` < `m` < `n` < `p` < `id` <
 
 ### 5.14 `VXCC` - Clé de collection encapsulée par la collection parente
 
-Encapsule la `collectionKey` d'une sous-collection créée par un éditeur ([Addenda §21](/fr/CRYPTO_ADDENDUM.md#21-création-de-sous-collection-par-un-éditeur-susceptible-dêtre-modifiée)) sous la `collectionKey` parente. L'éditeur ne peut pas produire un `VXCK`, qui demande la `masterKey` du propriétaire.
+Encapsule la `collectionKey` d'une sous-collection créée par un éditeur ([Addenda §21](/fr/CRYPTO_ADDENDUM.md#21-création-de-sous-collection-par-un-éditeur)) sous la `collectionKey` parente. L'éditeur ne peut pas produire un `VXCK`, qui demande la `masterKey` du propriétaire.
 
 ```rs
 Décalage  Taille  Champ
@@ -678,7 +677,7 @@ AAD : parent_id ‖ collection_id (32 octets, UUIDs bruts)
 Clé : childCollectionKeyWrapKey (§4)
 ```
 
-Le magique distinct indique à tout lecteur de désencapsuler avec la `collectionKey` parente, jamais avec une `masterKey`, et empêche tout usage croisé avec `VXCK`.
+Le magique distinct indique à tout lecteur de désencapsuler avec la `collectionKey` parente, jamais avec une `masterKey`. L'usage croisé avec `VXCK` est empêché par la clé et l'AAD différentes ; le magique fait échouer l'erreur tôt, avec un message clair, au lieu d'un échec AEAD.
 
 La clé est choisie d'après le magique. La séparation de domaine avec `VXCK` vient de la dérivation `childCollectionKeyWrap` et de l'AAD, pas du magique.
 
@@ -1132,9 +1131,9 @@ Cela défend contre un serveur substitué, sous réserve que le canal de distrib
 1. Client : l'utilisateur saisit son email, son nom d'affichage et son mot de passe. L'email est canonicalisé (`NFC_normalize(lowercase(email))`) avant usage.
 2. Client : `opaque.client.startRegistration({ password })` -> `{ clientRegistrationState, registrationRequest }`.
 3. Client -> Serveur : `POST /api/v1/auth/signup/start { email, registrationRequest }`.
-4. Serveur : rejette un email non canonique, et refuse un email déjà enregistré ou encore sous suppression après une suppression de compte ([§19.3](#193-suppression-de-compte)), avec la même forme d'erreur dans les deux cas.
+4. Serveur : rejette un email non canonique. Un email déjà enregistré ou encore sous suppression après une suppression de compte ([§19.3](#193-suppression-de-compte)) n'est **pas** refusé : le serveur répond exactement comme pour un email libre mais n'envoie aucun code, si bien que `signup/start` ne révèle pas si une adresse a un compte.
 5. Serveur : `opaque.server.createRegistrationResponse({ serverSetup, userIdentifier: email, registrationRequest })` -> `{ registrationResponse }`.
-6. Serveur : attribue le nouvel `userId` et conserve l'inscription en attente pendant 30 minutes (l'utilisateur note sa phrase de récupération entre-temps).
+6. Serveur : attribue le nouvel `userId`, conserve l'inscription en attente pendant 30 minutes (l'utilisateur note sa phrase de récupération entre-temps) et envoie un code de vérification à l'adresse. Aucune ligne utilisateur n'existe encore. Un nouveau code se demande avec `POST /api/v1/auth/resend-verification { email }`.
 7. Serveur -> Client : `{ registrationResponse, userId }`. `userId` sert d'AAD à `VXWM`, `VXRM` et `VXSK` ([§5](#5-formats-de-blob-binaires)) : le client en a besoin avant d'envelopper quoi que ce soit.
 
    > **Identifiants OPAQUE :** `client` = email canonique, `server` = `vexahub.com`, à l'inscription comme à la connexion. Changer l'un des deux est un changement de protocole.
@@ -1148,9 +1147,9 @@ Cela défend contre un serveur substitué, sous réserve que le canal de distrib
 14. Client : enveloppe les clés privées de partage avec `masterKey` -> blob `VXSK` (AAD `userId`).
 15. Client : génère une phrase de récupération BIP39 de 24 mots, dérive `recoveryKey`, enveloppe `masterKey` -> blob `VXRM` (voir [§12](#12-récupération-de-compte)).
 16. Client : crée la **collection racine** : génère son UUID v7 et sa `collectionKey`, enveloppe la clé -> `VXCK`, chiffre ses métadonnées -> `VXCM`.
-17. Client : demande à l'utilisateur de confirmer la phrase de récupération en ressaisissant des positions de mots spécifiques.
-18. Client -> Serveur : `POST /api/v1/auth/signup/finish { userId, email, displayName, registrationRecord, vxwm, vxsk, vxrm, sharingPublicXwing, sharingPublicSignature, rootCollectionId, rootVxck, rootVxcm }`.
-19. Serveur : stocke la ligne utilisateur et la collection racine de manière atomique, puis envoie un code de vérification par email. Le code est saisi sur `POST /api/v1/auth/signup/verify-email` ; la vérification en attente est liée à un cookie `HttpOnly`, jamais au corps JSON. La connexion reste bloquée tant que l'email n'est pas vérifié ([§8.2](#82-connexion)).
+17. Client : demande à l'utilisateur de confirmer la phrase de récupération en ressaisissant des positions de mots spécifiques, puis le code reçu par email.
+18. Client -> Serveur : `POST /api/v1/auth/signup/finish { userId, email, displayName, code, registrationRecord, vxwm, vxsk, vxrm, sharingPublicXwing, sharingPublicSignature, rootCollectionId, rootVxck, rootVxcm }`.
+19. Serveur : vérifie `code` par rapport à l'inscription en attente. Un code faux compte comme une tentative échouée, et l'inscription en attente est supprimée après 5. Si le code est bon, le serveur stocke la ligne utilisateur (email déjà vérifié) et la collection racine de manière atomique, puis supprime l'inscription en attente. Aucune session n'est créée : le client se connecte normalement ([§8.2](#82-connexion)). Si l'onglet est fermé avant cette étape, rien n'est stocké et l'inscription recommence.
 20. Client : zéroïse `password`, `exportKey`, `masterKeyWrapper`, les clés privées en texte clair, la phrase de récupération, `recoveryKey`. Maintient `masterKey` et les clés privées de partage actifs dans le Crypto Worker.
 
 ### 8.2 Connexion
@@ -1172,11 +1171,10 @@ Cela défend contre un serveur substitué, sous réserve que le canal de distrib
 10. Client -> Serveur : `POST /api/v1/auth/signin/finish { loginSessionId, authFinish }`.
 11. Serveur : récupère et supprime immédiatement `serverLoginState` de Valkey.
 12. Serveur : `opaque.server.finishLogin(...)` -> `{ sessionKey }`. Le mot de passe est maintenant prouvé.
-13. Serveur : une des quatre issues suivantes :
+13. Serveur : une des trois issues suivantes :
 
     - **Compte suspendu :** erreur, aucune session n'est créée. Ce n'est révélé qu'une fois le mot de passe prouvé.
-    - **Vérification d'email requise :** un code est envoyé par email, la vérification en attente est liée à un cookie `HttpOnly` et la réponse est `{ requiresEmailVerification: true }`. Pas encore de session.
-    - **2FA requise :** la réponse porte un `twoFactorToken` de courte durée ; le client termine avec `POST /api/v1/auth/2fa/verify` ([AUTHENTICATION §4.5](/fr/AUTHENTICATION.md#45-vérification-demail-et-authentification-à-deux-facteurs)). Pas encore de session.
+    - **2FA requise :** la réponse porte un `twoFactorToken` de courte durée ; le client termine avec `POST /api/v1/auth/2fa/verify` ([AUTHENTICATION §4.5](/fr/AUTHENTICATION.md#45-authentification-à-deux-facteurs)). Pas encore de session.
     - **Succès :** voir l'étape 14.
 
 14. Serveur : dérive le jeton de session, stocke une ligne de session hachée et pose le cookie :
@@ -2492,7 +2490,6 @@ Tous les cookies d'authentification : `HttpOnly; Secure; SameSite=Strict; Path=/
 | ------------------ | ------------------------------------------------------------------------------------------- | ---------- |
 | `APPSESSID`        | Cookie de session, `{session_id}.{jeton}`                                                   | Oui        |
 | `PS-AUTH`          | Cookie de session persistante ([§9.2](#92-sessions-persistantes-se-souvenir-de-moi-opt-in)) | Oui        |
-| `VEXAHUB_VE_TOK`   | Vérification d'email en attente                                                             | Oui        |
 | `APPAUTHENTICATED` | Cookie témoin lu par la webapp pour savoir qu'une session existe. Ne porte aucun secret     | Non        |
 
 ### 16.4 Type de média API
@@ -2754,7 +2751,7 @@ La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée suppri
 
 ## Historique des modifications
 
-- **16 :** alignement sur le code actuel. Chemins d'API sous `/api/v1` (same-origin), UUID v7 presque partout, routes et schémas réels. `session_id` de `VXPS` généré par le client (§5.6, §9.2). `vxwm` et `vxsk` renvoyés seulement après `signin/finish`, `signin/start` uniforme (§8.2). `ts` informatif, sans contrôle obligatoire (§11.2). Nouveaux `VXMC` (§5.12) et `VXSI` (§5.13), dérivations `localCacheKey`, `sessionToken` et `childCollectionKeyWrap` (§4). Envoi direct pour les petits fichiers (§6.5). Flux de récupération (§12.1), CSP (§16.1) et suppression de compte (§19.3) réécrits. Nouvelle section sur les versions de fichiers (§19.5). Rechiffrement après révocation (§11.1.1) et sessions persistantes web (§9.2) marqués comme prévus. Nouveau blob `VXCC` pour les sous-collections créées par un éditeur, transitoire côté propriétaire (§5.14).
+- **16 :** alignement sur le code actuel. Chemins d'API sous `/api/v1` (same-origin), UUID v7 presque partout, routes et schémas réels. `session_id` de `VXPS` généré par le client (§5.6, §9.2). `vxwm` et `vxsk` renvoyés seulement après `signin/finish`, `signin/start` uniforme (§8.2). `ts` informatif, sans contrôle obligatoire (§11.2). Nouveaux `VXMC` (§5.12) et `VXSI` (§5.13), dérivations `localCacheKey`, `sessionToken` et `childCollectionKeyWrap` (§4). Envoi direct pour les petits fichiers (§6.5). Flux de récupération (§12.1), CSP (§16.1) et suppression de compte (§19.3) réécrits. Nouvelle section sur les versions de fichiers (§19.5). Rechiffrement après révocation (§11.1.1) et sessions persistantes web (§9.2) marqués comme prévus. Nouveau blob `VXCC` pour les sous-collections créées par un éditeur, transitoire côté propriétaire (§5.14). Email vérifié par code avant la création du compte, `signup/start` uniforme (§8.1).
 
 [//]: # "LINKS"
 [opaque_rfc]: https://www.rfc-editor.org/info/rfc9807
