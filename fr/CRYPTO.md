@@ -1,8 +1,8 @@
 # VexaHub - Spécification cryptographique
 
-> **Version du document:** 15
+> **Version du document :** 16
 >
-> **Version du protocole:** 1
+> **Version du protocole :** 1
 >
 > **Status:** (Brouillon) Accepté
 
@@ -21,8 +21,8 @@ Objectifs cryptographiques :
 - Les changements de mot de passe **ne nécessitent pas** de rechiffrer les fichiers des utilisateurs.
 - La mutation de fichiers est prise en charge **sans** vulnérabilités de réutilisation de nonce.
 - Le partage entre utilisateurs est possible **sans** que le serveur n'apprenne le contenu partagé.
-- **Résistance post-quantique** pour *l'échange de clés de partage*.
-- **Cohérence** multiplateforme (web, bureau, futurs Android/iOS) via une implémentation Rust compilée vers les cibles **WASM**, **native** et **UniFFI**.
+- **Résistance post-quantique** pour _l'échange de clés de partage_.
+- **Cohérence** multiplateforme (web, bureau, futurs Android/iOS) grâce à une spécification publique et à des vecteurs de test partagés ([§14](#14-vecteurs-de-test)). Aujourd'hui, les primitives viennent de paquets distincts : OPAQUE, X-Wing, ML-DSA-65 et BLAKE3 sont des paquets Rust/WASM séparés, XChaCha20-Poly1305 vient de libsodium et HKDF de WebCrypto. Le protocole lui-même (dérivations, formats de blobs, AAD) est composé en TypeScript dans le client web (`engine.ts`). Un crate Rust unifié est prévu avec le second client ([§18](#18-questions-ouvertes-et-travaux-futurs)).
 
 Objectifs explicitement non visés :
 
@@ -32,17 +32,17 @@ Objectifs explicitement non visés :
 
 ## 2. Primitives
 
-| Objectif                         | Algorithme                                                        | Paramètres                                                                        |
-|----------------------------------|-------------------------------------------------------------------|-----------------------------------------------------------------------------------|
-| AKE authentifié par mot de passe | OPAQUE ([RFC 9807][opaque_rfc])                                   | Suite Ristretto255, `(3DH + ML-KEM-768)`                                          |
-| Étirement de clé (dans OPAQUE)   | Argon2id                                                          | m = 131 072 Kio (128 Mio), t = 3, p = 4                                           |
-| AEAD symétrique                  | XChaCha20-Poly1305                                                | Nonces de 24 octets, tags de 16 octets                                            |
-| Dérivation de clé                | HKDF-SHA-512                                                      | `info` à séparation de domaine, sel zéro                                          |
-| KEM hybride (Partage)            | X-Wing ([draft-connolly-cfrg-xwing-kem][xwing_draft])             | ML-KEM-768 + X25519, secret partagé de 32 octets                                  |
-| KEM hybride (AKE OPAQUE)         | TripleDhKem (`opaque-ke`)                                         | 3DH + encapsulation ML-KEM-768 dans KE1/KE2                                       |
-| Signatures numériques            | ML-DSA-65 (FIPS 204)                                              | Authenticité des invitations de partage, attestation d'appareil, rotation de clés |
-| CSPRNG                           | CSPRNG du système d'exploitation                                  | `getrandom` (Rust), `crypto.getRandomValues` (web)                                |
-| Hygiène mémoire                  | Crate `zeroize`                                                   | Tout le matériel de clés encapsulé dans `Zeroizing<T>`                            |
+| Objectif                         | Algorithme                                            | Paramètres                                                                                   |
+| -------------------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| AKE authentifié par mot de passe | OPAQUE ([RFC 9807][opaque_rfc])                       | Suite Ristretto255, `(3DH + ML-KEM-768)`                                                     |
+| Étirement de clé (dans OPAQUE)   | Argon2id                                              | m = 131 072 Kio (128 Mio), t = 3, p = 4                                                      |
+| AEAD symétrique                  | XChaCha20-Poly1305                                    | Nonces de 24 octets, tags de 16 octets                                                       |
+| Dérivation de clé                | HKDF-SHA-512                                          | `info` à séparation de domaine, sel zéro                                                     |
+| KEM hybride (Partage)            | X-Wing ([draft-connolly-cfrg-xwing-kem][xwing_draft]) | ML-KEM-768 + X25519, secret partagé de 32 octets                                             |
+| KEM hybride (AKE OPAQUE)         | TripleDhKem (`opaque-ke`)                             | 3DH + encapsulation ML-KEM-768 dans KE1/KE2                                                  |
+| Signatures numériques            | ML-DSA-65 (FIPS 204)                                  | Authenticité des invitations de partage, attestation d'appareil, rotation de clés            |
+| CSPRNG                           | CSPRNG du système d'exploitation                      | `getrandom` (Rust), `crypto.getRandomValues` (web)                                           |
+| Hygiène mémoire                  | `sodium.memzero` (web), crate `zeroize` (Rust)        | Web : `sodium.memzero` avec repli sur `fill(0)`. `Zeroizing<T>` ne concerne que le code Rust |
 
 **Justification :**
 
@@ -65,7 +65,7 @@ L'intermédiaire `masterKeyWrapper` existe par souci d'uniformité avec toutes l
 ### 3.1 Récapitulatif des clés
 
 | Clé                                 | Taille | Origine                                         | Durée de vie                      | Le serveur voit                          |
-|-------------------------------------|--------|-------------------------------------------------|-----------------------------------|------------------------------------------|
+| ----------------------------------- | ------ | ----------------------------------------------- | --------------------------------- | ---------------------------------------- |
 | password                            | var    | Saisie utilisateur                              | Frappe                            | Jamais                                   |
 | exportKey                           | 64     | Sortie OPAQUE                                   | Session                           | Jamais                                   |
 | masterKeyWrapper                    | 32     | HKDF(exportKey)                                 | Session                           | Jamais                                   |
@@ -81,6 +81,8 @@ L'intermédiaire `masterKeyWrapper` existe par souci d'uniformité avec toutes l
 | Clé de vérification ML-DSA-65 (pub) | 1952   | Dérivée de la graine de signature               | Permanent                         | En clair                                 |
 | linkKey                             | 32     | CSPRNG (sans mdp) ou Argon2id (avec mdp)        | Accès au lien                     | Jamais (fragment ou dérivée côté client) |
 | publicLinkWrapKey                   | 32     | HKDF(linkKey)                                   | Accès au lien                     | Jamais                                   |
+| localCacheKey                       | 32     | HKDF(masterKey)                                 | Session                           | Jamais                                   |
+| searchIndexKey                      | 32     | HKDF(masterKey)                                 | Session                           | Jamais                                   |
 
 ## 4. Séparation de domaine HKDF
 
@@ -92,19 +94,23 @@ Pour les dérivations où l'**IKM** est uniformément aléatoire (ex. `masterKey
 
 Pour `shareWrapKey`, l'**IKM** est le secret partagé **X-Wing** (sortie d'**un combineur KEM**), et non une sortie **CSPRNG** brute. Si le combineur venait à produire une sortie biaisée en raison d'un défaut d'implémentation ou d'une faiblesse dans l'un des **KEM** constitutifs, un sel aléatoire fournit une **couche de défense supplémentaire significative**. Le sel est transmis aux côtés du texte chiffré **X-Wing** dans l'enregistrement de partage et **n'a pas besoin d'être secret**.
 
-| Dérivation                                         | Chaîne `info`                                                                         | Longueur                     |
-|----------------------------------------------------|---------------------------------------------------------------------------------------|------------------------------|
-| masterKeyWrapper depuis exportKey                  | `vexahub:v1:masterKeyWrapper`                                                         | 32                           |
-| collectionKeyWrap depuis masterKey                 | `vexahub:v1:collectionKeyWrap:{collection_uuid}`                                      | 32                           |
-| fileKeyWrap depuis collectionKey                   | `vexahub:v1:fileKeyWrap:{file_uuid}`                                                  | 32                           |
-| contentIdKey depuis masterKey (par collection)     | `vexahub:v1:contentIdKey:{collection_uuid}`                                           | 32                           |
-| fileContentKey depuis fileKey                      | `vexahub:v1:fileContentKey`                                                           | 32                           |
-| fileMetadataKey depuis fileKey                     | `vexahub:v1:fileMetadataKey`                                                          | 32                           |
-| collectionMetadataKey depuis collectionKey         | `vexahub:v1:collectionMetadataKey`                                                    | 32                           |
-| segmentNonce depuis fileContentKey                 | `vexahub:v1:segmentNonce:` ‖ uint32_be(generation) ‖ uint64_be(segment_index)         | 24                           |
-| recoveryKey depuis la graine BIP39                 | `vexahub:v1:recoveryKey:{user_uuid}`                                                  | 32                           |
-| shareWrapKey depuis le secret partagé X-Wing       | `vexahub:v1:shareWrap:{share_uuid}`                                                   | 32 (sel aléatoire 32 octets) |
-| publicLinkWrapKey depuis linkKey                   | `vexahub:v1:publicLink:{link_id}`                                                     | 32                           |
+| Dérivation                                             | Chaîne `info`                                                                                                                                                          | Longueur                     |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| masterKeyWrapper depuis exportKey                      | `vexahub:v1:masterKeyWrapper`                                                                                                                                          | 32                           |
+| collectionKeyWrap depuis masterKey                     | `vexahub:v1:collectionKeyWrap:{collection_uuid}`                                                                                                                       | 32                           |
+| fileKeyWrap depuis collectionKey                       | `vexahub:v1:fileKeyWrap:{file_uuid}`                                                                                                                                   | 32                           |
+| contentIdKey depuis masterKey (par collection)         | `vexahub:v1:contentIdKey:{collection_uuid}`                                                                                                                            | 32                           |
+| fileContentKey depuis fileKey                          | `vexahub:v1:fileContentKey`                                                                                                                                            | 32                           |
+| fileMetadataKey depuis fileKey                         | `vexahub:v1:fileMetadataKey`                                                                                                                                           | 32                           |
+| collectionMetadataKey depuis collectionKey             | `vexahub:v1:collectionMetadataKey`                                                                                                                                     | 32                           |
+| segmentNonce depuis fileContentKey                     | `vexahub:v1:segmentNonce:` ‖ uint32_be(generation) ‖ uint64_be(segment_index)                                                                                          | 24                           |
+| recoveryKey depuis la graine BIP39                     | `vexahub:v1:recoveryKey:{user_uuid}`                                                                                                                                   | 32                           |
+| shareWrapKey depuis le secret partagé X-Wing           | `vexahub:v1:shareWrap:{share_uuid}`                                                                                                                                    | 32 (sel aléatoire 32 octets) |
+| publicLinkWrapKey depuis linkKey                       | `vexahub:v1:publicLink:{link_id}`                                                                                                                                      | 32                           |
+| jeton de session depuis sessionKey (côté serveur)      | `vexahub:v1:sessionToken`                                                                                                                                              | 32                           |
+| localCacheKey depuis masterKey                         | `vexahub:v1:localCacheKey`                                                                                                                                             | 32                           |
+| searchIndexKey depuis masterKey                        | `vexahub:v1:searchIndexKey`                                                                                                                                            | 32                           |
+| childCollectionKeyWrap depuis la collectionKey parente | `vexahub:v1:childCollectionKeyWrap:{child_uuid}` (voir [Addenda §21](/fr/CRYPTO_ADDENDUM.md#21-création-de-sous-collection-par-un-éditeur-susceptible-dêtre-modifiée)) | 32                           |
 
 > Les sels HKDF ne sont pas des secrets ; l'unicité est assurée exclusivement par le champ `info`.
 >
@@ -154,7 +160,7 @@ Identifiants d'algorithme :
 - `0x01` -> XChaCha20-Poly1305
 - `0x02` -> X-Wing (ML-KEM-768 + X25519)
 
-Identifiants d'algorithme de signature (nouveaux, pour les enregistrements de partage) :
+Identifiants d'algorithme de signature :
 
 - `0x10` -> ML-DSA-65
 
@@ -315,9 +321,9 @@ Total : 78 octets
 AAD = user_id ‖ session_id (32 octets, UUID brut)
 ```
 
-> `session_id` est l'**UUID** de la ligne `persistent_sessions`, généré côté serveur à l'activation et retourné au client dans la réponse `POST /auth/persistent-session/create`.
+> `session_id` est un **UUID v7** généré **côté client** à l'activation, avant le chiffrement. Le client chiffre `VXPS` avec `user_id ‖ session_id` en **AAD**, puis envoie `{ sessionId, vxps, device }` à `POST /api/v1/auth/persistent-session/create`. Le serveur utilise `sessionId` comme id de la ligne `persistent_sessions` et répond **409** si cet id existe déjà.
 >
-> Le client **DOIT** le stocker aux côtés de `localKey` dans `IndexedDB` et l'inclure dans l'**AAD** à chaque chiffrement et déchiffrement `VXPS`. Cela lie cryptographiquement le blob à une session spécifique.
+> Le client **DOIT** stocker `session_id` aux côtés de `localKey` dans `IndexedDB` et l'inclure dans l'**AAD** à chaque chiffrement et déchiffrement `VXPS`. Cela lie cryptographiquement le blob à une session spécifique.
 >
 > Un blob `VXPS` d'une session révoquée **ne peut pas** être réutilisé dans une nouvelle.
 
@@ -329,21 +335,25 @@ Décalage  Taille   Champ
 4         1        Version de format (0x01)
 5         1        Identifiant d'algorithme (0x01)
 6         24       Nonce (aléatoire)
-30        N+16     Texte chiffré (objet CBOR) + tag
+30        91       Texte chiffré (objet CBOR de 75 o + 16 o tag)
+--------
+Total : 121 octets
 ```
 
 ```rs
 AAD : user_id (16 octets, UUID brut)
 ```
 
-Schéma CBOR :
+Schéma CBOR, clés dans l'ordre canonique (`ds` puis `xw`) :
 
 ```json
 {
-  "xw": bstr .size 32,    // clé de désencapsulation X-Wing (graine)
   "ds": bstr .size 32,    // graine ML-DSA-65 (et non la clé de signature étendue)
+  "xw": bstr .size 32,    // clé de désencapsulation X-Wing (graine)
 }
 ```
+
+Clair CBOR : en-tête de map (1) + `"ds"` (3) + bstr(32) (34) + `"xw"` (3) + bstr(32) (34) = 75 octets.
 
 > Les parseurs **DOIVENT** rejeter les entrées **CBOR** non canoniques. Tout blob ou charge utile non conforme à l'encodage déterministe du [RFC 8949 §4.2.1][cbor_rfc] **DOIT** provoquer une erreur critique, **jamais** une acceptation silencieuse ou une recanonicali­sation.
 
@@ -392,7 +402,7 @@ Décalage  Taille   Champ
 4         1        Version de format (0x01)
 5         1        Identifiant d'algorithme KEM (0x02 = X-Wing)
 6         24       Nonce (aléatoire)
-30        N+16     Texte chiffré (CBOR { "k": bstr, "kind": "collection"|"file", "id": bstr }) + tag
+30        N+16     Texte chiffré (CBOR { "k": bstr, "p": uint, "id": bstr, "kind": "collection"|"file" }) + tag
 --------
 Total : 116 octets (partage de fichier) / 122 octets (partage de collection)
 ```
@@ -406,7 +416,7 @@ AAD : sender_id ‖ recipient_id (32 octets, UUIDs bruts)
 
 {
   "k":    bstr .size 32,    // clé encapsulée (collectionKey OU fileKey)
-  "p":    uint,             // masque de bits de permission (voir §11.x)
+  "p":    uint,             // masque de bits de permission (voir §11.6)
   "id":   bstr .size 16,    // collection_id ou file_id, UUID brut de 16 octets
   "kind": tstr ("collection" | "file"),
 }
@@ -448,7 +458,7 @@ Total du blob chiffré :
     Partage de fichier :    6 (en-tête) + 24 (nonce) + 70 (texte en clair) + 16 (tag) = 116 octets
 ```
 
-L'ordre dans lequel l'encodeur *reçoit* les champs n'a pas d'importance ; ce qui compte, c'est que l'encodeur **CBOR canonique** les émette dans l'ordre longueur-puis-lexicographique. `serde_cbor` (avec l'option déterministe) et `cbor4ii` (avec la fonctionnalité `canonical`) produisent tous deux cet ordonnancement. Les vecteurs de test au [§14](#14-vecteurs-de-test) **DOIVENT** vérifier une sortie identique octet par octet entre les implémentations.
+L'ordre dans lequel l'encodeur _reçoit_ les champs n'a pas d'importance ; ce qui compte, c'est que l'encodeur **CBOR canonique** les émette dans l'ordre longueur-puis-lexicographique. `serde_cbor` (avec l'option déterministe) et `cbor4ii` (avec la fonctionnalité `canonical`) produisent tous deux cet ordonnancement. Les vecteurs de test au [§14](#14-vecteurs-de-test) **DOIVENT** vérifier une sortie identique octet par octet entre les implémentations.
 
 Il s'agit d'une **défense en profondeur** aux côtés de la signature **ML-DSA-65**. Si une vérification de signature est **accidentellement** omise en raison d'un bug, la liaison **AAD** **empêche** quand même le serveur de rediriger des partages entre utilisateurs.
 
@@ -491,7 +501,7 @@ publicLinkWrapKey = HKDF-SHA-512(
 
 ```rs
 linkKey = CSPRNG(32)
-URL : /link/{token}#key={base64url(linkKey)}
+URL : /share/{token}#key={base64url(linkKey)}
 ```
 
 La `linkKey` est placée dans le fragment de l'URL, qui n'est jamais envoyé au serveur. Le `token` est une valeur opaque aléatoire de 32 octets générée côté serveur, distincte de `link_id`.
@@ -507,10 +517,16 @@ linkKey = Argon2id(
     p         = 4,
     L         = 32
 )
-URL : /link/{token}
+URL : /share/{token}
 ```
 
 Pas de fragment dans l'URL. Le visiteur accède au lien via `token`, le serveur renvoie `passwordSalt` (et `link_id`), et le client dérive `linkKey` à partir du mot de passe saisi par le visiteur. Le serveur ne voit jamais le mot de passe.
+
+`/share/{token}` est la page de la webapp. Elle lit le lien par l'API `GET /api/v1/links/{token}`.
+
+Les liens protégés par mot de passe sont limités à **5 tentatives par 15 minutes**. Au-delà, le serveur refuse l'accès jusqu'à la fin de la fenêtre.
+
+Le `VXFM` servi pour un fichier derrière un lien public est celui stocké avec la génération de clé épinglée sur le lien (`key_generation`). Le visiteur peut ainsi le déchiffrer avec la clé encapsulée dans `VXPL`, même après une rotation de clés ultérieure.
 
 > **Les paramètres Argon2id** sont identiques à ceux de l'enregistrement OPAQUE dans [§2](#2-primitives). C'est intentionnel : la même implémentation WASM/native est réutilisée, et le coût est approprié pour une opération de déverrouillage unique.
 
@@ -518,8 +534,8 @@ Pas de fragment dans l'URL. Le visiteur accède au lien via `token`, le serveur 
 
 ```sql
 CREATE TABLE public_links (
-    id              UUID PRIMARY KEY,        -- link_id, généré côté client
-    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    id              UUID PRIMARY KEY,        -- link_id, UUID v7 généré côté client
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     file_id         UUID REFERENCES files(id) ON DELETE CASCADE,
     collection_id   UUID REFERENCES collections(id) ON DELETE CASCADE,
     token           TEXT NOT NULL UNIQUE,     -- 32 octets aléatoires, base64url
@@ -527,9 +543,12 @@ CREATE TABLE public_links (
     password_salt   BYTEA,                    -- 32 octets ou NULL (sans mot de passe)
     max_downloads   INTEGER,                  -- NULL = illimité
     download_count  INTEGER NOT NULL DEFAULT 0,
+    key_generation  INTEGER NOT NULL DEFAULT 0, -- génération de clé épinglée à la création du lien
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at      TIMESTAMPTZ,              -- NULL = pas d'expiration
     revoked_at      TIMESTAMPTZ,
+    moderated_at    TIMESTAMPTZ,              -- désactivé par la modération (revoked_at est aussi posé)
+    moderation_case_id UUID,
     CONSTRAINT public_links_target_check CHECK (
         (file_id IS NOT NULL AND collection_id IS NULL)
         OR (file_id IS NULL AND collection_id IS NOT NULL)
@@ -540,9 +559,123 @@ CREATE INDEX ON public_links (token) WHERE revoked_at IS NULL;
 CREATE INDEX ON public_links (user_id) WHERE revoked_at IS NULL;
 ```
 
-**Révocation :** définir `revoked_at` révoque l'accès API immédiatement. La clé enveloppée dans `VXPL` est la **vraie** `fileKey` ou `collectionKey`. Un attaquant ayant capturé le blob `VXPL` et la `linkKey` avant la révocation conserve la capacité de déchiffrer le contenu précédemment téléchargé. C'est la même limitation inhérente au E2EE que la révocation de partage ([§11.1](#111-révocation-de-partage)). Le mécanisme optionnel de re-chiffrement de [§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation) s'applique de manière identique à la révocation de lien public.
+**Révocation :** définir `revoked_at` révoque l'accès API immédiatement. La clé enveloppée dans `VXPL` est la **vraie** `fileKey` ou `collectionKey`. Un attaquant ayant capturé le blob `VXPL` et la `linkKey` avant la révocation conserve la capacité de déchiffrer le contenu précédemment téléchargé. C'est la même limitation inhérente au E2EE que la révocation de partage ([§11.1](#111-révocation-de-partage)). Le mécanisme de rechiffrement prévu en [§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation) s'appliquerait de manière identique à la révocation de lien public.
+
+**Modération :** le serveur peut désactiver un lien signalé. Il pose `moderated_at` et `revoked_at` et enregistre le `moderation_case_id`, si bien que tout contrôle d'accès refuse le lien. Annuler la décision le rétablit. Le serveur ne voit jamais le contenu derrière le lien, sauf si le signalement lui fournit la clé du lien (par exemple une URL complète sans mot de passe avec son fragment `#key=`). La modération agit sur l'accès, pas sur le chiffrement.
 
 > **`link_id` vs `token` :** `link_id` (UUID) est généré côté client et utilisé dans la chaîne `info` HKDF et l'AAD. `token` (32 octets aléatoires) est généré côté serveur comme valeur opaque de recherche pour le chemin URL. Cette séparation empêche le serveur de manipuler la liaison cryptographique : même si le serveur intervertit les valeurs `token` entre les liens, la non-correspondance de l'AAD sur `link_id` provoque l'échec du déchiffrement.
+
+### 5.12 `VXMC` - Entrée du cache local de métadonnées
+
+Chiffre une entrée du cache local de métadonnées du client web dans `IndexedDB`. Jamais envoyé au serveur.
+
+```rs
+Décalage  Taille  Champ
+--------  ------  ---------------------------------------
+0         4       Magique "VXMC" (0x56 0x58 0x4D 0x43)
+4         1       Version de format (0x01)
+5         1       Identifiant d'algorithme (0x01)
+6         24      Nonce (aléatoire)
+30        N+16    Texte chiffré + tag
+--------
+Minimum : 46 octets
+```
+
+```rs
+AAD = en-tête (6 octets) ‖ user_id ‖ entry_id (38 octets, UUIDs bruts)
+```
+
+Clé : `localCacheKey` ([§3.1](#31-récapitulatif-des-clés), [§4](#4-séparation-de-domaine-hkdf)), dérivée de `masterKey` et conservée dans le Crypto Worker pendant la session.
+
+### 5.13 `VXSI` - Index de recherche chiffré
+
+L'index de recherche chiffré des fichiers et collections de l'utilisateur, construit par le client et stocké côté serveur dans la table `search_index` (une ligne par utilisateur) via `GET`, `PUT` et `DELETE /api/v1/storage/search/index`. La recherche se fait entièrement dans le client : le serveur ne voit jamais une requête ni un nom.
+
+```rs
+Décalage  Taille  Champ
+--------  ------  ---------------------------------------
+0         4       Magique "VXSI" (0x56 0x58 0x53 0x49)
+4         1       Version de format (0x01)
+5         1       Identifiant d'algorithme (0x01)
+6         24      Nonce (aléatoire, nouveau à chaque écriture)
+30        N+16    Texte chiffré (CBOR canonique) + tag
+--------
+Minimum : 46 octets. Maximum accepté par le serveur : 50 Mio.
+```
+
+```rs
+AAD = en-tête (6 octets) ‖ user_id (22 octets)
+```
+
+```rs
+searchIndexKey = HKDF-SHA-512(
+    ikm  = masterKey,
+    salt = 32 octets nuls,
+    info = "vexahub:v1:searchIndexKey",
+    L    = 32
+)
+```
+
+**Clair :** les documents bruts, jamais l'export interne d'une librairie de recherche. Le client reconstruit son index en mémoire à partir d'eux après déchiffrement : le format ne dépend d'aucune librairie.
+
+```json
+{
+  "d": [                       // entrées
+    {
+      "k":  uint,              // 0 = fichier, 1 = collection
+      "m":  tstr,              // type MIME (fichiers seulement, absent pour les collections)
+      "n":  tstr,              // nom
+      "p":  bstr .size 16 / null, // collection_id (fichier) ou parent_id (collection), UUID brut
+      "id": bstr .size 16,     // file_id ou collection_id, UUID brut
+      "mt": uint,              // date de modification, secondes unix
+    }
+  ],
+  "v": uint,                   // version du schéma du clair, 1
+}
+```
+
+Ordre canonique : `d` < `v` au premier niveau, et `k` < `m` < `n` < `p` < `id` < `mt` dans une entrée. Les parseurs **DOIVENT** rejeter un CBOR non canonique. Une valeur de `v` inconnue **DOIT** provoquer une reconstruction complète, jamais une lecture partielle. Le clair n'est pas compressé dans la version 1 du protocole.
+
+**Périmètre :** uniquement les fichiers et collections de l'utilisateur qui ne sont pas dans la corbeille. Les éléments partagés avec l'utilisateur ne sont pas indexés.
+
+**Écritures :**
+
+- Chaque `PUT` **DOIT** utiliser un nonce aléatoire neuf : `searchIndexKey` est stable tant que `masterKey` ne change pas.
+- Le client reconstruit et renvoie l'index quand `dataUpdatedAt` (renvoyé par `GET`) est postérieur à `indexUpdatedAt`, quand le déchiffrement échoue, ou quand `v` est inconnu.
+- Un changement de mot de passe ou une récupération laissent `VXSI` valide (`masterKey` ne change pas). Une réinitialisation destructive et une suppression de compte le suppriment.
+
+**Modèle de confiance :** `VXSI` est un cache, jamais une source de vérité.
+
+- Le serveur ne peut ni lire ni forger d'entrées (AEAD, clé dérivée de `masterKey`, AAD lié à `user_id`).
+- Le serveur peut le supprimer ou servir une version plus ancienne. Le client **DOIT** donc vérifier chaque résultat contre les données réelles (l'élément existe encore et son `VXFM` / `VXCM` se déchiffre) avant de l'afficher, et écarter les entrées qui ne passent pas.
+- Le serveur connaît la taille du blob, qui grandit avec le nombre et la longueur des noms, et le moment où il change. Le nombre de fichiers et de collections lui est déjà connu.
+
+`IndexedDB` peut garder une copie locale du même blob ([§9.6.1](#961-clients-web)).
+
+### 5.14 `VXCC` - Clé de collection encapsulée par la collection parente
+
+Encapsule la `collectionKey` d'une sous-collection créée par un éditeur ([Addenda §21](/fr/CRYPTO_ADDENDUM.md#21-création-de-sous-collection-par-un-éditeur-susceptible-dêtre-modifiée)) sous la `collectionKey` parente. L'éditeur ne peut pas produire un `VXCK`, qui demande la `masterKey` du propriétaire.
+
+```rs
+Décalage  Taille  Champ
+--------  ------  ---------------------------------------
+0         4       Magique "VXCC" (0x56 0x58 0x43 0x43)
+4         1       Version de format (0x01)
+5         1       Identifiant d'algorithme (0x01)
+6         24      Nonce (aléatoire)
+30        48      Texte chiffré (32 o collectionKey + 16 o tag)
+--------
+Total : 78 octets
+```
+
+```rs
+AAD : parent_id ‖ collection_id (32 octets, UUIDs bruts)
+Clé : childCollectionKeyWrapKey (§4)
+```
+
+Le magique distinct indique à tout lecteur de désencapsuler avec la `collectionKey` parente, jamais avec une `masterKey`, et empêche tout usage croisé avec `VXCK`.
+
+**Transitoire côté propriétaire :** un `VXCC` dans les `collection_keys` du propriétaire **DOIT** être remplacé par un `VXCK` classique la prochaine fois que son client le désencapsule : désencapsulation avec la clé parente, réencapsulation avec `collectionKeyWrapKey` dérivée de `masterKey`, envoi ([Addenda §21.3](/fr/CRYPTO_ADDENDUM.md#213-accès)). La copie de l'éditeur dans `share_collection_keys` reste un `VXCC`.
 
 ## 6. Chiffrement de fichier
 
@@ -590,7 +723,7 @@ Le champ `generation` est sur 32 bits, offrant 4 milliards de modifications par 
 
 ### 6.5 Identification du contenu et intégration des envois reprenables
 
-VexaHub utilise le protocole d'envoi reprenable [tus 1.0.0][tus_protocol] pour tous les transferts de fichiers entre clients et serveur. Cette section spécifie comment la conception cryptographique s'intègre avec **tus**, et comment le **client** identifie le contenu du fichier d'une manière qui préserve la garantie **zéro-connaissance**.
+VexaHub utilise le protocole d'envoi reprenable [tus 1.0.0][tus_protocol] pour les envois de fichiers entre clients et serveur, avec une exception : les fichiers dont le clair fait moins de **5 Mio** sont envoyés en une seule requête à `POST /api/v1/uploads/direct` (corps multipart avec un champ `metadata` qui porte `vxfk`, `vxfm` et les paramètres d'envoi, et une partie fichier `ciphertext`). Le serveur refuse un envoi direct dont le texte chiffré dépasse **5 Mio + 370 octets** (5 segments de 74 octets de surcoût). Le format du texte chiffré est identique dans les deux cas. Cette section spécifie comment la conception cryptographique s'intègre avec **tus**, et comment le **client** identifie le contenu du fichier d'une manière qui préserve la garantie **zéro-connaissance**.
 
 ### 6.5.1 Objectifs
 
@@ -644,7 +777,7 @@ Il s'agit d'un **compromis** délibéré : la **déduplication inter-utilisateur
 
 ### 6.5.5 Intégration tus
 
-VexaHub utilise le protocole de base [tus 1.0.0][tus_protocol] avec les extensions **Creation** et **Termination**. L'extension **Checksum** n'est **PAS** utilisée : les balises d'authentification **Poly1305** par segment fournissent déjà une intégrité **cryptographique**, et ajouter une **somme de contrôle** au niveau tus (md5/sha1/crc32) serait **redondant** et **plus faible**.
+VexaHub utilise le protocole de base [tus 1.0.0][tus_protocol] avec les extensions **Creation** et **Termination**. Le point d'entrée tus est `/api/v1/cloud` (création par `POST /api/v1/cloud`, puis `HEAD`, `PATCH` et `DELETE` sur `/api/v1/cloud/{tusId}`), et non `/uploads`. Les routes sous `/api/v1/uploads` sont les extensions VexaHub (envoi direct, recherche, commit, rembobinage, abandon). L'extension **Checksum** n'est **PAS** utilisée : les balises d'authentification **Poly1305** par segment fournissent déjà une intégrité **cryptographique**, et ajouter une **somme de contrôle** au niveau tus (md5/sha1/crc32) serait **redondant** et **plus faible**.
 
 **Sémantique Upload-Length** : l'en-tête tus `Upload-Length` porte la longueur du **texte chiffré**, pas la longueur du texte clair. Le client calcule la longueur de texte chiffré attendue de manière déterministe à partir de la longueur du texte clair :
 
@@ -680,15 +813,15 @@ Réponses du serveur :
 
 - **404 Not Found** : Aucun envoi existant ou fichier validé ne correspond.
 
-    Le client **DOIT** procéder avec un nouveau tus `POST /uploads` pour créer une nouvelle ressource d'envoi.
+  Le client **DOIT** procéder avec un nouveau tus `POST /api/v1/cloud` pour créer une nouvelle ressource d'envoi (ou un envoi direct pour les petits fichiers).
 
-- **200 OK** avec `{ "kind": "incomplete", "uploadId": "...", "tusId": "..." "upload_offset": <int>, "generation": <int>, "expires_at": "..." }` :
+- **200 OK** avec `{ "kind": "incomplete", "uploadId": "...", "tusId": "...", "uploadOffset": <int>, "generation": <int>, "expiresAt": "..." }` :
 
-    Un envoi incomplet existe pour cet utilisateur avec ce `content_id`. Le client DEVRAIT envoyer un tus `HEAD` vers `tus_url` pour confirmer le décalage, puis reprendre avec des requêtes `PATCH`.
+  Un envoi incomplet existe pour cet utilisateur avec ce `content_id`. Le client DEVRAIT envoyer un tus `HEAD` vers `/api/v1/cloud/{tusId}` pour confirmer le décalage, puis reprendre avec des requêtes `PATCH`.
 
 - **200 OK** avec `{ "kind": "committed", "fileId": "...", "generation": <int> }` :
 
-    Le fichier existe déjà entièrement validé dans le compte de l'utilisateur. Le client **DOIT** inviter l'utilisateur à choisir entre passer, remplacer (crée generation+1), ou dupliquer (crée un nouveau `file_id`).
+  Le fichier existe déjà entièrement validé dans le compte de l'utilisateur. Le client **DOIT** inviter l'utilisateur à choisir entre passer, remplacer (crée generation+1), ou dupliquer (crée un nouveau `file_id`).
 
 Le serveur **DOIT** restreindre la recherche à l'utilisateur authentifié. Les recherches inter-utilisateurs par `content_id` **DOIVENT** retourner 404 même si une correspondance existe dans un autre compte.
 
@@ -697,12 +830,12 @@ Le serveur **DOIT** restreindre la recherche à l'utilisateur authentifié. Les 
 Une fois le transfert tus terminé (`uploadOffset == uploadLength`), le client **DOIT** finaliser l'upload via :
 
 ```rs
-POST /api/v1/uploads/{upload_id}/commit
+POST /api/v1/uploads/{tus_id}/commit
 Content-Type: application/json
 
 {
     "vxfk": "<base64url>",   // blob VXFK (78 octets)
-    "vxfm": "<base64url>"    // blob VXFM (>=46 octets)
+    "vxfm": "<base64url>"    // blob VXFM (>=66 octets)
 }
 ```
 
@@ -715,6 +848,8 @@ Le endpoint de commit effectue les opérations suivantes de manière atomique au
 5. Marque la ligne `tus_uploads` comme terminée.
 
 Pour les **nouveaux fichiers**, `keyGeneration` commence à `0`. Pour les **mises à jour** (incrémentation de génération), `keyGeneration` est incrémenté à partir du maximum actuel.
+
+Le paramètre de route est l'id d'envoi tus (`tusId`), et non l'id de la ligne `tus_uploads`. Le minimum de `VXFM` est de 66 octets : 50 octets d'en-tête et de nonce, plus le tag de 16 octets.
 
 Le client **DOIT** générer `fileKey` via CSPRNG, dériver `fileKeyWrapKey` depuis la `collectionKey` parente, envelopper `fileKey` dans le blob `VXFK`, dériver `fileMetadataKey` depuis `fileKey`, et chiffrer les métadonnées du fichier dans le blob `VXFM` **avant** d'appeler le commit. Le serveur valide le magic et les tailles minimales des blobs mais ne peut pas vérifier l'exactitude cryptographique (zero-knowledge).
 
@@ -737,20 +872,21 @@ Procédure de reprise :
 1. Le client envoie `HEAD {tus_url}` et lit `Upload-Offset` (`O`).
 2. Le client calcule le décalage de reprise aligné sur les parts de stockage :
 
-    ```rs
-        raw_segment  = floor(O / SEGMENT_CIPHERTEXT_SIZE_FULL)
-        aligned_seg  = raw_segment - (raw_segment % STORAGE_PART_SEGMENTS)
-        aligned_off  = aligned_seg * SEGMENT_CIPHERTEXT_SIZE_FULL
-    ```
+   ```rs
+       raw_segment  = floor(O / SEGMENT_CIPHERTEXT_SIZE_FULL)
+       aligned_seg  = raw_segment - (raw_segment % STORAGE_PART_SEGMENTS)
+       aligned_off  = aligned_seg * SEGMENT_CIPHERTEXT_SIZE_FULL
+   ```
 
 3. Si `O > aligned_off`, le serveur détient une part de stockage partielle. Le client **DOIT** demander au serveur de tronquer l'envoi jusqu'à `aligned_off` via l'endpoint personnalisé :
 
-    ```rs
-        POST /api/v1/uploads/{upload_id}/rewind
-        { "to_offset": <aligned_off> }
-    ```
+   ```rs
+       POST /api/v1/uploads/{tus_id}/rewind
+       { "to_offset": <aligned_off> }
+   ```
 
    Le serveur **DOIT** vérifier que le décalage demandé est aligné sur une part de stockage, tronquer l'objet de stockage sous-jacent, mettre à jour `tus_uploads.upload_offset`, et répondre 204.
+
 4. Le client reprend avec `PATCH` depuis `aligned_off`, en re-dérivant chaque nonce de segment depuis `(generation, segment_index)` tel que défini en [§6.2](#62-dérivation-de-nonce-par-segment).
 
 L'endpoint rewind ne fait **PAS** partie du standard tus. C'est une extension **VexaHub** nécessaire car tus seul ne peut pas exprimer la contrainte que les envois doivent être alignés sur les limites de segment **AEAD** et de part de stockage.
@@ -789,7 +925,7 @@ Cela garantit que chaque réponse `HEAD` rapporte un décalage aligné sur les s
 L'endpoint de rembobinage existe pour les cas au-delà du nettoyage automatique au moment du `HEAD` : rembobinage explicite initié par le client (par ex. modification en cours d'envoi selon [§6.5.8](#658-transitions-de-génération-pendant-les-envois-en-cours)), ou rembobinage vers un décalage antérieur au `Upload-Offset` courant.
 
 ```sh
-POST /api/v1/uploads/{upload_id}/rewind
+POST /api/v1/uploads/{tus_id}/rewind
 { "to_offset": <segment_start> }
 ```
 
@@ -842,8 +978,8 @@ Si l'utilisateur modifie un fichier localement pendant qu'un envoi pour ce fichi
 1. Envoyer `DELETE {tus_url}` (extension Termination de tus) pour supprimer l'envoi en cours côté serveur.
 2. Recalculer `content_id` pour le nouveau texte clair.
 3. Incrémenter le compteur `generation` du fichier de 1.
-4. Créer un nouvel envoi tus via `POST /uploads` avec le nouveau `content_id`, le nouveau `Upload-Length`, et le `generation` incrémenté dans les métadonnées d'envoi.
-5. Une fois le transfert terminé, finaliser avec de nouveaux blobs `VXFK` et `VXFM` via `POST /uploads/{id}/commit` ([§6.5.6.1](#6561-commit)).
+4. Créer un nouvel envoi tus via `POST /api/v1/cloud` avec le nouveau `content_id`, le nouveau `Upload-Length`, et le `generation` incrémenté dans les métadonnées d'envoi.
+5. Une fois le transfert terminé, finaliser avec de nouveaux blobs `VXFK` et `VXFM` via `POST /api/v1/uploads/{tus_id}/commit` ([§6.5.6.1](#6561-commit)).
 
 Le serveur **NE DOIT PAS** autoriser deux envois concurrents pour la même paire `(user_id, file_id)`. La contrainte d'unicité définie en [§6.5.10](#6510-schéma-côté-serveur) l'impose.
 
@@ -857,7 +993,8 @@ Ce hachage BLAKE3 est le hachage de texte clair non à clé et sert uniquement d
 
 ```sql
 CREATE TABLE tus_uploads (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id            UUID PRIMARY KEY DEFAULT uuidv7(),
+    tus_id        TEXT NOT NULL UNIQUE,       -- id d'envoi tus, utilisé dans /api/v1/cloud/{tusId}
     crypto_version SMALLINT NOT NULL DEFAULT 1,
     user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     file_id       UUID,                       -- NULL jusqu'au commit
@@ -870,7 +1007,8 @@ CREATE TABLE tus_uploads (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at    TIMESTAMPTZ NOT NULL,       -- TTL pour les envois abandonnés
-    completed_at  TIMESTAMPTZ                 -- NULL jusqu'au commit
+    completed_at  TIMESTAMPTZ,                -- NULL jusqu'au commit
+    expected_current_generation INTEGER       -- concurrence optimiste, voir ci-dessous
 );
 
 -- Empêche deux envois concurrents du même contenu pour le même utilisateur
@@ -895,13 +1033,7 @@ CREATE INDEX tus_uploads_user_collection
 >
 > Si un client met à niveau la version crypto en cours d'envoi (par ex. lors d'une migration de protocole), l'envoi en cours **DOIT** être abandonné et redémarré sous la nouvelle version.
 
-La table `tus_uploads` gagne une colonne optionnelle `expected_current_generation` :
-
-```sql
-ALTER TABLE tus_uploads ADD COLUMN expected_current_generation INTEGER;
-```
-
-Sémantique :
+Sémantique de `expected_current_generation` :
 
 - `NULL` pour les flux normaux de premier envoi (le fichier n'existe pas encore) et pour les flux normaux de modification où le client n'a pas demandé de concurrence optimiste.
 - Défini à un `M` non NULL uniquement lorsque le client a demandé un écrasement avec CAS via le flux de résolution de conflit.
@@ -914,36 +1046,34 @@ Un job planifié **DOIT** périodiquement (recommandé : toutes les heures) supp
 
 ### 6.5.12 Ajouts au modèle de menace
 
-| Capacité de l'attaquant                                                                           | Réponse VexaHub                                                                                                                                                                                                     |
-|---------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Le serveur tente de tester la base de données pour du texte clair connu via le hachage            | Bloqué : `content_id` est à clé par `contentIdKey` par utilisateur, jamais vu par le serveur                                                                                                                        |
-| Le serveur tente une déduplication inter-utilisateurs pour inférer des relations                  | Bloqué : des utilisateurs distincts produisent des `content_id` distincts pour un texte clair identique                                                                                                             |
-| Le serveur tronque un envoi pour injecter un fichier plus court                                   | Détecté au téléchargement via le hachage BLAKE3 du texte clair dans `VXFM` ([§5.4](#54-vxfm---métadonnées-de-fichier), [§6.5.9](#659-vérification-dintégrité-finale))                                               |
-| Le serveur réordonne les segments au sein d'une génération                                        | Bloqué par le **AAD** par segment liant `(version, alg, file_id, generation, segment_index)`                                                                                                                        |
-| Le serveur échange les métadonnées VXFM entre fichiers                                            | Bloqué par le **AAD** liant `(version, alg, file_id, generation)` sur VXFM                                                                                                                                          |
-| Le serveur échange les blobs d'enveloppement de clé entre utilisateurs                            | Bloqué par le **AAD** liant sur `VXWM`, `VXRM`, `VXSK` (`user_id`) et `VXPS` (`user_id ‖ session_id`)                                                                                                               |
-| Le serveur tronque le téléchargement (supprime les segments de queue)                             | Détecté par le compte de segments `sc` dans `VXFM` avant la fin du téléchargement complet                                                                                                                           |
-| Le serveur effectue un retour arrière vers une génération plus ancienne                           | Bloqué par l'application monotone de `generation` ([§6.3](#63-compteur-de-génération-de-fichier-mutabilité)) et la vérification côté client                                                                         |
-| Le serveur tente de corréler des fichiers entre collections pour le même utilisateur              | Bloqué : `contentIdKey` est par collection, le même texte clair produit des `content_id` différents dans des collections différentes                                                                                |
-| Le serveur observe des valeurs `content_id` inchangées après une rotation de `collectionKey`      | Accepté : fuite de métadonnées mineure (ensemble de fichiers inchangé), négligeable par rapport à ce que le serveur sait déjà (nombre de fichiers, tailles de texte chiffré). Le contenu reste entièrement protégé. |
-| Le serveur met à niveau `permission` sur un enregistrement de partage pour accorder un accès élevé| Détecté : le destinataire **DOIT** vérifier que le `"p"` déchiffré correspond à la colonne `permission` visible par le serveur; non-correspondance -> partage rejeté                                                |
-| Le serveur intervertit les blobs VXPL entre les liens publics                                     | Bloqué par la liaison AAD sur `link_id`                                                                                                                                                                             |
-| Le serveur tente de forcer un lien protégé par mot de passe                                       | Bloqué : Argon2id 128 Mio ; le serveur ne voit jamais le mot de passe ni la `linkKey`                                                                                                                               |
-| Le serveur capture le fragment URL d'un lien sans mot de passe                                    | Impossible : les fragments URL ne sont jamais envoyés au serveur selon la spécification HTTP                                                                                                                        |
-| Un attaquant capture l'URL complète avant la révocation du lien                                   | Limitation inhérente au E2EE : identique à la révocation de partage ([§11.1](#111-révocation-de-partage))                                                                                                           |
+| Capacité de l'attaquant                                                                            | Réponse VexaHub                                                                                                                                                                                                     |
+| -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Le serveur tente de tester la base de données pour du texte clair connu via le hachage             | Bloqué : `content_id` est à clé par `contentIdKey` par utilisateur, jamais vu par le serveur                                                                                                                        |
+| Le serveur tente une déduplication inter-utilisateurs pour inférer des relations                   | Bloqué : des utilisateurs distincts produisent des `content_id` distincts pour un texte clair identique                                                                                                             |
+| Le serveur tronque un envoi pour injecter un fichier plus court                                    | Détecté au téléchargement via le hachage BLAKE3 du texte clair dans `VXFM` ([§5.4](#54-vxfm---métadonnées-de-fichier), [§6.5.9](#659-vérification-dintégrité-finale))                                               |
+| Le serveur réordonne les segments au sein d'une génération                                         | Bloqué par le **AAD** par segment liant `(version, alg, file_id, generation, segment_index)`                                                                                                                        |
+| Le serveur échange les métadonnées VXFM entre fichiers                                             | Bloqué par le **AAD** liant `(version, alg, file_id, generation)` sur VXFM                                                                                                                                          |
+| Le serveur échange les blobs d'enveloppement de clé entre utilisateurs                             | Bloqué par le **AAD** liant sur `VXWM`, `VXRM`, `VXSK` (`user_id`) et `VXPS` (`user_id ‖ session_id`)                                                                                                               |
+| Le serveur tronque le téléchargement (supprime les segments de queue)                              | Détecté par le compte de segments `sc` dans `VXFM` avant la fin du téléchargement complet                                                                                                                           |
+| Le serveur effectue un retour arrière vers une génération plus ancienne                            | Bloqué par l'application monotone de `generation` ([§6.3](#63-compteur-de-génération-de-fichier-mutabilité)) et la vérification côté client                                                                         |
+| Le serveur tente de corréler des fichiers entre collections pour le même utilisateur               | Bloqué : `contentIdKey` est par collection, le même texte clair produit des `content_id` différents dans des collections différentes                                                                                |
+| Le serveur observe des valeurs `content_id` inchangées après une rotation de `collectionKey`       | Accepté : fuite de métadonnées mineure (ensemble de fichiers inchangé), négligeable par rapport à ce que le serveur sait déjà (nombre de fichiers, tailles de texte chiffré). Le contenu reste entièrement protégé. |
+| Le serveur met à niveau `permission` sur un enregistrement de partage pour accorder un accès élevé | Détecté : le destinataire **DOIT** vérifier que le `"p"` déchiffré correspond à la colonne `permission` visible par le serveur; non-correspondance -> partage rejeté                                                |
+| Le serveur intervertit les blobs VXPL entre les liens publics                                      | Bloqué par la liaison AAD sur `link_id`                                                                                                                                                                             |
+| Le serveur tente de forcer un lien protégé par mot de passe                                        | Bloqué : Argon2id 128 Mio ; le serveur ne voit jamais le mot de passe ni la `linkKey`                                                                                                                               |
+| Le serveur capture le fragment URL d'un lien sans mot de passe                                     | Impossible : les fragments URL ne sont jamais envoyés au serveur selon la spécification HTTP                                                                                                                        |
+| Un attaquant capture l'URL complète avant la révocation du lien                                    | Limitation inhérente au E2EE : identique à la révocation de partage ([§11.1](#111-révocation-de-partage))                                                                                                           |
 
 ## 7. Protocole OPAQUE
 
 ### 7.1 Implémentation
 
-VexaHub implémente **OPAQUE** ([RFC 9807][opaque_rfc]) dans des crates Rust, qui servent de source de vérité cryptographique pour tous les clients et le serveur. Les crates sont compilées vers :
+VexaHub implémente **OPAQUE** ([RFC 9807][opaque_rfc]) sur la base du crate Rust `opaque-ke`, empaqueté séparément pour chaque côté :
 
-- **WebAssembly** via `wasm-bindgen` pour la webapp **SvelteKit**.
-- Liaison Rust **native** pour l'application **desktop**.
-- Liaisons **NAPI-RS** pour le **backend**.
-- Liaisons **UniFFI** pour les futurs clients **Android (Kotlin)** et **iOS (Swift)**.
+- `@vexahub/opaque-client` : build **WebAssembly** utilisé par la webapp **SvelteKit**.
+- `@vexahub/opaque-server` : build utilisé par le **backend**.
 
-Une **unique** implémentation produit des sorties **identiques octet par octet** sur toutes les cibles, vérifiées par les vecteurs de test inter-cibles en [§14](#14-vecteurs-de-test).
+Les futurs clients (desktop, **Android (Kotlin)**, **iOS (Swift)**) sont prévus sur un crate Rust unifié ([§18](#18-questions-ouvertes-et-travaux-futurs)). L'identité des sorties octet par octet entre cibles est vérifiée par les vecteurs de test en [§14](#14-vecteurs-de-test).
 
 ### 7.2 Suite cryptographique (figée à la version 1 du protocole)
 
@@ -985,56 +1115,73 @@ Cela défend contre un serveur substitué, sous réserve que le canal de distrib
 
 ### 8.1 Inscription
 
-1. Client : l'utilisateur saisit son email et son mot de passe.
+1. Client : l'utilisateur saisit son email, son nom d'affichage et son mot de passe. L'email est canonicalisé (`NFC_normalize(lowercase(email))`) avant usage.
 2. Client : `opaque.client.startRegistration({ password })` -> `{ clientRegistrationState, registrationRequest }`.
-3. Client -> Serveur : `POST /auth/register/start { email, registrationRequest }`.
-4. Serveur : vérifie que l'email n'est pas déjà enregistré.
+3. Client -> Serveur : `POST /api/v1/auth/signup/start { email, registrationRequest }`.
+4. Serveur : rejette un email non canonique, et refuse un email déjà enregistré ou encore sous suppression après une suppression de compte ([§19.3](#193-suppression-de-compte)), avec la même forme d'erreur dans les deux cas.
 5. Serveur : `opaque.server.createRegistrationResponse({ serverSetup, userIdentifier: email, registrationRequest })` -> `{ registrationResponse }`.
-6. Serveur -> Client : `{ registrationResponse, continuationToken }`.
+6. Serveur : attribue le nouvel `userId` et conserve l'inscription en attente pendant 30 minutes (l'utilisateur note sa phrase de récupération entre-temps).
+7. Serveur -> Client : `{ registrationResponse, userId }`. `userId` sert d'AAD à `VXWM`, `VXRM` et `VXSK` ([§5](#5-formats-de-blob-binaires)) : le client en a besoin avant d'envelopper quoi que ce soit.
 
-    > Si le `continuationToken` expire (TTL de 60 secondes) avant que le client envoie `finishRegistration`, le serveur **DOIT** retourner HTTP 410 Gone. Le client **DOIT** redémarrer le flux d'inscription depuis l'**étape 1**.
-    >
-    > La fenêtre de **60 secondes** accommode le calcul **Argon2id** sur des cibles WASM bas de gamme (~3 secondes dans le pire cas) plus la latence réseau. Si la télémétrie montre que la fenêtre est trop serrée, elle peut être augmentée côté serveur **sans** montée de version du protocole.
+   > **Identifiants OPAQUE :** `client` = email canonique, `server` = `vexahub.com`, à l'inscription comme à la connexion. Changer l'un des deux est un changement de protocole.
 
-7. Client : `opaque.client.finishRegistration(...)` -> `{ registrationRecord, exportKey, serverStaticPublicKey }`.
-8. Client : vérifie que `serverStaticPublicKey` correspond à l'épingle codée en dur ; interrompt en cas de non-correspondance.
-9. Client : dérive `masterKeyWrapper` depuis `exportKey`.
-10. Client : génère `masterKey` (32 octets aléatoires depuis un CSPRNG).
-11. Client : génère une paire de clés X-Wing et une paire de clés de signature ML-DSA-65.
-12. Client : enveloppe `masterKey` avec `masterKeyWrapper` -> blob `VXWM`.
-13. Client : enveloppe les clés privées de partage avec `masterKey` -> blob `VXSK`.
-14. Client : génère une phrase de récupération BIP39 de 24 mots, dérive `recoveryKey`, enveloppe `masterKey` -> blob `VXRM` (voir [§12](#12-récupération-de-compte)).
-15. Client : demande à l'utilisateur de confirmer la phrase de récupération en ressaisissant des positions de mots spécifiques.
-16. Client -> Serveur : `POST /auth/register/finish { email, continuationToken, registrationRecord, vxwm, vxsk, vxrm, sharingPublicXwing, sharingPublicMldsa }`.
-17. Serveur : stocke la ligne utilisateur de manière atomique.
-18. Client : zéroïse `password`, `exportKey`, `masterKeyWrapper`, les clés privées en texte clair, la phrase de récupération, `recoveryKey`. Maintient `masterKey` et les clés privées de partage actifs dans le Crypto Worker.
+8. Client : `opaque.client.finishRegistration(...)` -> `{ registrationRecord, exportKey, serverStaticPublicKey }`.
+9. Client : vérifie que `serverStaticPublicKey` correspond à l'épingle codée en dur ; interrompt en cas de non-correspondance.
+10. Client : dérive `masterKeyWrapper` depuis `exportKey`.
+11. Client : génère `masterKey` (32 octets aléatoires depuis un CSPRNG).
+12. Client : génère une paire de clés X-Wing et une paire de clés de signature ML-DSA-65.
+13. Client : enveloppe `masterKey` avec `masterKeyWrapper` -> blob `VXWM` (AAD `userId`).
+14. Client : enveloppe les clés privées de partage avec `masterKey` -> blob `VXSK` (AAD `userId`).
+15. Client : génère une phrase de récupération BIP39 de 24 mots, dérive `recoveryKey`, enveloppe `masterKey` -> blob `VXRM` (voir [§12](#12-récupération-de-compte)).
+16. Client : crée la **collection racine** : génère son UUID v7 et sa `collectionKey`, enveloppe la clé -> `VXCK`, chiffre ses métadonnées -> `VXCM`.
+17. Client : demande à l'utilisateur de confirmer la phrase de récupération en ressaisissant des positions de mots spécifiques.
+18. Client -> Serveur : `POST /api/v1/auth/signup/finish { userId, email, displayName, registrationRecord, vxwm, vxsk, vxrm, sharingPublicXwing, sharingPublicSignature, rootCollectionId, rootVxck, rootVxcm }`.
+19. Serveur : stocke la ligne utilisateur et la collection racine de manière atomique, puis envoie un code de vérification par email. Le code est saisi sur `POST /api/v1/auth/signup/verify-email` ; la vérification en attente est liée à un cookie `HttpOnly`, jamais au corps JSON. La connexion reste bloquée tant que l'email n'est pas vérifié ([§8.2](#82-connexion)).
+20. Client : zéroïse `password`, `exportKey`, `masterKeyWrapper`, les clés privées en texte clair, la phrase de récupération, `recoveryKey`. Maintient `masterKey` et les clés privées de partage actifs dans le Crypto Worker.
 
 ### 8.2 Connexion
 
 1. Client : l'utilisateur saisit son email et son mot de passe.
 2. Client : `opaque.client.startLogin({ password })` -> `{ clientLoginState, startLoginRequest }`.
-3. Client -> Serveur : `POST /auth/login/start { email, startLoginRequest }`.
-4. Serveur : recherche l'utilisateur, charge `registrationRecord`.
+3. Client -> Serveur : `POST /api/v1/auth/signin/start { login, authRequest }` (`login` est l'email canonique).
+4. Serveur : recherche l'utilisateur, charge `registrationRecord`. Pour un email inconnu, il utilise la réponse OPAQUE factice déjà produite par `startLogin` : la réponse a la même forme que le compte existe ou non.
 5. Serveur : `opaque.server.startLogin(...)` -> `{ loginResponse, serverLoginState }`.
-6. Serveur : stocke `serverLoginState` dans Valkey sous un `continuationToken` aléatoire avec un TTL de 60 secondes.
+6. Serveur : stocke `serverLoginState` dans Valkey sous un `loginSessionId` aléatoire avec un TTL de **120 secondes**.
 
-    > Si le `continuationToken` expire (TTL de 60 secondes) avant que le client envoie `finishLogin`, le serveur **DOIT** retourner HTTP 410 Gone. Le client **DOIT** redémarrer le flux de connexion depuis l'**étape 1**.
-    >
-    > La fenêtre de **60 secondes** accommode le calcul **Argon2id** sur des cibles WASM bas de gamme (~3 secondes dans le pire cas) plus la latence réseau. Si la télémétrie montre que la fenêtre est trop serrée, elle peut être augmentée côté serveur **sans** montée de version du protocole.
+   > Si le `loginSessionId` expire avant que le client envoie `signin/finish`, le serveur retourne **HTTP 401**. Le client **DOIT** redémarrer le flux de connexion depuis l'**étape 1**.
+   >
+   > La fenêtre de **120 secondes** accommode le calcul **Argon2id** sur des cibles WASM bas de gamme plus la latence réseau. Elle peut être modifiée côté serveur **sans** montée de version du protocole.
 
-7. Serveur -> Client : `{ loginResponse, continuationToken, vxwm, vxsk }`.
+7. Serveur -> Client : `{ loginResponse, loginSessionId }`. Aucun blob de clé n'est renvoyé à cette étape.
 8. Client : `opaque.client.finishLogin(...)` -> `{ finishLoginRequest, sessionKey, exportKey, serverStaticPublicKey }`.
 9. Client : vérifie la clé épinglée.
-10. Client : dérive `masterKeyWrapper`, analyse `VXWM`, déchiffre `masterKey`.
+10. Client -> Serveur : `POST /api/v1/auth/signin/finish { loginSessionId, authFinish }`.
+11. Serveur : récupère et supprime immédiatement `serverLoginState` de Valkey.
+12. Serveur : `opaque.server.finishLogin(...)` -> `{ sessionKey }`. Le mot de passe est maintenant prouvé.
+13. Serveur : une des quatre issues suivantes :
 
-    > 10a. À chaque accès à un fichier, le client **DOIT** vérifier que le champ `generation` à l'intérieur du blob `VXFM` déchiffré correspond au `generation` stocké dans la réponse de métadonnées de fichier du serveur. Une **non-correspondance** indique que le serveur sert un blob de métadonnées périmé d'une génération précédente et le client **DOIT** rejeter le fichier.
+    - **Compte suspendu :** erreur, aucune session n'est créée. Ce n'est révélé qu'une fois le mot de passe prouvé.
+    - **Vérification d'email requise :** un code est envoyé par email, la vérification en attente est liée à un cookie `HttpOnly` et la réponse est `{ requiresEmailVerification: true }`. Pas encore de session.
+    - **2FA requise :** la réponse porte un `twoFactorToken` de courte durée ; le client termine avec `POST /api/v1/auth/2fa/verify` ([AUTHENTICATION §4.5](/fr/AUTHENTICATION.md#45-vérification-demail-et-authentification-à-deux-facteurs)). Pas encore de session.
+    - **Succès :** voir l'étape 14.
 
-11. Client : analyse `VXSK`, déchiffre les clés privées de partage avec `masterKey`.
-12. Client -> Serveur : `POST /auth/login/finish { continuationToken, finishLoginRequest }`.
-13. Serveur : récupère et supprime immédiatement `serverLoginState` de Valkey.
-14. Serveur : `opaque.server.finishLogin(...)` -> `{ sessionKey }`.
-15. Serveur : dérive un token de session HTTP depuis `sessionKey`, stocke une ligne de session hachée dans DB, retourne un cookie `HttpOnly; Secure; SameSite=Strict`.
-16. Client : zéroïse `password`, `exportKey`, `masterKeyWrapper`. `masterKey` et les clés privées de partage sont chargés dans le Crypto Web Worker.
+14. Serveur : dérive le jeton de session, stocke une ligne de session hachée et pose le cookie :
+
+    ```rs
+    token  = HKDF-SHA-512(ikm = sessionKey, salt = 32 octets nuls, info = "vexahub:v1:sessionToken", L = 32)
+    cookie = APPSESSID = "{session_id}.{base64url(token)}"
+    stored = SHA-256(utf8(base64url(token)))   // sessions.secret_hash
+    ```
+
+    Attributs du cookie : [§16.3](#163-cookies).
+
+15. Serveur -> Client : `vxwm` et `vxsk` sont renvoyés avec la réponse qui termine la connexion (`signin/finish`, ou `2fa/verify` quand la 2FA est requise), jamais avant que le mot de passe soit prouvé.
+16. Client : dérive `masterKeyWrapper`, analyse `VXWM`, déchiffre `masterKey`.
+
+    > 16a. À chaque accès à un fichier, le client **DOIT** vérifier que le champ `generation` à l'intérieur du blob `VXFM` déchiffré correspond au `generation` stocké dans la réponse de métadonnées de fichier du serveur. Une **non-correspondance** indique que le serveur sert un blob de métadonnées périmé d'une génération précédente et le client **DOIT** rejeter le fichier.
+
+17. Client : analyse `VXSK`, déchiffre les clés privées de partage avec `masterKey`.
+18. Client : zéroïse `password`, `exportKey`, `masterKeyWrapper`. `masterKey` et les clés privées de partage sont chargés dans le Crypto Web Worker.
 
 > **Note sur le changement de mot de passe :** `VXSK` est enveloppé sous `masterKey`, pas sous `masterKeyWrapper`. Comme les changements de mot de passe ré-enveloppent `masterKey` sous un nouveau `masterKeyWrapper` mais ne changent pas `masterKey` lui-même, le blob `VXSK` existant reste valide et n'a pas besoin d'être ré-enveloppé.
 >
@@ -1045,7 +1192,7 @@ Cela défend contre un serveur substitué, sous réserve que le canal de distrib
 ### 9.1 Sessions actives (par défaut)
 
 - `masterKey` et les clés de partage privées résident exclusivement à l'intérieur du Crypto Web Worker dédié, jamais dans l'heap JavaScript du thread principal.
-- La communication principale <--> Worker utilise un protocole strict de demande/réponse (`encryptFileSegment`, `decryptFileSegment`, `deriveCollectionKey`, `wrapForSharing`, `unwrapFromSharing`). Le Worker ne renvoie jamais de matériau de clé brut, seulement les résultats des opérations.
+- La communication principale <--> Worker utilise un protocole strict de demande/réponse (`encryptSegment`, `decryptSegment`, `unwrapCollectionKey`, `createShareInvitation`, `acceptShareInvitation`, etc.). Le Worker renvoie des résultats d'opérations, pas du matériau de clé, avec une exception : `localKey` est renvoyée au thread principal à la création d'une session persistante, pour être stockée en IndexedDB ([§9.2](#92-sessions-persistantes-se-souvenir-de-moi-opt-in)).
 - Délai d'inactivité : 30 minutes. À l'expiration, le Worker est terminé et tout le matériau de clé en mémoire est mis à zéro ; l'utilisateur doit se réauthentifier.
 - Cookie de session : durée de vie absolue de 24 heures, renouvelé en cas d'activité, `HttpOnly; Secure; SameSite=Strict`.
 - Fermer l'onglet détruit le Worker et la `masterKey`. Sans session persistante, la prochaine visite nécessite une nouvelle connexion.
@@ -1064,36 +1211,34 @@ Un mécanisme de reprise lié à l'appareil. **JAMAIS** activé par défaut.
 
 #### Activation
 
-1. Le client génère `localKey` (**32 bytes aléatoires** *via* **CSPRNG**).
-2. Le client chiffre `masterKey` avec `localKey` -> blob `VXPS` (voir [§5.6](#56-vxps---blob-de-session-persistante)).
-3. Le client stocke `localKey` dans l'**IndexedDB**.
-4. Le client envoie `POST /auth/persistent-session/create { vxps, deviceLabel }`.
+1. Le client génère `localKey` (**32 octets aléatoires** _via_ **CSPRNG**) et un `session_id` (UUID v7).
+2. Le client chiffre `masterKey` avec `localKey` -> blob `VXPS`, AAD `user_id ‖ session_id` (voir [§5.6](#56-vxps---blob-de-session-persistante)).
+3. Le client stocke `localKey` et `session_id` dans l'**IndexedDB**.
+4. Le client envoie `POST /api/v1/auth/persistent-session/create { sessionId, vxps, device }`.
 
-    > **Note de mise en oeuvre:** Si le client **crash** ou **perd** la connection entre l'**étape 3** *et* l'**étape 4**,
-    > `localKey` est laissé orpheline dans l'`IndexedDB` sans session côté serveur associée. Cela est sans conséquence :
-    > lors de la prochaine visite, l'absence de cookie `PS-AUTH` fait ignorer silencieusement le `localKey` orphané. Les implémentations **PEUT** effectuer une purge des entrées `localKey` orphelines au démarrage.
+   > **Note de mise en oeuvre:** Si le client **crash** ou **perd** la connection entre l'**étape 3** _et_ l'**étape 4**,
+   > `localKey` est laissé orpheline dans l'`IndexedDB` sans session côté serveur associée. Cela est sans conséquence :
+   > lors de la prochaine visite, l'absence de cookie `PS-AUTH` fait ignorer silencieusement le `localKey` orphané. Les implémentations **PEUT** effectuer une purge des entrées `localKey` orphelines au démarrage.
 
-5. Le serveur stocke `{ userId, vxps, cookieHash, deviceLabel, createdAt, expiresAt }` dans `persistent_sessions`.
+5. Le serveur stocke `{ id: sessionId, userId, vxps, secretHash, device, createdAt, lastVerifiedAt, expiresAt }` dans `persistent_sessions`, ou répond **409** si `sessionId` existe déjà.
 6. Server délivre un cookie `PS-AUTH` : `HttpOnly; Secure; SameSite=Strict; Max-Age=30d`.
 
 #### Reprise
 
 1. Le client détecte la cookie `PS-AUTH` **et** `localKey` dans l'`IndexedDB`.
 
-    >
-    > Si `PS-AUTH` est présent mais `localKey` est absent de l'`IndexedDB` (ex. **stockages effacés**), la session persistante **DOIT** être discrètement abandonnée et le formulaire de mot de passe affiché. La session côté serveur reste valide **jusqu'à son expiration** ou **jusqu'à révocation explicite**.
-    >
+   > Si `PS-AUTH` est présent mais `localKey` est absent de l'`IndexedDB` (ex. **stockages effacés**), la session persistante **DOIT** être discrètement abandonnée et le formulaire de mot de passe affiché. La session côté serveur reste valide **jusqu'à son expiration** ou **jusqu'à révocation explicite**.
 
 2. Le client propose une fenêtre "Reprendre en tant que `<user>`" au lieu d'un formulaire de mot de passe.
-3. `GET /auth/persistent-session/resume` (cookie auto-attachée).
+3. `GET /api/v1/auth/persistent-session/resume` (cookie auto-attachée).
 4. Le serveur valide le cookie, retourne `{ vxps, vxsk }`.
 5. Le client récupère `localKey` de l'`IndexedDB`, déchiffre `VXPS` -> charge `masterKey` dans le **Crypto Worker**.
-6. Le serveur délivre un **une nouvelle cookie de session active** en plus de la persistante.
+6. Le serveur délivre **un nouveau cookie de session active** en plus du persistant. Son jeton est aléatoire, puisqu'il n'y a pas de `sessionKey` OPAQUE à la reprise.
 
 #### Revocation
 
-- **Se déconnecter**: le client supprime `localKey` de l'`IndexedDB` + `DELETE /auth/persistent-session/{id}`.
-- **Déconnecter de partout**: le client vide l'`IndexedDB` + le serveur éfface toutes les `persistent_sessions` de l'utilisateur.
+- **Se déconnecter**: le client supprime `localKey` de l'`IndexedDB` + `DELETE /api/v1/account/persistent-sessions/{id}`.
+- **Déconnecter de partout**: le client vide l'`IndexedDB` + `DELETE /api/v1/account/persistent-sessions` (sans id) révoque toutes les `persistent_sessions` de l'utilisateur.
 - **Changement de mot de passe**: le serveur éfface toutes les `persistent_sessions`; le client doit réactiver "Se souvenir de moi".
 
 #### Compromis de sécurité (doit être divulgué lors de l'activation/opt-in)
@@ -1106,65 +1251,50 @@ Un mécanisme de reprise lié à l'appareil. **JAMAIS** activé par défaut.
 
 #### 9.2.1 Niveaux de zéro-connaissance
 
-| Mode                                        | Zéro-connaissance                   | Le serveur détient    |
-|---------------------------------------------|-------------------------------------|-----------------------|
-| Web (sans `Se souvenir de moi`)             | ✅ Oui                              | Rien                  |
-| Web (`Se souvenir de moi`)                  | ⚠️ Compromis documenté (opt-in)     | `vxps` (blob chiffré) |
-| Web (`Se souvenir de moi` + `WebAuthn` PRF) | ✅ Oui                              | Rien                  |
-| Bureau / Mobile                             | ✅ Oui                              | Rien                  |
+| Mode                                        | Zéro-connaissance               | Le serveur détient    |
+| ------------------------------------------- | ------------------------------- | --------------------- |
+| Web (sans `Se souvenir de moi`)             | ✅ Oui                          | Rien                  |
+| Web (`Se souvenir de moi`)                  | ⚠️ Compromis documenté (opt-in) | `vxps` (blob chiffré) |
+| Web (`Se souvenir de moi` + `WebAuthn` PRF) | ✅ Oui                          | `vxps` (blob chiffré) |
+| Bureau / Mobile                             | ✅ Oui                          | Rien                  |
 
 #### 9.2.2 WebAuthn PRF (futur, non trivial)
 
-Les navigateurs prenant en charge l'extension WebAuthn `prf` peuvent dériver un secret lié à l'appareil depuis une clé d'accès ou un authentificateur matériel qui ne quitte jamais l'appareil, remplaçant entièrement `localKey`.
-
-La prise en charge début 2026 est désormais large :
-
-- **Android** offre la prise en charge PRF la plus robuste : les clés d'accès stockées par le gestionnaire de mots de passe de la plateforme incluent PRF par défaut, fonctionnant sur Chrome, Edge et Samsung Internet.
-- **macOS 15** a activé PRF via iCloud Keychain sur Safari 18+, Chrome 132+ et Firefox 139 ; **iOS 18.4+** a corrigé des bugs antérieurs affectant les flux d'authentification entre appareils.
-- **Windows Hello** sur Windows 11 25H2 a acquis la capacité de retourner des valeurs PRF lors de l'authentification ; Firefox 148+ a été le premier navigateur à l'exposer pleinement, suivi de Chrome 147 pour la création de clés d'accès via `WEBAUTHN_API_VERSION_8`.
-- **Linux** : Aucun authentificateur de plateforme n'existe dans la pile navigateur standard. PRF ne fonctionne que via des clés matérielles itinérantes (YubiKey 5 Series et supérieur) en USB/NFC. Des solutions de contournement basées sur le TPM existent mais ne conviennent pas au grand public.
-- Les tests communautaires portant sur des centaines de cérémonies PRF (T1 2026) ont montré que les fournisseurs de clés d'accès synchronisées atteignent 100 % de succès PRF à la création, Windows Hello rejoignant ce groupe après la mise à jour de février 2026 (KB5077181).
-
-> La principale lacune restante concerne les authentificateurs itinérants (YubiKeys) sur iOS/macOS.
->
-> Apple a livré la prise en charge PRF dans iOS 18 et macOS 15, mais uniquement pour les clés d'accès de plateforme stockées dans iCloud Keychain. Les clés de sécurité matérielles connectées en USB ou NFC sur ces plateformes n'en bénéficient pas encore.
-
-L'implémentation nécessite une clé d'accès enregistrée par appareil. PRF est opt-in; les utilisateurs qui l'activent remplacent entièrement `localKey` plutôt que d'y revenir. Suivi au [§18](#18-questions-ouvertes-et-travaux-futurs).
+Les navigateurs prenant en charge l'extension WebAuthn `prf` peuvent dériver un secret lié à l'appareil depuis une clé d'accès ou un authentificateur matériel qui ne quitte jamais l'appareil, remplaçant entièrement `localKey`. La prise en charge est désormais large sur Android, sur les plateformes Apple (clés d'accès iCloud Keychain) et avec Windows Hello, et passe sous Linux par des clés matérielles itinérantes ; les clés itinérantes sur les plateformes Apple restent la principale lacune. L'implémentation nécessite une clé d'accès enregistrée par appareil. PRF est opt-in, et les utilisateurs qui l'activent remplacent entièrement `localKey` plutôt que d'y revenir. Le serveur détient toujours `vxps`. Suivi au [§18](#18-questions-ouvertes-et-travaux-futurs).
 
 #### 9.2.3 Mesures de protection obligatoires
 
 - Opt-in strict.
 - Page de paramètres listant chaque session persistante avec le label de l'appareil, l'heure de création, la dernière utilisation, et une révocation en un clic.
 - Le changement de mot de passe révoque toutes les sessions persistantes.
-- Délai d'inactivité côté serveur : `localKey` supprimée après 30 jours d'inactivité.
+- Expiration côté serveur : la session persistante expire côté serveur après 30 jours.
 - « Déconnecter partout » efface les sessions persistantes côté serveur et le blob IndexedDB local.
-- `localKey` n'est JAMAIS stockée côté client en clair au-delà de l'instant où elle est utilisée pour déchiffrer le blob `VXPS`.
 
 ### 9.3 Schémas de session
 
 ```sql
 CREATE TABLE sessions (
-    id           UUID PRIMARY KEY,
-    user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    cookie_hash  BYTEA NOT NULL,           -- SHA-256 de la valeur du cookie
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_used_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at   TIMESTAMPTZ NOT NULL,
-    revoked_at   TIMESTAMPTZ,
-    user_agent   TEXT,
-    ip_network   INET
+    id               TEXT PRIMARY KEY,         -- première partie de la valeur du cookie
+    user_id          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    secret_hash      BYTEA NOT NULL,           -- SHA-256 de la partie jeton du cookie
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_verified_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at       TIMESTAMPTZ NOT NULL,
+    revoked_at       TIMESTAMPTZ,
+    remote_ip        INET,                     -- adresse complète
+    user_agent       TEXT
 );
 
 CREATE TABLE persistent_sessions (
-    id           UUID PRIMARY KEY,
-    user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    vxps         BYTEA NOT NULL,
-    cookie_hash  BYTEA NOT NULL,
-    device_label TEXT NOT NULL,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_used_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at   TIMESTAMPTZ NOT NULL,
-    revoked_at   TIMESTAMPTZ
+    id               UUID PRIMARY KEY,         -- session_id, UUID v7 généré côté client
+    user_id          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    vxps             BYTEA NOT NULL,
+    secret_hash      BYTEA NOT NULL,
+    device           TEXT NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_verified_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at       TIMESTAMPTZ NOT NULL,
+    revoked_at       TIMESTAMPTZ
 );
 
 CREATE INDEX ON sessions (user_id) WHERE revoked_at IS NULL;
@@ -1186,11 +1316,11 @@ Les deux caches résident exclusivement en **mémoire du Worker**. Ils ne sont j
 
 #### Limites par défaut (sujettes à l'implémentation)
 
-| Plateforme       | Cache de collection | Cache de fichier | Justification                                                                     |
-|------------------|---------------------|------------------|-----------------------------------------------------------------------------------|
-| Web (navigateur) | 32                  | 128              | Mémoire d'onglet contrainte ; modèle de zéroïsation le moins fiable               |
-| Mobile (UniFFI)  | 64                  | 256              | Mémoire d'appareil contrainte ; zéroïsation native fiable                         |
-| Bureau           | 128                 | 512              | Ensembles de travail plus grands ; zéroïsation native ; moins de pression mémoire |
+| Plateforme       | Cache de collection | Cache de fichier | Justification                                                                                               |
+| ---------------- | ------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------- |
+| Web (navigateur) | 128                 | 512              | Même ensemble de travail que le bureau ; l'éviction en inactivité et la fin du Worker limitent l'exposition |
+| Mobile (UniFFI)  | 64                  | 256              | Mémoire d'appareil contrainte ; zéroïsation native fiable                                                   |
+| Bureau           | 128                 | 512              | Ensembles de travail plus grands ; zéroïsation native ; moins de pression mémoire                           |
 
 Les implémentations **PEUVENT** remplacer ces valeurs par défaut pour des raisons d'expérience utilisateur (ex. un client bureau avec des milliers de fichiers se retrouverait en situation de cache-miss permanent avec 128 collections). Les remplacements **DOIVENT** être documentés dans le modèle de sécurité de la plateforme. Les implémentations **NE DOIVENT PAS** rendre les caches non bornés. Les implémentations **NE DOIVENT PAS** augmenter les limites uniquement pour éviter d'implémenter la logique d'éviction.
 
@@ -1287,7 +1417,7 @@ Les clients web ne maintiennent aucun stockage local persistant de matériel de 
 - Les opérations nécessitant une récupération depuis le serveur échoueront avec une erreur réseau. Le client **DOIT** présenter cela à l'utilisateur comme une erreur hors ligne, non comme un échec de déchiffrement.
 - Le délai d'inactivité continue de s'exécuter. Si l'utilisateur est hors ligne pendant 30 minutes, le Worker est terminé et le matériel de clés est zéroïsé normalement. La réauthentification nécessite un accès réseau.
 
-Les clients web **NE DOIVENT PAS** tenter de mettre en cache le contenu de fichier en clair ni le matériel de clés désencapsulé dans IndexedDB, localStorage, ou tout autre stockage navigateur. Le seul stockage navigateur persistant utilisé par VexaHub est le blob `VXPS` ([§5.6](#56-vxps---blob-de-session-persistante)) pour les sessions persistantes et le cookie de session.
+Les clients web **NE DOIVENT PAS** tenter de mettre en cache le contenu de fichier en clair ni le matériel de clés désencapsulé dans IndexedDB, localStorage, ou tout autre stockage navigateur. IndexedDB contient `localKey` et l'id de session persistante ([§9.2](#92-sessions-persistantes-se-souvenir-de-moi-opt-in)), le cache de métadonnées chiffré (`VXMC`, [§5.12](#512-vxmc---entrée-du-cache-local-de-métadonnées)) et l'index de recherche. Jamais de contenu ni de clé en clair hors `localKey`.
 
 #### 9.6.2 Clients bureau
 
@@ -1357,7 +1487,7 @@ Un 401 reçu lors d'une opération normale (sans suite à une diffusion de déco
 
 ### 9.8 Service Worker de téléchargement
 
-Un Service Worker dédié (`downloadSW.ts`) est enregistré en même origine pour gérer les téléchargements de fichiers volumineux sous forme de flux. Il agit comme un proxy entre le Crypto Worker et le mécanisme de téléchargement natif du navigateur, permettant de télécharger des fichiers de taille arbitraire sans mettre l'intégralité du texte en clair en mémoire tampon.
+Un Service Worker dédié (`src/service-worker/`) est enregistré en même origine pour gérer les téléchargements de fichiers volumineux sous forme de flux. Il agit comme un proxy entre le Crypto Worker et le mécanisme de téléchargement natif du navigateur, permettant de télécharger des fichiers de taille arbitraire sans mettre l'intégralité du texte en clair en mémoire tampon.
 
 **Rôle :** recevoir les segments de texte en clair déchiffrés du Crypto Worker et les transmettre au navigateur sous forme d'un flux de réponse HTTP standard. Le Service Worker de téléchargement ne détient aucune clé cryptographique et n'observe jamais `masterKey`, `fileKey`, ni aucun autre matériel secret.
 
@@ -1369,7 +1499,7 @@ Un Service Worker dédié (`downloadSW.ts`) est enregistré en même origine pou
 4. Le thread principal crée un `MessageChannel` et transfère un port au Crypto Worker et l'autre au Service Worker de téléchargement, chacun via `postMessage` avec transfert de propriété `Transferable`. Cette étape d'amorçage **DOIT** passer par le thread principal : un Worker dédié ne peut pas envoyer un `MessagePort` directement à un Service Worker sans le thread principal comme intermédiaire. Après le transfert des ports, le thread principal ne détient plus de port et ne joue plus de rôle dans le chemin de données en clair. Le thread principal conserve son canal `postMessage` existant vers le Crypto Worker pour la livraison des blobs de texte chiffré (étape 5a) et pour recevoir le hash `BLAKE3` final (étape 7) ; seul le texte en clair est maintenu hors du tas du thread principal.
 5. Pour chaque segment, le Crypto Worker :
    a. Signale au thread principal de fournir le blob de texte chiffré `VXFC` pour le segment. Le thread principal le récupère depuis le serveur via une requête d'intervalle d'octets sur le chemin de stockage du fichier (voir [§6.1](#61-segmentation)) et retransmet le texte chiffré au Worker. Le thread principal ne voit jamais le texte en clair.
-   b. Le déchiffre via `decryptFileSegment`.
+   b. Le déchiffre via `downloadSegment`.
    c. Met à jour l'état de son hacheur `BLAKE3` incrémental avec les octets en clair (voir [§9.8.5](#985-vérification-dintégrité-durant-le-flux)).
    d. Transfère l'`ArrayBuffer` en clair au Service Worker via le port `MessageChannel` en utilisant le transfert de propriété `Transferable`.
 6. Le Service Worker enfile chaque `ArrayBuffer` reçu dans son contrôleur `ReadableStream` et le transmet au navigateur. Chaque buffer est éligible au GC dès que le navigateur le consomme depuis le flux.
@@ -1409,7 +1539,7 @@ Le hash finalisé est envoyé au thread principal uniquement après le transfert
 
 #### 9.8.6 Interaction avec l'éviction en inactivité durant les téléchargements
 
-Le minuteur d'éviction en inactivité du Crypto Worker (voir [§9.4.3](#943-éviction-du-cache)) se déclenche après **60 secondes d'inactivité du cache**. Chaque appel à `decryptFileSegment` touchant une clé mise en cache constitue une activité du cache et réinitialise le minuteur. En cas de cache-miss, le minuteur n'est pas réinitialisé tant que la clé n'est pas entièrement désencapsulée et stockée.
+Le minuteur d'éviction en inactivité du Crypto Worker (voir [§9.4.3](#943-éviction-du-cache)) se déclenche après **60 secondes d'inactivité du cache**. Chaque appel à `downloadSegment` touchant une clé mise en cache constitue une activité du cache et réinitialise le minuteur. En cas de cache-miss, le minuteur n'est pas réinitialisé tant que la clé n'est pas entièrement désencapsulée et stockée.
 
 Il y a une fenêtre au début d'un cache-miss où le minuteur continue de s'exécuter. Sur des connexions réseau lentes, l'intervalle entre segments peut également dépasser 60 secondes, amenant le Worker à évincer `collectionKey` et `fileKey` en cours de téléchargement et à faire échouer l'appel de déchiffrement suivant.
 
@@ -1425,29 +1555,41 @@ Pour éviter cela, le Crypto Worker **DOIT** suspendre l'éviction en inactivit�
 
 ### 10.1 Table des utilisateurs
 
+Seules les colonnes utiles à cette spécification sont listées. La table réelle contient aussi des colonnes de profil, de facturation et de modération.
+
 ```sql
 CREATE TABLE users (
-    id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email                    CITEXT UNIQUE NOT NULL,
-    locale                   TEXT NOT NULL DEFAULT 'en',
+    id                       UUID PRIMARY KEY,
+    email                    VARCHAR(319) NOT NULL,  -- email canonique, identifiant client OPAQUE
+    display_name             VARCHAR(50) NOT NULL,
+    email_verified           BOOLEAN NOT NULL DEFAULT FALSE,
+    locale                   VARCHAR(10) NOT NULL DEFAULT 'en',
     opaque_protocol_version  SMALLINT NOT NULL DEFAULT 1,
     registration_record      BYTEA NOT NULL,
     vxwm                     BYTEA NOT NULL,
     vxrm                     BYTEA NOT NULL,
     vxsk                     BYTEA NOT NULL,
     sharing_public_xwing     BYTEA NOT NULL,   -- 1216 octets, clé d'encapsulation X-Wing
-    sharing_public_mldsa     BYTEA NOT NULL,   -- ~1952 octets, clé de vérification ML-DSA-65
+    sharing_public_signature BYTEA NOT NULL,   -- 1952 octets, clé de vérification ML-DSA-65
+    two_factor_secret        TEXT,             -- secret TOTP, NULL = 2FA désactivée
+    root_collection_id       UUID REFERENCES collections(id),
+    audit_log_enabled        BOOLEAN NOT NULL DEFAULT TRUE,
+    version_retention_days   INTEGER DEFAULT 7, -- voir §19.5
     reset_generation         INTEGER NOT NULL DEFAULT 0,
     created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at               TIMESTAMPTZ,      -- compte anonymisé, voir §19.3
+    purged_at                TIMESTAMPTZ       -- données du compte purgées, voir §19.3
 );
+
+CREATE UNIQUE INDEX email_unique_idx ON users (lower(email));
 ```
 
 ### 10.2 Tables des fichiers et collections
 
 ```sql
 CREATE TABLE collections (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY DEFAULT uuidv7(),
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     parent_id       UUID REFERENCES collections(id) ON DELETE RESTRICT,
     vxcm            BYTEA NOT NULL,
@@ -1462,7 +1604,7 @@ CREATE INDEX ON collections (parent_id) WHERE trashed_at IS NULL;
 CREATE INDEX ON collections (user_id) WHERE trashed_at IS NOT NULL;
 
 CREATE TABLE files (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                      UUID PRIMARY KEY DEFAULT uuidv7(),
     user_id                 UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     collection_id           UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
     vxfm                    BYTEA,
@@ -1470,6 +1612,7 @@ CREATE TABLE files (
     storage_bytes           BIGINT,
     original_bytes          BIGINT,
     generation              INTEGER NOT NULL DEFAULT 0,
+    max_generation          INTEGER NOT NULL DEFAULT 0,
     content_id              BYTEA,
     upload_length           BIGINT,
     crypto_version          SMALLINT NOT NULL DEFAULT 1,
@@ -1486,13 +1629,34 @@ CREATE INDEX ON files (collection_id) WHERE pending_key_rotation = TRUE;
 CREATE INDEX ON files (user_id) WHERE trashed_at IS NOT NULL;
 ```
 
-> **Note sur `trashed_at` :** la **v8** introduit `trashed_at` sur `files` et `collections` pour une expérience de corbeille symétrique. Voir [§19.1](#191-suppression-de-fichier) (**corbeille de fichiers**) et [§19.2](#192-suppression-de-collection) (**corbeille de collections**).
+`trashed_at` existe sur `files` et `collections` pour une expérience de corbeille symétrique. Voir [§19.1](#191-suppression-de-fichier) (**corbeille de fichiers**) et [§19.2](#192-suppression-de-collection) (**corbeille de collections**).
+
+```sql
+CREATE TABLE file_versions (
+    id              UUID PRIMARY KEY DEFAULT uuidv7(),
+    file_id         UUID NOT NULL REFERENCES files(id) ON DELETE RESTRICT,
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    generation      INTEGER NOT NULL,         -- génération du texte chiffré archivé
+    storage_path    TEXT NOT NULL,
+    storage_bytes   BIGINT NOT NULL,
+    original_bytes  BIGINT,
+    vxfm            BYTEA NOT NULL,           -- VXFM de cette génération
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at      TIMESTAMPTZ               -- NULL = conservée sans limite
+);
+
+CREATE UNIQUE INDEX file_versions_file_gen ON file_versions (file_id, generation);
+CREATE INDEX file_versions_expiry ON file_versions (expires_at) WHERE expires_at IS NOT NULL;
+CREATE INDEX file_versions_user ON file_versions (user_id);
+```
+
+`file_versions` contient les générations précédentes d'un fichier. Voir [§19.5](#195-versions-de-fichiers).
 
 ### 10.3 Tables des clés de fichiers et collections
 
 ```sql
 CREATE TABLE collection_keys (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY DEFAULT uuidv7(),
     collection_id   UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     vxck            BYTEA NOT NULL,
@@ -1509,7 +1673,7 @@ CREATE INDEX collection_keys_owner_active
     ON collection_keys (collection_id, user_id, key_generation DESC);
 
 CREATE TABLE file_keys (
-    id                          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                          UUID PRIMARY KEY DEFAULT uuidv7(),
     file_id                     UUID NOT NULL REFERENCES files(id) ON DELETE RESTRICT,
     collection_id               UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
     vxfk                        BYTEA NOT NULL,
@@ -1548,17 +1712,34 @@ Flux d'envoi :
 2. L'expéditeur encapsule : `(ctXwing, sharedSecret) = X-Wing.Encaps(recipientPubXwing)`.
 3. L'expéditeur dérive :
 
-    ```rs
-            shareWrapKey = HKDF-SHA-512(
-            ikm  = sharedSecret,
-            salt = 32 octets aléatoires (stockés dans l'enregistrement de partage),
-            info = "vexahub:v1:shareWrap:" || share_uuid,
-            L    = 32
-        ).
-    ```
+   ```rs
+           shareWrapKey = HKDF-SHA-512(
+           ikm  = sharedSecret,
+           salt = 32 octets aléatoires (stockés dans l'enregistrement de partage),
+           info = "vexahub:v1:shareWrap:" || share_uuid,
+           L    = 32
+       ).
+   ```
 
 4. L'expéditeur encapsule la clé cible (collection ou fichier) avec `shareWrapKey` via **XChaCha20-Poly1305** -> blob `VXSH`.
-5. L'expéditeur construit la **charge utile signée** : encodage CBOR canonique de `{ share_uuid, sender_id, recipient_id, ctXwing, vxsh, permission, timestamp }`.
+5. L'expéditeur construit la **charge utile signée** : une map CBOR canonique d'exactement 9 clés, dans l'ordre canonique :
+
+   ```rs
+   {
+     "p":    uint,            // masque de permission (§11.6)
+     "v":    uint,            // version du protocole (1)
+     "ct":   bstr .size 1120, // texte chiffré X-Wing (ctXwing)
+     "sh":   bstr,            // blob VXSH
+     "ts":   uint,            // secondes unix, posé par l'expéditeur (§11.2)
+     "rcp":  bstr .size 16,   // recipient_id
+     "sid":  bstr .size 16,   // share_uuid
+     "snd":  bstr .size 16,   // sender_id
+     "salt": bstr .size 32,   // sel HKDF de shareWrapKey
+   }
+   ```
+
+   Ordre : clés d'un caractère (`p` < `v`), puis de deux (`ct` < `sh` < `ts`), puis de trois (`rcp` < `sid` < `snd`), puis `salt`. Un décodeur **DOIT** rejeter une map avec un autre nombre de clés, un autre ordre ou toute autre clé.
+
 6. L'expéditeur signe la charge utile avec sa clé de signature **ML-DSA-65** en utilisant la chaîne de contexte `"vexahub:v1:share"` -> `signature`. Les signatures sont **déterministes** (aucun aléa par signature).
 7. L'expéditeur envoie `{ signedPayload, signature }` au serveur.
 
@@ -1583,24 +1764,53 @@ La signature ne fait pas partie du blob `VXSH`. Elle est stockée à ses côtés
 
 ```sql
 CREATE TABLE shares (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY DEFAULT uuidv7(),
     sender_id       UUID NOT NULL REFERENCES users(id),
     recipient_id    UUID NOT NULL REFERENCES users(id),
+    collection_id   UUID REFERENCES collections(id) ON DELETE RESTRICT,
+    file_id         UUID REFERENCES files(id) ON DELETE RESTRICT,
     ct_xwing        BYTEA NOT NULL,         -- texte chiffré X-Wing (1120 octets)
     vxsh            BYTEA NOT NULL,         -- blob de clé encapsulée chiffré
     hkdf_salt       BYTEA NOT NULL,         -- 32 octets, aléatoire, pour la dérivation de shareWrapKey
     sig_algorithm   SMALLINT NOT NULL,      -- 0x10 = ML-DSA-65
     signature       BYTEA NOT NULL,         -- signature ML-DSA-65 sur la charge utile canonique
     signed_payload  BYTEA NOT NULL,         -- CBOR canonique des champs signés
-    permission      INTEGER NOT NULL,
-    revoked_at      TIMESTAMPTZ,
+    permission      INTEGER NOT NULL DEFAULT 1,
+    pending_rekey   BOOLEAN NOT NULL DEFAULT FALSE, -- le destinataire doit recevoir une clé renouvelée
+    accepted_at     TIMESTAMPTZ,            -- NULL = invitation en attente
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT shares_permission_check CHECK (permission > 0 AND permission <= 7)
+    revoked_at      TIMESTAMPTZ,
+    CONSTRAINT shares_permission_check CHECK (permission > 0 AND permission <= 7),
+    CONSTRAINT shares_target_check CHECK (
+        (file_id IS NOT NULL AND collection_id IS NULL)
+        OR (file_id IS NULL AND collection_id IS NOT NULL)
+    )
 );
 
-CREATE INDEX ON shares (recipient_id) WHERE revoked_at IS NULL;
-CREATE INDEX ON shares (sender_id) WHERE revoked_at IS NULL;
+CREATE UNIQUE INDEX shares_unique_collection_active
+    ON shares (sender_id, recipient_id, collection_id)
+    WHERE revoked_at IS NULL AND collection_id IS NOT NULL;
+CREATE UNIQUE INDEX shares_unique_file_active
+    ON shares (sender_id, recipient_id, file_id)
+    WHERE revoked_at IS NULL AND file_id IS NOT NULL;
+CREATE INDEX shares_recipient_active ON shares (recipient_id) WHERE revoked_at IS NULL;
+CREATE INDEX shares_sender_active ON shares (sender_id) WHERE revoked_at IS NULL;
+
+-- Clés de collection mises à disposition d'un destinataire, par génération de clé
+CREATE TABLE share_collection_keys (
+    id              UUID PRIMARY KEY DEFAULT uuidv7(),
+    share_id        UUID NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
+    collection_id   UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
+    vxck            BYTEA NOT NULL,         -- encapsulée avec shareWrapKey, pas masterKey
+    key_generation  INTEGER NOT NULL DEFAULT 0,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX share_collection_keys_active
+    ON share_collection_keys (share_id, collection_id, key_generation);
 ```
+
+**Acceptation et refus :** un partage commence comme invitation en attente (`accepted_at IS NULL`). Le destinataire le vérifie et le désencapsule (flux de réception ci-dessus), puis appelle `POST /api/v1/shares/{id}/accept`, qui pose `accepted_at`. Refuser appelle `POST /api/v1/shares/{id}/deny`, qui révoque le partage. Les invitations en attente sont listées par `GET /api/v1/shares/incoming`.
 
 ### 11.1 Révocation de partage
 
@@ -1608,7 +1818,7 @@ La révocation supprime l'accès d'un destinataire et effectue une rotation des 
 
 **Révocation de partage de collection :**
 
-1. L'expéditeur appelle `DELETE /api/v1/shares/{share_id}`.
+1. L'expéditeur appelle `DELETE /api/v1/shares/{share_id}`, puis renouvelle les clés avec `POST /api/v1/shares/collections/{collection_id}/rotate`.
 
 2. Le serveur définit `revoked_at = now()`. Le destinataire révoqué **obtient immédiatement un 403**.
 
@@ -1626,7 +1836,7 @@ La révocation supprime l'accès d'un destinataire et effectue une rotation des 
 
 **Révocation de partage de fichier :**
 
-1. L'expéditeur appelle `DELETE /api/v1/shares/{share_id}`.
+1. L'expéditeur appelle `DELETE /api/v1/shares/{share_id}`, puis renouvelle les clés avec `POST /api/v1/shares/files/{file_id}/rotate`.
 2. Le serveur définit `revoked_at = now()`. Le **destinataire révoqué obtient immédiatement un 403**.
 3. L'expéditeur génère une nouvelle `fileKey` via **CSPRNG**, incrémente `key_generation`.
 4. L'expéditeur réencapsule la nouvelle `fileKey` avec `fileKeyWrapKey` -> nouveau blob `VXFK`.
@@ -1636,17 +1846,17 @@ La révocation supprime l'accès d'un destinataire et effectue une rotation des 
 
 **Garanties et limitations :**
 
-| Propriété                                                                                                        | Statut                                                                                                                             |
-|------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------|
-| L'utilisateur révoqué ne peut pas accéder au contenu via l'API                                                   | ✅ Immédiat, appliqué par le serveur                                                                                               |
-| Le nouveau contenu après rotation utilise des clés fraîches                                                      | ✅ Au niveau collection et fichier                                                                                                 |
-| Les métadonnées sont rechiffrées immédiatement                                                                   | ✅ Petits blobs, synchrone                                                                                                         |
-| Le contenu des fichiers est rechiffré par défaut                                                                 | ❌ Désactivé par défaut, opt-in via ([§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation))                         |
-| Le contenu des fichiers est rechiffré lors de l'opt-in                                                           | ✅ Progressif, pausable par l'utilisateur, avec interface de progression                                                           |
-| Révocation au niveau fichier sans affecter les autres fichiers de la collection                                  | ✅ Rotation indépendante de fileKey                                                                                                |
-| L'utilisateur révoqué ne peut pas déchiffrer le contenu déjà téléchargé                                          | ❌ Limitation inhérente à l'E2EE                                                                                                   |
-| L'utilisateur révoqué ne peut pas déchiffrer une exfiltration en stockage froid s'il a conservé d'anciennes clés | ⚠️ Uniquement si le rechiffrement est activé et terminé                                                                            |
-| Le compteur de `generation` du fichier est préservé lors de la rotation de clé                                   | ✅ La génération est un compteur de mutation, pas un compteur de rotation                                                          |
+| Propriété                                                                                                        | Statut                                                                                                     |
+| ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| L'utilisateur révoqué ne peut pas accéder au contenu via l'API                                                   | ✅ Immédiat, appliqué par le serveur                                                                       |
+| Le nouveau contenu après rotation utilise des clés fraîches                                                      | ✅ Au niveau collection et fichier                                                                         |
+| Les métadonnées sont rechiffrées immédiatement                                                                   | ✅ Petits blobs, synchrone                                                                                 |
+| Le contenu des fichiers est rechiffré par défaut                                                                 | ❌ Désactivé par défaut, opt-in via ([§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation)) |
+| Le contenu des fichiers est rechiffré lors de l'opt-in                                                           | ✅ Progressif, pausable par l'utilisateur, avec interface de progression                                   |
+| Révocation au niveau fichier sans affecter les autres fichiers de la collection                                  | ✅ Rotation indépendante de fileKey                                                                        |
+| L'utilisateur révoqué ne peut pas déchiffrer le contenu déjà téléchargé                                          | ❌ Limitation inhérente à l'E2EE                                                                           |
+| L'utilisateur révoqué ne peut pas déchiffrer une exfiltration en stockage froid s'il a conservé d'anciennes clés | ⚠️ Uniquement si le rechiffrement est activé et terminé                                                    |
+| Le compteur de `generation` du fichier est préservé lors de la rotation de clé                                   | ✅ La génération est un compteur de mutation, pas un compteur de rotation                                  |
 
 **Mesures de protection obligatoires :**
 
@@ -1656,23 +1866,25 @@ La révocation supprime l'accès d'un destinataire et effectue une rotation des 
 
 #### 11.1.1 Rechiffrement optionnel du contenu après révocation
 
+> Prévu, non implémenté dans la version 1 du protocole
+
 Le comportement par défaut lors d'une révocation est **la rotation des clés uniquement** : les valeurs de `collectionKey` et de `fileKey` par fichier sont renouvelées, les blobs de métadonnées sont rechiffrés immédiatement, mais le contenu des fichiers reste chiffré sous l'ancienne `fileKey`. Le propriétaire conserve les anciennes lignes `VXFK` pour pouvoir lire le contenu existant ; les destinataires révoqués perdent l'accès au niveau de l'**API**.
 
 Cela protège contre une future compromission du serveur, à la **condition forte** que le destinataire révoqué n'ait pas conservé une copie locale de l'ancienne clé. Les destinataires ayant gardé des copies locales de fichiers ne peuvent pas voir ces copies invalidées rétroactivement ; il s'agit d'une limitation inhérente à l'**E2EE**.
 
 Le propriétaire **PEUT** opter pour un rechiffrement complet du contenu via un paramètre :
 
-> **Rechiffrer les fichiers après révocation d'un partage** *(désactivé par défaut)*
+> **Rechiffrer les fichiers après révocation d'un partage** _(désactivé par défaut)_
 >
-> Lorsque vous révoquez un accès, rechiffrez également le contenu des fichiers sous de nouvelles clés. Cela signifie qu'une *éventuelle* compromission de nos serveurs ne pourrait pas exposer d'anciens contenus aux personnes avec qui vous avez précédemment partagé, même si elles ont conservé une copie de leur ancienne clé de chiffrement. Cela nécessite de re-téléverser les fichiers concernés et peut prendre du temps pour les grandes collections.
+> Lorsque vous révoquez un accès, rechiffrez également le contenu des fichiers sous de nouvelles clés. Cela signifie qu'une _éventuelle_ compromission de nos serveurs ne pourrait pas exposer d'anciens contenus aux personnes avec qui vous avez précédemment partagé, même si elles ont conservé une copie de leur ancienne clé de chiffrement. Cela nécessite de re-téléverser les fichiers concernés et peut prendre du temps pour les grandes collections.
 
 #### Points de déclenchement
 
 Le rechiffrement opt-in peut être activé de deux manières :
 
-1. **Paramètre ACTIVÉ (global au compte, persistant) :** dans les paramètres utilisateur sous *Sécurité -> Rechiffrer les fichiers après révocation d'un partage*. Lorsqu'il est activé, chaque future révocation planifie automatiquement le rechiffrement pour la collection concernée. Désactivé par défaut.
+1. **Paramètre ACTIVÉ (global au compte, persistant) :** dans les paramètres utilisateur sous _Sécurité -> Rechiffrer les fichiers après révocation d'un partage_. Lorsqu'il est activé, chaque future révocation planifie automatiquement le rechiffrement pour la collection concernée. Désactivé par défaut.
 
-2. **Déclenchement manuel par collection (ponctuel) :** indépendamment du paramètre, la notification par collection *« N fichiers utilisent d'anciennes clés de chiffrement. [Rechiffrer maintenant] »* déclenche le rechiffrement pour cette collection uniquement. Cela fonctionne que le paramètre global soit activé ou non.
+2. **Déclenchement manuel par collection (ponctuel) :** indépendamment du paramètre, la notification par collection _« N fichiers utilisent d'anciennes clés de chiffrement. [Rechiffrer maintenant] »_ déclenche le rechiffrement pour cette collection uniquement. Cela fonctionne que le paramètre global soit activé ou non.
 
 Le paramètre contrôle le comportement automatique ; le déclenchement manuel est toujours disponible.
 
@@ -1696,7 +1908,7 @@ Cela fixe des attentes correctes : l'utilisateur comprend qu'un fichier volumine
 
 - Les clés sont renouvelées, les métadonnées rechiffrées, le contenu reste sous les anciennes clés.
 - `pending_key_rotation = TRUE` est défini sur les fichiers concernés mais aucun travail côté client n'est déclenché.
-- Le propriétaire voit une notification par collection : *« N fichiers utilisent d'anciennes clés de chiffrement. »* avec une action *« Rechiffrer maintenant »* intégrée.
+- Le propriétaire voit une notification par collection : _« N fichiers utilisent d'anciennes clés de chiffrement. »_ avec une action _« Rechiffrer maintenant »_ intégrée.
 - L'indicateur reste jusqu'à ce qu'il soit effacé explicitement (par fichier ou par collection entière), ou jusqu'à ce que le propriétaire active le paramètre.
 
 #### Comportement lorsque le paramètre est ACTIVÉ
@@ -1721,11 +1933,7 @@ Soit `M` la `key_generation` actuelle (la plus haute) dans `file_keys` pour ce `
 
 Pour éviter que les clients n'aient à inspecter le texte chiffré pour découvrir `R`, la table `files` DEVRAIT inclure une colonne `content_key_generation` suivant la génération de clé sous laquelle le texte chiffré actuel a été chiffré :
 
-> La colonne `content_key_generation` est définie dans le schéma canonique au [§10.2](#102-tables-des-fichiers-et-collections). Pour les déploiements existants migrant depuis la v7, appliquer :
->
-> ```sql
-> ALTER TABLE files ADD COLUMN content_key_generation INTEGER NOT NULL DEFAULT 0;
-> ```
+> La colonne `content_key_generation` est définie dans le schéma canonique au [§10.2](#102-tables-des-fichiers-et-collections).
 
 À chaque validation de téléversement réussie, le serveur définit `content_key_generation = key_generation_used_for_upload`. Lors d'une rotation, cette colonne n'est pas modifiée (la rotation ne rechiffre pas le contenu). Le client lit `content_key_generation` pour savoir quel `R` récupérer dans `file_keys`.
 
@@ -1744,23 +1952,19 @@ Les lignes des destinataires révoqués dans `collection_keys` sont supprimées 
 
 Plusieurs révocations entre des exécutions de rechiffrement ne nécessitent pas d'état supplémentaire. Le client rechiffre toujours vers la `key_generation = M` actuelle, quel que soit le nombre de rotations survenues entre la définition de l'indicateur et l'exécution du rechiffrement. Les générations intermédiaires sont ignorées. Le booléen signale seulement « ce fichier n'est pas encore à la dernière génération » ; la génération source réelle `R` est lue depuis `files.content_key_generation` et la cible `M` est lue depuis la dernière ligne `file_keys`.
 
-### 11.2 Validation de l'horodatage du partage
+### 11.2 Horodatage du partage
 
-Le champ `timestamp` dans la charge utile de partage signée est un epoch Unix en secondes (UTC), défini par l'expéditeur au moment de la signature.
+Le champ `ts` dans la charge utile de partage signée est un epoch Unix en secondes (UTC), défini par l'expéditeur au moment de la signature.
 
-**Application côté serveur :**
+`ts` est un champ signé **informatif**. Le client du destinataire l'affiche comme la date de création de l'invitation par l'expéditeur. Aucun contrôle obligatoire ne le compare à une autre horloge.
 
-- Le serveur **DOIT** rejeter les téléversements de partage où `timestamp` est antérieur ou postérieur de plus de **5 minutes** à l'heure du serveur. Cela empêche la réutilisation d'anciennes charges utiles signées et tient compte d'un décalage horaire raisonnable.
-- Le serveur enregistre `created_at` indépendamment. Le `timestamp` signé et le `created_at` du serveur sont tous deux disponibles pour le destinataire.
+**Pourquoi il n'y a pas de contrôle obligatoire :**
 
-**Application côté destinataire :**
+- Comparer `ts` au `created_at` du serveur ne protège pas contre le serveur : `created_at` vient du serveur lui-même, donc un serveur malveillant qui rejoue une ancienne charge utile signée peut aussi choisir le `created_at` qu'il renvoie.
+- Le rejeu d'une charge utile signée est déjà borné par la signature : elle couvre `sid`, `snd` et `rcp`, donc une invitation rejouée ne peut atteindre que le destinataire pour lequel elle a été signée, pour la ressource et la permission choisies par l'expéditeur.
+- Un contrôle contre l'heure du serveur à l'envoi ne ferait que rejeter les expéditeurs dont l'horloge est fausse, sans ajouter de protection.
 
-- Le destinataire **DOIT** rejeter les enregistrements de partage où le `timestamp` signé diffère du `created_at` du serveur de plus de **5 minutes**. Cela détecte un serveur malveillant conservant une charge utile signée valide et la rejouant ultérieurement.
-
-**Décalage horaire :**
-
-- La fenêtre de 5 minutes accommode la dérive NTP typique sur les appareils grand public. Des fenêtres plus strictes risquent de provoquer des rejets erronés sur les clients mobiles avec une synchronisation temporelle médiocre.
-- La fenêtre s'applique symétriquement : `|timestamp - server_time| <= 300` secondes au téléversement, `|timestamp - created_at| <= 300` secondes à la vérification.
+Le serveur enregistre `created_at` indépendamment. Les deux valeurs sont disponibles pour le destinataire.
 
 ### 11.3 Rotation de la paire de clés de partage
 
@@ -1768,11 +1972,13 @@ Un utilisateur authentifié **PEUT** effectuer une rotation de ses paires de cl�
 
 1. Le client génère une nouvelle paire de clés **X-Wing** et une nouvelle paire de clés **ML-DSA-65**.
 2. Le client encapsule les nouvelles clés privées sous `masterKey` -> nouveau blob `VXSK`.
-3. Client -> Serveur : `POST /auth/sharing-keys/rotate { vxsk, sharingPublicXwing, sharingPublicMldsa }`.
-4. Le serveur remplace atomiquement `vxsk`, `sharing_public_xwing`, `sharing_public_mldsa`, et définit `revoked_at = now()` sur **tous les partages** sortants en attente pour cet utilisateur.
+3. Client -> Serveur : `POST /api/v1/account/sharing-keys/rotate { vxsk, sharingPublicXwing, sharingPublicSignature }`.
+4. Le serveur remplace atomiquement `vxsk`, `sharing_public_xwing`, `sharing_public_signature`, et définit `revoked_at = now()` sur **tous les partages** sortants en attente pour cet utilisateur.
 5. Le client **repartage** toutes les collections ou fichiers avec les destinataires concernés en utilisant la nouvelle clé de signature.
 
 > Les partages entrants déjà acceptés et stockés par les destinataires ne sont pas affectés. Le destinataire a désencapsulé et stocké la clé localement au moment de l'acceptation.
+>
+> **Journal d'audit :** les entrées du journal d'audit scellé sont chiffrées pour la clé publique X-Wing ([Addenda §20.9](/fr/CRYPTO_ADDENDUM.md#209-entrées-scellées)). Après une rotation, les entrées écrites avant elle deviennent indéchiffrables. Avant de lancer une rotation, le client **DOIT** déchiffrer les entrées existantes et proposer un export à l'utilisateur.
 >
 > Un changement de mot de passe ne **déclenche PAS** automatiquement une rotation de la paire de clés de partage.
 >
@@ -1789,24 +1995,24 @@ Le blob `VXFK` reste encapsulé sous la `collectionKey` source et serait inacces
 1. Le client récupère le blob `VXFK` source, désencapsule `fileKey` en utilisant `fileKeyWrapKey` dérivée de la `collectionKey` source.
 2. Le client dérive `fileKeyWrapKey` depuis la `collectionKey` de destination :
 
-    ```rust
-    fileKeyWrapKey = HKDF-SHA-512(
-        ikm  = destinationCollectionKey,
-        salt = 32 octets zéro,
-        info = "vexahub:v1:fileKeyWrap:" || file_uuid,
-        L    = 32
-    )
-    ```
+   ```rust
+   fileKeyWrapKey = HKDF-SHA-512(
+       ikm  = destinationCollectionKey,
+       salt = 32 octets zéro,
+       info = "vexahub:v1:fileKeyWrap:" || file_uuid,
+       L    = 32
+   )
+   ```
 
 3. Le client encapsule la même `fileKey` sous le nouveau `fileKeyWrapKey` -> nouveau blob `VXFK`.
-4. Client -> Serveur : `POST /api/v1/files/{file_id}/move` :
+4. Client -> Serveur : `POST /api/v1/storage/files/{file_id}/move` :
 
-    ```json
-    {
-        "destination_collection_id": "...",
-        "vxfk": "<nouveau blob VXFK>"
-    }
-    ```
+   ```json
+   {
+     "destination_collection_id": "...",
+     "vxfk": "<nouveau blob VXFK>"
+   }
+   ```
 
 5. Le serveur procède atomiquement :
    - Met à jour `files.collection_id` vers `destination_collection_id`.
@@ -1832,7 +2038,7 @@ Si le propriétaire souhaite révoquer l'accès des destinataires de la collecti
 **Garanties :**
 
 | Propriété                                                                                               | Statut                                                                                 |
-|---------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------|
+| ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | Les destinataires de la collection de destination peuvent accéder au fichier après le déplacement       | ❌ Pas automatique (partage **explicite** requis)                                      |
 | Les destinataires de la collection source perdent l'accès API après le déplacement                      | ✅ Le serveur applique le périmètre `collection_id` sur toutes les requêtes de fichier |
 | Les destinataires de la collection source ayant déjà accepté le partage conservent la clé               | ⚠️ Limitation inhérente à l'E2EE, cohérent avec [§11.1](#111-révocation-de-partage)    |
@@ -1877,23 +2083,27 @@ Le client **NE DOIT PAS** réessayer silencieusement avec une génération incr�
 
 #### 11.5.2 Flux de résolution
 
-Le client dispose de deux chemins selon que sa version locale est plus récente que la version validée par le serveur, ce qu'il ne peut pas déterminer cryptographiquement (les deux sont des générations valides du point de vue du serveur). Le client **DOIT** donc toujours présenter un conflit à l'utilisateur et le laisser décider.
+Le client ne peut pas déterminer cryptographiquement si sa version locale est plus récente que la version validée par le serveur (les deux sont des générations valides du point de vue du serveur).
 
-**Procédure de résolution de conflit :**
+**Tous les clients DOIVENT** présenter le conflit à l'utilisateur et **NE DOIVENT PAS** réessayer en silence avec `generation + 1`. Le client web affiche une erreur de conflit et laisse l'utilisateur renvoyer le fichier.
+
+**Les clients de synchronisation DEVRAIENT** proposer le dialogue à trois choix ci-dessous.
+
+**Procédure de résolution de conflit (clients de synchronisation) :**
 
 1. Le client reçoit HTTP 409 lors du téléversement de `generation = N+1`.
-2. Le client récupère les métadonnées actuelles du fichier depuis le serveur : `GET /api/v1/files/{file_id}` -> `{ generation: N+1, ... }` (la génération validée par l'appareil gagnant).
+2. Le client récupère les métadonnées actuelles du fichier depuis le serveur : `GET /api/v1/storage/files/{file_id}` -> `{ generation: N+1, ... }` (la génération validée par l'appareil gagnant).
 3. Le client récupère et déchiffre le `VXFM` gagnant pour obtenir le nom de fichier validé.
 4. Le client présente à l'utilisateur une boîte de dialogue de conflit :
 
-    ```sh
-    Ce fichier a été modifié sur un autre appareil.
+   ```sh
+   Ce fichier a été modifié sur un autre appareil.
 
-    Version du serveur : "rapport.pdf"  - enregistré à l'instant
-    Votre version :      "rapport.pdf"  - modifications locales non enregistrées
+   Version du serveur : "rapport.pdf"  - enregistré à l'instant
+   Votre version :      "rapport.pdf"  - modifications locales non enregistrées
 
-    [ Conserver la version du serveur ]   [ Conserver ma version ]   [ Conserver les deux ]
-    ```
+   [ Conserver la version du serveur ]   [ Conserver ma version ]   [ Conserver les deux ]
+   ```
 
 5. L'utilisateur choisit l'un des trois résultats :
 
@@ -1906,15 +2116,15 @@ Le client dispose de deux chemins selon que sa version locale est plus récente 
    1. Le client envoie `DELETE {tus_url}` pour annuler le téléversement échoué.
    2. Le client récupère la `generation` actuelle du fichier depuis le serveur, valeur `M`.
    3. Le client rechiffre le contenu local sous l'espace de nonces de génération `M+1`.
-   4. Le client crée un nouveau téléversement tus via `POST /uploads` avec les champs de métadonnées `generation = M+1` ET `expected_current_generation = M`. Le serveur **DOIT** persister `expected_current_generation = M` sur la ligne `tus_uploads` résultante.
+   4. Le client crée un nouveau téléversement tus via `POST /api/v1/cloud` avec les champs de métadonnées `generation = M+1` ET `expected_current_generation = M`. Le serveur **DOIT** persister `expected_current_generation = M` sur la ligne `tus_uploads` résultante.
    5. Le client téléverse le texte chiffré via des requêtes `PATCH` comme d'habitude. La valeur `expected_current_generation` **n'est PAS** revérifiée à chaque PATCH (ce qui serait sujet aux courses et inutile) ; elle est vérifiée exactement une fois, à la validation.
    6. Le client désencapsule la `fileKey` existante à la `key_generation` courante
-   (ou utilise celle en cache si encore en mémoire), l'enveloppe dans un blob
-   `VXFK` sous la `collectionKey` parente, et chiffre les métadonnées dans un
-   nouveau blob `VXFM` sous la même `fileKey` avec la génération `M+1`.
-   La `key_generation` dans `file_keys` **n'est PAS** incrémentée. Il s'agit
-   d'une mise à jour de contenu, pas d'une rotation de clé.
-   7. Au commit (`POST /uploads/{id}/commit` avec `{ vxfk, vxfm }`, voir [§6.5.6.1](#6561-commit)), le serveur vérifie : si `files.generation != tus_uploads.expected_current_generation`, le serveur retourne HTTP 409 avec la génération actuelle réelle dans le corps de la réponse et abandonne le téléversement. Le client **DOIT** réentrer dans la résolution de conflit depuis l'étape 1, ET l'utilisateur **DOIT** être reinvité car sa décision précédente était basée sur un état périmé.
+      (ou utilise celle en cache si encore en mémoire), l'enveloppe dans un blob
+      `VXFK` sous la `collectionKey` parente, et chiffre les métadonnées dans un
+      nouveau blob `VXFM` sous la même `fileKey` avec la génération `M+1`.
+      La `key_generation` dans `file_keys` **n'est PAS** incrémentée. Il s'agit
+      d'une mise à jour de contenu, pas d'une rotation de clé.
+   7. Au commit (`POST /api/v1/uploads/{tus_id}/commit` avec `{ vxfk, vxfm }`, voir [§6.5.6.1](#6561-commit)), le serveur vérifie : si `files.generation != tus_uploads.expected_current_generation`, le serveur retourne HTTP 409 avec la génération actuelle réelle dans le corps de la réponse et abandonne le téléversement. Le client **DOIT** réentrer dans la résolution de conflit depuis l'étape 1, ET l'utilisateur **DOIT** être reinvité car sa décision précédente était basée sur un état périmé.
    8. Après validation réussie, le serveur valide atomiquement : incrémente `files.generation` à `M+1`, remplace le texte chiffré, stocke les blobs `VXFK` et `VXFM` dans `file_keys`, retourne 204.
 
    **Conserver les deux (copie en conflit) :**
@@ -1930,9 +2140,10 @@ Le client dispose de deux chemins selon que sa version locale est plus récente 
         ```
 
         Le nom de fichier est chiffré dans `VXFM` et le serveur ne le voit jamais.
-      - Le client crée un nouveau téléversement tus via `POST /uploads` avec `generation = 0` et **sans** `file_id` dans les métadonnées (nouveau fichier, pas une mise à jour).
+
+      - Le client crée un nouveau téléversement tus via `POST /api/v1/cloud` avec `generation = 0` et **sans** `file_id` dans les métadonnées (nouveau fichier, pas une mise à jour).
       - Le client téléverse le texte chiffré via des requêtes `PATCH`.
-      - Le client finalise via `POST /uploads/{id}/commit` avec les nouveaux `{ vxfk, vxfm }` ([§6.5.6.1](#6561-commit)). Le serveur crée une nouvelle ligne `files` et une nouvelle ligne `file_keys` de manière atomique.
+      - Le client finalise via `POST /api/v1/uploads/{tus_id}/commit` avec les nouveaux `{ vxfk, vxfm }` ([§6.5.6.1](#6561-commit)). Le serveur crée une nouvelle ligne `files` et une nouvelle ligne `file_keys` de manière atomique.
 
    3. L'utilisateur dispose désormais de deux fichiers : la version validée par le serveur et sa version locale comme nouveau fichier. Les deux sont entièrement accessibles et indépendamment modifiables à l'avenir.
 
@@ -1955,10 +2166,10 @@ Le serveur **DOIT** :
 - Retourner `HTTP 409 Conflict` lorsqu'un client téléverse une génération <= la génération actuellement stockée, avec un corps de réponse identifiant le conflit :
 
 ```json
-  {
-    "error": "generation_conflict",
-    "current_generation": 4
-  }
+{
+  "error": "generation_conflict",
+  "current_generation": 4
+}
 ```
 
 - **Ne jamais** accepter silencieusement une génération **hors ordre**. L'invariant monotone du [§6.3](#63-compteur-de-génération-de-fichier-mutabilité) est absolu.
@@ -1966,25 +2177,25 @@ Le serveur **DOIT** :
 
 #### 11.5.5 Garanties
 
-| Propriété                                                               | Statut                                                                |
-|-------------------------------------------------------------------------|-----------------------------------------------------------------------|
-| Réutilisation de nonce impossible lors de modifications concurrentes    | ✅ L'application de la génération monotone rejette la seconde écriture|
-| L'appareil perdant est notifié du conflit                               | ✅ HTTP 409 avec la génération actuelle retournée                     |
-| Les données utilisateur ne sont jamais silencieusement écrasées         | ✅ Boîte de dialogue de conflit requise avant tout choix destructif   |
-| La copie en conflit est cryptographiquement indépendante                | ✅ Nouveau `file_id`, nouvelle `fileKey`, nouveau `VXFK`              |
-| Le serveur apprend le nom de fichier en conflit                         | ❌ Jamais (le nom de fichier est à l'intérieur du `VXFM` chiffré)     |
-| Dernière écriture gagnante automatique                                  | ❌ Explicitement interdit (toujours présenté à l'utilisateur)         |
+| Propriété                                                            | Statut                                                                 |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Réutilisation de nonce impossible lors de modifications concurrentes | ✅ L'application de la génération monotone rejette la seconde écriture |
+| L'appareil perdant est notifié du conflit                            | ✅ HTTP 409 avec la génération actuelle retournée                      |
+| Les données utilisateur ne sont jamais silencieusement écrasées      | ✅ Boîte de dialogue de conflit requise avant tout choix destructif    |
+| La copie en conflit est cryptographiquement indépendante             | ✅ Nouveau `file_id`, nouvelle `fileKey`, nouveau `VXFK`               |
+| Le serveur apprend le nom de fichier en conflit                      | ❌ Jamais (le nom de fichier est à l'intérieur du `VXFM` chiffré)      |
+| Dernière écriture gagnante automatique                               | ❌ Explicitement interdit (toujours présenté à l'utilisateur)          |
 
 ### 11.6 Permissions de partage
 
 Le **CBOR** interne de `VXSH` inclut un champ `"p"` encodant les permissions de partage sous forme de masque de bits. Le champ est couvert par la signature **ML-DSA-65** et sert de liaison inviolable sur l'intention de l'expéditeur.
 
-| Bit  | Masque | Capacité                                                      | Version du protocole |
-|------|--------|---------------------------------------------------------------|----------------------|
-| 0    | `0x01` | `view` (déchiffrer et lire le contenu partagé)                | 1                    |
-| 1    | `0x02` | `edit` (téléverser et modifier le contenu du fichier)         | 1                    |
-| 2    | `0x04` | `reshare` (inviter d'autres utilisateurs sur la ressource)    | 1                    |
-| 3-31 | -      | **Réservé**                                                   | 1                    |
+| Bit  | Masque | Capacité                                                   | Version du protocole |
+| ---- | ------ | ---------------------------------------------------------- | -------------------- |
+| 0    | `0x01` | `view` (déchiffrer et lire le contenu partagé)             | 1                    |
+| 1    | `0x02` | `edit` (téléverser et modifier le contenu du fichier)      | 1                    |
+| 2    | `0x04` | `reshare` (inviter d'autres utilisateurs sur la ressource) | 1                    |
+| 3-31 | -      | **Réservé**                                                | 1                    |
 
 À la **version 1 du protocole**, `view` (`0x01`) est la seule capacité implémentée. Les bits `1-2` sont définis mais **pas encore actifs**. Les bits `3-31` sont réservés. Les parseurs **DOIVENT** rejeter les partages où `"p"` est absent, zéro, ou a un bit au-delà du bit 2 défini.
 
@@ -1996,18 +2207,7 @@ La liaison cryptographique de `"p"` dans `VXSH` sert de preuve d'inviolabilité 
 
 Les futurs bits de permission sont définis en incrémentant la version du protocole. Les bits inconnus dans un partage reçu **DOIVENT** être traités comme une erreur, jamais silencieusement ignorés.
 
-**Schéma :**
-
-```sql
-ALTER TABLE shares ADD COLUMN permission INTEGER NOT NULL DEFAULT 1;
-
--- Version 1 du protocole : seul view (0x01) est valide.
--- Élargir cette contrainte lors de la définition de nouveaux bits dans une future version du protocole.
-ALTER TABLE shares ADD CONSTRAINT shares_permission_check
-    CHECK (permission > 0 AND permission <= 7);
-```
-
-L'utilisation d'une contrainte nommée plutôt qu'un `CHECK` en ligne permet une future migration via `DROP CONSTRAINT shares_permission_check` et l'ajout d'un remplacement sans toucher à la définition de la colonne.
+**Schéma :** `permission` et la contrainte nommée `shares_permission_check` font partie de la table `shares` en [§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65). La contrainte nommée permet une future migration via `DROP CONSTRAINT shares_permission_check` et l'ajout d'un remplacement sans toucher à la définition de la colonne.
 
 ## 12. Récupération de compte
 
@@ -2040,7 +2240,7 @@ Notes :
 - Le nombre d'itérations est 2048 (standard **BIP-39**, non ajustable).
 - La sortie est de **64 octets** ; **HKDF** dérive ensuite la `recoveryKey` de **32 octets**.
 
-L'implémentation de référence dans `crates/core/src/bip39.rs` utilise la crate `bip39` avec les paramètres par défaut. Les implémentations sur d'autres plateformes **DOIVENT** vérifier que leur bibliothèque **BIP-39** produit une sortie de graine identique octet par octet pour les vecteurs de test au [§14](#14-vecteurs-de-test).
+Les implémentations **DOIVENT** utiliser une bibliothèque **BIP-39** standard et vérifier qu'elle produit une sortie de graine identique octet par octet pour les vecteurs de test au [§14](#14-vecteurs-de-test).
 
 **HKDF** (et non **Argon2id**) est utilisé ici car la phrase **BIP39** fournit déjà **256 bits** d'entropie. Une fonction à mémoire intensive ajouterait de la latence sans améliorer sensiblement la marge de sécurité contre tout attaquant réaliste.
 
@@ -2048,62 +2248,16 @@ La phrase est montrée une fois, **jamais persistée** côté client, **jamais t
 
 Flux de récupération (mot de passe oublié, phrase disponible) :
 
-1. L'utilisateur saisit son email et sa phrase de récupération.
+1. L'utilisateur saisit son email. Client -> Serveur : `POST /api/v1/auth/recovery/start { email }`. La réponse est identique que le compte existe ou non. S'il existe, le serveur envoie un code à usage unique à cet email.
+2. L'utilisateur saisit le code. Client -> Serveur : `POST /api/v1/auth/recovery/verify { email, code }` -> `{ recoveryToken, userId, vxrm }`. `recoveryToken` est valable 15 minutes. Un code faux et un email inconnu renvoient la même erreur.
+3. L'utilisateur saisit sa phrase de récupération. Le client redérive `recoveryKey` et désencapsule `masterKey` depuis `VXRM` avec `userId` en AAD.
 
-2. Le client envoie l'email à `POST /auth/recovery/lookup`. Le serveur **DOIT** répondre en **temps constant** qu'l'email soit enregistré ou non :
+   > **En cas d'échec d'authentification AEAD :** le client **DOIT** afficher un message générique unique tel que « Phrase de récupération incorrecte ».
 
-    > - **Enregistré :** retourne `{ vxrm, user_uuid }`.
-    > - **Non enregistré :** retourne un faux `{ vxrm, user_uuid }` déterministe dérivé comme spécifié ci-dessous.
-    >
-    > **Canonicalisation des emails (appliquée à l'inscription ET à la dérivation fictive) :**
-    >
-    > ```rs
-    > email_canonical = NFC_normalize(lowercase(email))
-    > ```
-    >
-    > Aucune suppression de points, aucune gestion de tags plus, aucun alias spécifique au fournisseur. `Foo@Example.COM` et `foo@example.com` désignent le même compte. La fonction de canonicalisation **DOIT** être une implémentation partagée unique dans `crates/core` invoquée depuis le chemin d'inscription et le chemin de VXRM fictif ; toute divergence ici est un bug critique.
-    >
-    > **Dérivation de VXRM fictif :**
-    >
-    > ```rs
-    > fake_vxrm_body = HKDF-SHA-512(
-    >     ikm  = recovery_enumeration_secret,
-    >     salt = 32 octets zéro,
-    >     info = "vexahub:v1:fakeVxrm:" || utf8(email_canonical),
-    >     L    = 72
-    > )
-    > fake_vxrm = bytes("VXRM") || 0x01 || 0x01 || fake_vxrm_body
-    > // 6 (en-tête) + 72 (nonce + texte chiffré + octets de tag) = 78 octets,
-    > // correspondant exactement à la disposition réelle de VXRM.
-    > ```
-    >
-    > **Dérivation de user_uuid fictif :**
-    >
-    > ```rs
-    > fake_user_uuid = HKDF-SHA-512(
-    >     ikm  = recovery_enumeration_secret,
-    >     salt = 32 octets zéro,
-    >     info = "vexahub:v1:fakeUserUuid:" || utf8(email_canonical),
-    >     L    = 16
-    > )
-    > ```
-    >
-    > Le `recovery_enumeration_secret` est une valeur aléatoire séparée de 32 octets générée au premier déploiement et stockée aux côtés de `serverSetup`. Il **NE DOIT PAS** être dérivé de `serverSetup` ni d'aucun autre matériel de clés. La perte de `recovery_enumeration_secret` ne compromet pas les données des utilisateurs ; sa rotation change les réponses fictives retournées pour les emails inconnus mais n'a aucun effet sur les utilisateurs enregistrés.
-    >
-    > **Gestion AAD côté client :**
-    >
-    > Le client utilise le `user_uuid` retourné directement comme **AAD** lors de la tentative de déchiffrement du `vxrm` retourné. Le client **NE tente PAS** de vérifier si `user_uuid` est « réel » ou « fictif » avant le déchiffrement. Il ne peut pas le faire, et toute tentative de différenciation crée un oracle de synchronisation. Les réponses réelles et fictives produisent toutes deux une discordance de tag sur une entrée incorrecte, indiscernables pour le client. Le client **DOIT** afficher un message d'erreur générique unique (« Phrase de récupération incorrecte ») lors d'un échec **AEAD** quelle qu'en soit la cause.
-
-3. Le client redérive `recoveryKey`, désencapsule `masterKey`.
-
-    > **En cas d'échec d'authentification AEAD :** le client **DOIT** afficher un message générique unique tel que « Phrase de récupération incorrecte » quelle que soit la cause sous-jacente.
-    >
-    > Le client **NE DOIT PAS** afficher des messages distincts pour « email introuvable » vs « phrase incorrecte ». Les deux sont indiscernables à cette couche et le texte d'erreur doit le refléter.
-
-4. L'utilisateur choisit un nouveau mot de passe.
-5. Le client effectue une nouvelle inscription **OPAQUE**.
-6. Le client réencapsule la même `masterKey` avec le nouveau `masterKeyWrapper`.
-7. Le serveur remplace `registration_record`, `vxwm` et `vxsk` atomiquement.
+4. L'utilisateur choisit un nouveau mot de passe. Le client démarre une nouvelle inscription **OPAQUE** : `POST /api/v1/auth/recovery/opaque { recoveryToken, registrationRequest }` -> `{ registrationResponse }`.
+5. Le client termine l'inscription et réencapsule la même `masterKey` avec le nouveau `masterKeyWrapper` -> nouveau `VXWM`.
+6. Client -> Serveur : `POST /api/v1/auth/recovery/finish { recoveryToken, registrationRecord, vxwm }`.
+7. Le serveur remplace uniquement `registration_record` et `vxwm` atomiquement, puis révoque toutes les sessions et sessions persistantes. `VXRM` et `VXSK` ne changent pas.
 8. Tous les fichiers, collections et partages existants restent valides.
 
 > La phrase secrète BIP39 est intentionnellement laissée vide (`""`). Dans les portefeuilles de cryptomonnaies, la phrase secrète sert de « 25ème mot » pour créer des portefeuilles cachés.
@@ -2114,7 +2268,7 @@ Flux de récupération (mot de passe oublié, phrase disponible) :
 
 ### 12.2 Réinitialisation destructive
 
-> Disponible lorsque le **mot de passe et la phrase sont tous deux perdus**. Déclenchée par un lien **confirmé par email**, affiche un **avertissement** de perte de données non ambigu, puis de manière atomique :
+> Disponible lorsque le **mot de passe et la phrase sont tous deux perdus**. Confirmée par un code envoyé par email, affiche un **avertissement** de perte de données non ambigu, puis de manière atomique :
 >
 > 1. Supprime **tous** les fichiers, collections, clés de collection, clés de fichier et partages de l'utilisateur.
 > 2. Incrémente `reset_generation` sur la ligne utilisateur. Cette valeur est retournée aux clients à la connexion et **DOIT** être vérifiée contre la valeur mise en cache localement par les clients avec un état local persistant (bureau, mobile, web avec « Se souvenir de moi »). Une discordance indique qu'une réinitialisation **destructive** a eu lieu sur un autre appareil et le client **DOIT** effacer tous les caches locaux et le matériel de clés. Les clients web sans sessions persistantes ne sont pas affectés. Ils repartent **de zéro** à chaque connexion.
@@ -2123,16 +2277,23 @@ Flux de récupération (mot de passe oublié, phrase disponible) :
 >
 > L'utilisateur repart de zéro avec un compte **vide**.
 
+Routes, dans l'ordre :
+
+1. `POST /api/v1/auth/recovery/destructive-reset/request { email }` : envoie le code (même réponse que le compte existe ou non).
+2. `POST /api/v1/auth/recovery/destructive-reset/verify { email, code }` -> `{ recoveryToken, userId, vxrm }`.
+3. `POST /api/v1/auth/recovery/destructive-reset/start { recoveryToken, registrationRequest }` -> `{ registrationResponse }`.
+4. `POST /api/v1/auth/recovery/destructive-reset { recoveryToken, registrationRecord, vxwm, vxrm, vxsk, sharingPublicXwing, sharingPublicSignature }`.
+
 ### 12.3 Rotation de la phrase
 
-Les utilisateurs authentifiés peuvent régénérer leur phrase de récupération depuis les paramètres. La nouvelle phrase encapsule la `masterKey` existante ; l'ancien `vxrm` est remplacé atomiquement.
+Les utilisateurs authentifiés peuvent régénérer leur phrase de récupération depuis les paramètres avec `POST /api/v1/account/recovery-phrase/rotate`. La nouvelle phrase encapsule la `masterKey` existante ; l'ancien `vxrm` est remplacé atomiquement.
 
 ### 12.4 Mesures de protection
 
 - L'étape de confirmation de la phrase à l'inscription est obligatoire. Aucune option pour passer cette étape.
 - La phrase est affichée une fois, jamais journalisée, jamais persistée.
-- Le point d'accès de recherche de récupération est soumis à une limitation agressive par IP et par email.
-- La réinitialisation destructive nécessite une vérification par jeton email.
+- Les points d'accès de récupération sont soumis à une limitation agressive par IP et par email.
+- La réinitialisation destructive nécessite une vérification par code email.
 
 ## 13. Versionnage du protocole et migration
 
@@ -2180,18 +2341,12 @@ Ce qui **NE PEUT PAS** être modifié sans rechiffrer les données utilisateur :
 
 ## 14. Vecteurs de test
 
-La cohérence inter-cibles est vérifiée par des vecteurs de test **JSON** dans `crates/core/tests/vectors/`, exécutés par :
-
-- Rust natif via `cargo test`
-- WASM via `wasm-bindgen-test`
-- Node via le build NAPI
-- Futur **Android** via des tests instrumentés
-- Futur **iOS** via **XCTest**
+La cohérence inter-cibles est vérifiée par des vecteurs de test **JSON**. Ils sont à produire depuis l'implémentation du protocole du client web (`engine.ts`), aujourd'hui la seule implémentation complète, et publiés avec cette spécification. Tout futur client (bureau, **Android**, **iOS**, crate Rust unifié) **DOIT** les passer.
 
 Catégories de vecteurs :
 
 1. Dérivations **HKDF** (chaque chemin à séparation de domaine du [§4](#4-séparation-de-domaine-hkdf))
-2. Allers-retours de `VXWM`, `VXRM`, `VXFC`, `VXFM`, `VXSK`, `VXPS`, `VXSH`, `VXCM`, `VXCK`, `VXFK` avec des clés et nonces fixes
+2. Allers-retours de `VXWM`, `VXRM`, `VXFC`, `VXFM`, `VXSK`, `VXPS`, `VXSH`, `VXCM`, `VXCK`, `VXCC`, `VXSI`, `VXFK`, `VXPL`, `VXMC` avec des clés et nonces fixes
 3. Dérivation de nonce de segment sur plusieurs générations et indices
 4. Inscription et connexion **OPAQUE** avec des graines de générateur aléatoire déterministes de test uniquement
 5. Encapsulation/désencapsulation **ML-KEM-768** contre les tests de réponse connue **FIPS 203**
@@ -2201,6 +2356,8 @@ Catégories de vecteurs :
    - `VXWM`, `VXRM`, `VXSK` - `user_id` (16 octets)
    - `VXPS` - `user_id ‖ session_id` (32 octets)
    - `VXCK` - `user_id ‖ collection_id` (32 octets)
+   - `VXCC` - `parent_id ‖ collection_id` (32 octets)
+   - `VXSI` - en-tête ‖ `user_id` (22 octets)
    - `VXFK` - `collection_id ‖ file_id` (32 octets)
 
 8. Vecteurs de dérivation de `content_id` avec `collection_uuid` lié dans l'info **HKDF**
@@ -2213,7 +2370,7 @@ Une **discordance** de vecteur est un **bloqueur** de version.
 
 ## 15. Zéroïsation des clés
 
-Tout le matériel de clés est encapsulé dans `Zeroizing<T>` (Rust) et **explicitement** écrasé sur les frontières JS/WASM via `Uint8Array.fill(0)` après utilisation. Les environnements d'exécution gérés par GC (JS, Kotlin, Swift) **ne peuvent pas** garantir un effacement complet ; il s'agit d'une limitation reconnue documentée dans le modèle de menace.
+Sur le web, le matériel de clés est **explicitement** écrasé après utilisation avec `sodium.memzero`, avec repli sur `Uint8Array.fill(0)`. Dans le code Rust, le matériel de clés est encapsulé dans `Zeroizing<T>`. Les environnements d'exécution gérés par GC (JS, Kotlin, Swift) **ne peuvent pas** garantir un effacement complet ; il s'agit d'une limitation reconnue documentée dans le modèle de menace.
 
 Points de zéroïsation **obligatoires** : après chaque flux **OPAQUE** (`password`, `exportKey`, `masterKeyWrapper`), à l'expiration de session, à la déconnexion, lors d'un changement de mot de passe.
 
@@ -2229,76 +2386,40 @@ Points de zéroïsation **obligatoires** : après chaque flux **OPAQUE** (`passw
 
 ### 16.1 Politique de sécurité du contenu
 
-La **CSP** est définie au niveau du **serveur HTTP** pour la webapp compilée en statique :
+La **CSP** est définie au niveau du **serveur HTTP** pour la webapp compilée en statique, et la même politique est liée au build. La configuration se trouve dans `vite.config.ts`, pas dans `svelte.config.js` :
 
 ```r
 Content-Security-Policy:
-    default-src 'self';
-    connect-src 'self' https://api.vexahub.com;
-    script-src 'self' 'wasm-unsafe-eval';
+    default-src 'none';
+    script-src 'self' 'wasm-unsafe-eval' 'sha256-<theme-init>';
     style-src 'self';
-    style-src-attr 'none';
+    style-src-attr 'unsafe-hashes' 'sha256-<svelte-runtime>' 'sha256-<splash>';
     img-src 'self' data: blob:;
-    font-src 'self';
     media-src 'self' blob:;
+    font-src 'self';
+    connect-src 'self';
     worker-src 'self';
-    object-src 'none';
-    base-uri 'self';
-    form-action 'self';
     frame-ancestors 'none';
+    frame-src 'none';
+    object-src 'none';
+    form-action 'self';
+    base-uri 'none';
+    manifest-src 'self';
     upgrade-insecure-requests;
     report-uri https://reports.vexahub.com/csp;
+    report-to csp-endpoint;
 ```
 
-`connect-src 'self' https://api.vexahub.com` couvre toutes les requêtes **API** incluant les flux **OPAQUE**, les métadonnées de fichiers, les points d'accès de partage, et le **protocole de téléversement tus** (`POST`/`PATCH`/`HEAD`/`DELETE` sur `https://api.vexahub.com/uploads/...`). La webapp sur `app.vexahub.com` ne se connecte à aucune autre origine. Si le point d'accès de téléversement tus déménage vers un nom d'hôte séparé (ex. `uploads.vexahub.com`), il **DOIT** être ajouté à `connect-src`.
+Les marqueurs `sha256-<...>` désignent les hashs calculés au build.
 
-> Il est possible que nous n'utilisions pas d'origine différente ; `self` uniquement pourrait être notre option finale.
+`connect-src 'self'` couvre toutes les requêtes **API** incluant les flux **OPAQUE**, les métadonnées de fichiers, les points d'accès de partage, et le **protocole de téléversement tus**. L'API est servie en same-origin derrière le proxy `/api` (`/api/v1/...`) : la webapp ne se connecte à aucune autre origine.
 
-`'unsafe-inline'` est exclu de `style-src`. Le pipeline de compilation **DOIT** émettre tout le contenu de feuilles de style vers des fichiers groupés externes servis depuis la même origine. Les blocs `<style>` en ligne et les attributs `style` en ligne **sont interdits dans les compilations de production**.
+`'unsafe-inline'` est exclu de `script-src` comme de `style-src`. Le build de production contient exactement :
 
-#### Configuration de production SvelteKit
+- un script en ligne, l'initialisation du thème, autorisé par son hash dans `script-src` ;
+- deux attributs `style` en ligne (un du runtime Svelte, un sur l'écran de démarrage), autorisés par leurs hashs via `'unsafe-hashes'` dans `style-src-attr`.
 
-```js
-// svelte.config.js
-import adapter from '@sveltejs/adapter-static';
-
-export default {
-    kit: {
-        adapter: adapter(),
-        // 0 (défaut) = toujours externe, jamais en ligne.
-        // NE PAS définir à une valeur non nulle ou à Infinity.
-        inlineStyleThreshold: 0,
-        // La CSP est appliquée aux DEUX couches (défense en profondeur) :
-        // - Le serveur HTTP sert la CSP en en-tête de réponse (faisant autorité).
-        // - SvelteKit injecte une CSP <meta http-equiv> correspondante dans
-        //   index.html pour lier la politique à l'artefact de compilation
-        //   même si servi depuis un proxy mal configuré.
-        // Les deux politiques DOIVENT correspondre ; toute divergence est un bloqueur de version.
-        csp: {
-            mode: 'hash',
-            directives: {
-                'default-src':       ['self'],
-                'connect-src':       ['self', 'https://api.vexahub.com'],
-                'script-src':        ['self', 'wasm-unsafe-eval'],
-                'style-src':         ['self'],
-                'style-src-attr':    ['none'],
-                'img-src':           ['self', 'data:', 'blob:'],
-                'font-src':          ['self'],
-                'media-src':         ['self', 'blob:'],
-                'worker-src':        ['self'],
-                'object-src':        ['none'],
-                'base-uri':          ['self'],
-                'form-action':       ['self'],
-                'frame-ancestors':   ['none'],
-                'upgrade-insecure-requests': true,
-                'report-uri':        ['https://reports.vexahub.com/csp'],
-            },
-        },
-    },
-};
-```
-
-`inlineStyleThreshold: 0` est la valeur par défaut ; la déclarer explicitement évite toute dérive de configuration future. La CSP est appliquée à la FOIS au niveau de l'en-tête de réponse HTTP (faisant autorité) et au niveau `<meta http-equiv>` de SvelteKit (lie la politique à l'artefact de compilation). Puisque la compilation émet zéro style en ligne et zéro script en ligne, `mode: 'hash'` ne produit aucune entrée de hash supplémentaire qui interagirait avec `'unsafe-inline'` (le problème dans `sveltejs/kit#9368` ne se manifeste que lorsque du contenu en ligne est présent). Les deux définitions de politique **DOIVENT** rester synchronisées ; la CI **DOIT** les comparer à chaque version.
+Tout autre script en ligne, élément `<style>` ou attribut `style` est interdit dans les builds de production. Un nouveau doit voir son hash ajouté à la politique, ce qui en fait un changement relu.
 
 #### Mise en garde sur le mode développement
 
@@ -2312,9 +2433,9 @@ if grep -rEln '<style[^>]*>' build/ | grep -v '\.css$'; then
 fi
 ```
 
-#### Pourquoi ne pas séparer `style-src-elem` / `style-src-attr`
+#### Pourquoi `style-src-attr` est séparé de `style-src`
 
-`style-src-attr 'none'` interdit déjà les attributs `style="..."` en ligne. La directive `style-src` sans `style-src-elem` explicite se replie sur `style-src` pour les éléments `<style>` et `<link rel="stylesheet">`. C'est intentionnellement restrictif.
+`style-src` sans `style-src-elem` explicite s'applique aux éléments `<style>` et à `<link rel="stylesheet">` : seules les feuilles de style de même origine sont autorisées. `style-src-attr` est défini à part pour que les deux attributs `style` hashés puissent être autorisés via `'unsafe-hashes'` sans ouvrir les éléments `<style>`. Tout autre attribut `style="..."` en ligne est bloqué.
 
 `'wasm-unsafe-eval'` autorise la compilation **WebAssembly** uniquement, **PAS** JavaScript `eval()`.
 
@@ -2337,11 +2458,24 @@ X-Frame-Options: DENY
 
 Si `crossOriginIsolated === false`, l'application **DOIT** se bloquer entièrement et refuser de continuer. La dégradation silencieuse n'est pas acceptable.
 
+La directive `report-to csp-endpoint` de [§16.1](#161-politique-de-sécurité-du-contenu) demande un en-tête de réponse `Reporting-Endpoints` qui définit `csp-endpoint` :
+
+```r
+Reporting-Endpoints: csp-endpoint="https://reports.vexahub.com/csp"
+```
+
 > `Cross-Origin-Embedder-Policy: require-corp` bloque les futurs intégrations tierces. Acceptable pour l'instant. À réévaluer avant l'ajout de tout intégration externe.
 
 ### 16.3 Cookies
 
-Tous les cookies d'authentification : `HttpOnly; Secure; SameSite=Strict; Path=/`. Aucun caractère générique de sous-domaine en production.
+Tous les cookies d'authentification : `HttpOnly; Secure; SameSite=Strict; Path=/`. En production, ils portent `Domain=.vexahub.com`, ce qui les partage avec `checkout.vexahub.com`.
+
+| Cookie             | Contenu                                                                                     | `HttpOnly` |
+| ------------------ | ------------------------------------------------------------------------------------------- | ---------- |
+| `APPSESSID`        | Cookie de session, `{session_id}.{jeton}`                                                   | Oui        |
+| `PS-AUTH`          | Cookie de session persistante ([§9.2](#92-sessions-persistantes-se-souvenir-de-moi-opt-in)) | Oui        |
+| `VEXAHUB_VE_TOK`   | Vérification d'email en attente                                                             | Oui        |
+| `APPAUTHENTICATED` | Cookie témoin lu par la webapp pour savoir qu'une session existe. Ne porte aucun secret     | Non        |
 
 ### 16.4 Type de média API
 
@@ -2370,40 +2504,40 @@ Le matériel de clés traverse les frontières de threads exclusivement via `pos
 
 ## 17. Résumé du modèle de menace
 
-| Capacité de l'attaquant                                                            | Réponse de VexaHub                                                                                                                                                                                                                                                                                                                                                                                            |
-|------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Capture instantanée de la base de données                                          | Aucun déchiffrement possible ; l'OPRF bloque les attaques hors-ligne sur les mots de passe                                                                                                                                                                                                                                                                                                                    |
-| Compromission complète du serveur, sans interception de sessions actives           | Impossible de déchiffrer les données existantes ; peut observer les futurs textes chiffrés                                                                                                                                                                                                                                                                                                                    |
-| Compromission du serveur + cookie de session actif volé                            | Peut déchiffrer le blob persistant de cette session si l'utilisateur a opté pour cette option (compromis documenté [§9.2](#92-sessions-persistantes-se-souvenir-de-moi-opt-in))                                                                                                                                                                                                                               |
-| MITM réseau avec TLS valide                                                        | Bloqué par l'épinglage de clé publique statique                                                                                                                                                                                                                                                                                                                                                               |
-| Mise à jour client malveillante                                                    | Non défendu ; builds reproductibles prévus au [§18](#18-questions-ouvertes-et-travaux-futurs)                                                                                                                                                                                                                                                                                                                 |
-| Compromission physique de l'appareil (déverrouillé)                                | Non défendu au-delà des protections au niveau du système d'exploitation                                                                                                                                                                                                                                                                                                                                       |
-| XSS dans la webapp                                                                 | CSP stricte (pas d'`unsafe-inline`), isolation du Worker, pas d'eval au-delà de WASM                                                                                                                                                                                                                                                                                                                          |
-| `serverSetup` compromis                                                            | Argon2id 128 Mio impose toujours un coût significatif aux attaques par dictionnaire hors-ligne                                                                                                                                                                                                                                                                                                                |
-| Retour arrière de fichier / réordonnancement de segment par un serveur malveillant | Bloqué par le compteur `generation` et la liaison AAD par segment                                                                                                                                                                                                                                                                                                                                             |
-| CRQC (adversaire post-quantique)                                                   | Échange de clés de partage protégé par X-Wing (hybride ML-KEM-768 + X25519) ; authenticité des partages protégée par ML-DSA-65 ; clés de session de connexion protégées par TripleDhKem (hybride 3DH + ML-KEM-768) ; l'OPRF reste en Ristretto255 classique (CRQC + base de données + vol de `serverSetup` permet des attaques hors-ligne sur les mots de passe, mitigées par Argon2id 128 Mio)               |
-| Le serveur substitue le blob de métadonnées VXFM entre fichiers                    | Bloqué par la liaison AAD `file_id` sur VXFM                                                                                                                                                                                                                                                                                                                                                                  |
-| Le serveur substitue les blobs d'encapsulation entre utilisateurs                  | Bloqué par la liaison **AAD** sur `VXWM`, `VXRM`, `VXSK` (`user_id`) et `VXPS` (`user_id ‖ session_id`)                                                                                                                                                                                                                                                                                                       |
-| Le serveur sert un VXFM périmé d'une génération précédente                         | Détecté par le client vérifiant que la génération VXFM correspond à la génération de la ligne du fichier                                                                                                                                                                                                                                                                                                      |
-| Le serveur tronque le téléchargement (supprime les segments de fin)                | Détecté par le nombre de segments dans VXFM avant le téléchargement complet                                                                                                                                                                                                                                                                                                                                   |
-| Énumération d'emails via le point d'accès de récupération                          | Bloqué par une réponse fictive en temps constant pour les emails inconnus                                                                                                                                                                                                                                                                                                                                     |
-| Révocation de partage par le propriétaire de collection/fichier                    | Le nouveau contenu est protégé par des clés renouvelées ; les métadonnées sont rechiffrées immédiatement ; l'ancien texte chiffré est inaccessible via l'API + rechiffrement paresseux ; le contenu déjà téléchargé ne peut pas être récupéré (limitation E2EE)                                                                                                                                               |
-| Clé de signature ML-DSA-65 observée par un attaquant                               | Mitigé par la rotation explicite de la paire de clés de partage ([§11.3](#113-rotation-de-la-paire-de-clés-de-partage)), qui invalide tous les partages sortants en attente et remplace les clés publiques côté serveur                                                                                                                                                                                       |
-| Oracle de récupération pour un attaquant ayant hameçonné une recoveryKey           | L'attaquant peut confirmer qu'un email est enregistré en tentant un déchiffrement avec la clé capturée. Reconnu : l'attaquant connaît déjà l'utilisateur dont il a capturé la recoveryKey, et le statut d'inscription de cet email spécifique n'est pas une nouvelle information. Ne peut pas être utilisé pour une énumération en masse, car l'attaquant devrait hameçonner une recoveryKey unique par email.|
+| Capacité de l'attaquant                                                            | Réponse de VexaHub                                                                                                                                                                                                                                                                                                                                                                              |
+| ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Capture instantanée de la base de données                                          | Aucun déchiffrement possible ; l'OPRF bloque les attaques hors-ligne sur les mots de passe                                                                                                                                                                                                                                                                                                      |
+| Compromission complète du serveur, sans interception de sessions actives           | Impossible de déchiffrer les données existantes ; peut observer les futurs textes chiffrés                                                                                                                                                                                                                                                                                                      |
+| Compromission du serveur + cookie de session actif volé                            | Peut déchiffrer le blob persistant de cette session si l'utilisateur a opté pour cette option (compromis documenté [§9.2](#92-sessions-persistantes-se-souvenir-de-moi-opt-in))                                                                                                                                                                                                                 |
+| MITM réseau avec TLS valide                                                        | Bloqué par l'épinglage de clé publique statique                                                                                                                                                                                                                                                                                                                                                 |
+| Mise à jour client malveillante                                                    | Non défendu ; builds reproductibles prévus au [§18](#18-questions-ouvertes-et-travaux-futurs)                                                                                                                                                                                                                                                                                                   |
+| Compromission physique de l'appareil (déverrouillé)                                | Non défendu au-delà des protections au niveau du système d'exploitation                                                                                                                                                                                                                                                                                                                         |
+| XSS dans la webapp                                                                 | CSP stricte (pas d'`unsafe-inline`), isolation du Worker, pas d'eval au-delà de WASM                                                                                                                                                                                                                                                                                                            |
+| `serverSetup` compromis                                                            | Argon2id 128 Mio impose toujours un coût significatif aux attaques par dictionnaire hors-ligne                                                                                                                                                                                                                                                                                                  |
+| Retour arrière de fichier / réordonnancement de segment par un serveur malveillant | Bloqué par le compteur `generation` et la liaison AAD par segment                                                                                                                                                                                                                                                                                                                               |
+| CRQC (adversaire post-quantique)                                                   | Échange de clés de partage protégé par X-Wing (hybride ML-KEM-768 + X25519) ; authenticité des partages protégée par ML-DSA-65 ; clés de session de connexion protégées par TripleDhKem (hybride 3DH + ML-KEM-768) ; l'OPRF reste en Ristretto255 classique (CRQC + base de données + vol de `serverSetup` permet des attaques hors-ligne sur les mots de passe, mitigées par Argon2id 128 Mio) |
+| Le serveur substitue le blob de métadonnées VXFM entre fichiers                    | Bloqué par la liaison AAD `file_id` sur VXFM                                                                                                                                                                                                                                                                                                                                                    |
+| Le serveur substitue les blobs d'encapsulation entre utilisateurs                  | Bloqué par la liaison **AAD** sur `VXWM`, `VXRM`, `VXSK` (`user_id`) et `VXPS` (`user_id ‖ session_id`)                                                                                                                                                                                                                                                                                         |
+| Le serveur sert un VXFM périmé d'une génération précédente                         | Détecté par le client vérifiant que la génération VXFM correspond à la génération de la ligne du fichier                                                                                                                                                                                                                                                                                        |
+| Le serveur tronque le téléchargement (supprime les segments de fin)                | Détecté par le nombre de segments dans VXFM avant le téléchargement complet                                                                                                                                                                                                                                                                                                                     |
+| Énumération d'emails                                                               | Réponse uniforme à l'inscription et au démarrage de la récupération, et au démarrage de la connexion (`signin/start` renvoie la même forme de réponse que le compte existe ou non ; `vxwm` et `vxsk` seulement après preuve du mot de passe)                                                                                                                                                    |
+| Révocation de partage par le propriétaire de collection/fichier                    | Le nouveau contenu est protégé par des clés renouvelées ; les métadonnées sont rechiffrées immédiatement ; l'ancien texte chiffré est inaccessible via l'API ; le contenu déjà téléchargé ne peut pas être récupéré (limitation E2EE)                                                                                                                                                           |
+| Clé de signature ML-DSA-65 observée par un attaquant                               | Mitigé par la rotation explicite de la paire de clés de partage ([§11.3](#113-rotation-de-la-paire-de-clés-de-partage)), qui invalide tous les partages sortants en attente et remplace les clés publiques côté serveur                                                                                                                                                                         |
 
 ## 18. Questions ouvertes et travaux futurs
 
-- **Migration vers un OPRF résistant aux attaques quantiques** lorsque des variantes standardisées seront disponibles (suivi de [draft-vos-cfrg-pqpake][pqpake_draft]). Note : **TripleDhKem** protège déjà les clés de session ; la lacune restante est l'**OPRF** classique qui expose les mots de passe aux attaques hors-ligne uniquement sous compromission **CRQC** + *base de données* + `serverSetup`, mitigée par **Argon2id 128 Mio**.
+- **Migration vers un OPRF résistant aux attaques quantiques** lorsque des variantes standardisées seront disponibles (suivi de [draft-vos-cfrg-pqpake][pqpake_draft]). Note : **TripleDhKem** protège déjà les clés de session ; la lacune restante est l'**OPRF** classique qui expose les mots de passe aux attaques hors-ligne uniquement sous compromission **CRQC** + _base de données_ + `serverSetup`, mitigée par **Argon2id 128 Mio**.
 - **WebAuthn PRF pour sessions persistantes à zéro connaissance et déverrouillage biométrique :** les authentificateurs de plateforme (**Windows Hello**, **Touch ID**, **clés de sécurité matérielles**) exposent une extension `PRF` qui dérive une `localKey = PRF(credentialId, salt)` liée à l'appareil sans jamais la stocker côté serveur. Cela ferait passer « Se souvenir de moi » du modèle à deux parties actuel ([§9.2](#92-sessions-persistantes-se-souvenir-de-moi-opt-in)) à un ZK complet : le serveur détient `VXPS` mais ne voit jamais `localKey`. Nécessite que `isUserVerifyingPlatformAuthenticatorAvailable()` retourne `true` ; repli silencieux vers le flux actuel sinon. Les utilisateurs Linux sans clés de sécurité matérielles peuvent utiliser des authentificateurs de plateforme logiciels. Ne modifierait aucun format de blob ni version de protocole existant.
-- Builds reproductibles pour `vexahub-protocol` et le bundle de la webapp, publiés dans un journal de transparence.
+- **Crate Rust unifié** pour le protocole, compilé vers les cibles WASM, native et UniFFI, pour servir d'implémentation commune au client web et au second client (bureau ou mobile). Aujourd'hui, le protocole est composé en TypeScript (`engine.ts`) au-dessus de paquets distincts : `@vexahub/opaque-client` et `@vexahub/opaque-server` (OPAQUE), des paquets Rust/WASM pour X-Wing, ML-DSA-65 et BLAKE3, libsodium (XChaCha20-Poly1305) et WebCrypto (HKDF).
+- Builds reproductibles pour les paquets du protocole et le bundle de la webapp, publiés dans un journal de transparence.
 - Télémétrie des paramètres `Argon2id` sur les distributions réelles d'appareils pour valider le choix de 128 Mio.
 - Personnalisation des paramètres `Argon2id` **pour les utilisateurs avancés :** paramètres stockés côté serveur par utilisateur, retournés avant le début d'**OPAQUE**. Introduit un oracle mineur d'énumération de comptes (l'existence d'un nom d'utilisateur est déductible si un compte inexistant retourne des paramètres par défaut vs un vrai compte retournant des paramètres personnalisés), mitigeable en retournant toujours des paramètres quel que soit l'existence du compte. Aucun incrément de version de protocole requis, aucun changement de format de blob.
 - Manuel de réponse aux incidents de compromission de `serverSetup`.
-- Possible audit indépendant **tiers** de `vexahub-protocol` lorsque le financement le permettra.
+- Possible audit indépendant **tiers** de l'implémentation du protocole lorsque le financement le permettra.
 - Suivi de la finalisation RFC de `X-Wing` ([draft-connolly-cfrg-xwing-kem][xwing_draft]). Si le format wire change **avant** la RFC, incrémenter la version du format `VXSH` et l'identifiant d'algorithme KEM.
 - Évaluation des signatures hybrides (`Ed25519` + `ML-DSA-65`) pour la conformité **ANSSI/BSI** si les exigences réglementaires se durcissent **avant 2030**.
 - Flux UX pour la notification de rotation de paire de clés de partage aux destinataires dont les partages en attente ont été invalidés.
-- **Récupération sociale via le Partage de Secret Vérifiable (Pedersen VSS, seuil k-parmi-n) :** diviser la `recoveryPhrase` (ou directement la `masterKey`) entre des contacts de confiance en utilisant **Pedersen VSS**, chaque part chiffrée via **X-Wing** pour le contact correspondant. Chaque contact peut **vérifier que sa part est valide** sans reconstruire le secret ni divulguer d'information à son sujet, **détectant la corruption avant qu'une récupération soit nécessaire**. La reconstruction nécessite la coopération de *k* contacts. S'intègre naturellement avec l'infrastructure **X-Wing** existante et le groupe **Ristretto255** déjà utilisé dans la suite cryptographique **OPAQUE**. Les compromis (**sélection du seuil**, **rotation des clés de contacts**, **perte de compte d'un contact**) nécessitent une conception UX avant les travaux de spécification. Introduirait un nouveau type de blob (`VXSR`) et des points d'accès sans modifier aucune primitive ni format existant. **Aucun incrément de version de protocole requis**. Implémentation candidate : crate `vsss-rs` (variante Pedersen avec `RistrettoPoint`).
+- **Récupération sociale via le Partage de Secret Vérifiable (Pedersen VSS, seuil k-parmi-n) :** diviser la `recoveryPhrase` (ou directement la `masterKey`) entre des contacts de confiance en utilisant **Pedersen VSS**, chaque part chiffrée via **X-Wing** pour le contact correspondant. Chaque contact peut **vérifier que sa part est valide** sans reconstruire le secret ni divulguer d'information à son sujet, **détectant la corruption avant qu'une récupération soit nécessaire**. La reconstruction nécessite la coopération de _k_ contacts. S'intègre naturellement avec l'infrastructure **X-Wing** existante et le groupe **Ristretto255** déjà utilisé dans la suite cryptographique **OPAQUE**. Les compromis (**sélection du seuil**, **rotation des clés de contacts**, **perte de compte d'un contact**) nécessitent une conception UX avant les travaux de spécification. Introduirait un nouveau type de blob (`VXSR`) et des points d'accès sans modifier aucune primitive ni format existant. **Aucun incrément de version de protocole requis**. Implémentation candidate : crate `vsss-rs` (variante Pedersen avec `RistrettoPoint`).
 
 ## 19. Suppression
 
@@ -2413,15 +2547,17 @@ Les fichiers sont déplacés vers une corbeille par utilisateur avant la suppres
 
 **Flux de mise à la corbeille :**
 
-1. Le client envoie `DELETE /api/v1/files/{file_id}`.
+1. Le client envoie `POST /api/v1/storage/files/{file_id}/trash`.
 2. Le serveur définit `files.trashed_at = now()`. Le fichier n'est plus visible dans les listings normaux de collection, mais tous les textes chiffrés, les lignes `VXFM`, `VXFK` et `shares` restent intacts.
 3. Le serveur répond 204.
+
+**Restauration :** `POST /api/v1/storage/files/{file_id}/restore` efface `trashed_at`. Les fichiers mis à la corbeille sont listés par `GET /api/v1/storage/files/trash`.
 
 **Suppression définitive (suppression physique) :**
 
 Déclenchée soit par l'utilisateur vidant explicitement la corbeille, soit automatiquement après le TTL de la corbeille (recommandé : 30 jours).
 
-1. Le client envoie `DELETE /api/v1/files/{file_id}/permanent` (ou le job planifié du serveur se déclenche pour les éléments de corbeille expirés).
+1. Le client envoie `DELETE /api/v1/storage/files/{file_id}` (ou le job planifié du serveur se déclenche pour les éléments de corbeille expirés).
 2. Le serveur procède atomiquement :
    - Supprime la ligne `files`.
    - Supprime toutes les lignes `file_keys` pour ce `file_id`.
@@ -2431,12 +2567,7 @@ Déclenchée soit par l'utilisateur vidant explicitement la corbeille, soit auto
    - Planifie la suppression de tous les blobs de stockage aux chemins de stockage du fichier. La suppression des blobs **PEUT** être asynchrone tant que la ligne du fichier est supprimée atomiquement et que les blobs deviennent immédiatement inaccessibles à toute requête API.
 3. Le serveur répond 204.
 
-**Ajout au schéma :**
-
-```sql
-ALTER TABLE files ADD COLUMN trashed_at TIMESTAMPTZ;
-CREATE INDEX ON files (user_id) WHERE trashed_at IS NOT NULL;
-```
+`trashed_at` et son index font partie du schéma `files` en [§10.2](#102-tables-des-fichiers-et-collections).
 
 Le client **DOIT** évincer la `fileKey` de son cache Worker après une réponse de suppression définitive réussie. La mise à la corbeille seule ne nécessite pas d'éviction du cache.
 
@@ -2465,7 +2596,7 @@ Les éléments mis à la corbeille via une cascade de collection ont
 
 #### Flux de mise à la corbeille
 
-1. Le client envoie `DELETE /api/v1/collections/{collection_id}`.
+1. Le client envoie `POST /api/v1/storage/collections/{collection_id}/trash`.
 2. Le serveur définit atomiquement `trashed_at = now()` sur la collection cible ET sur chaque collection descendante (parcours récursif via `parent_id`) ET sur chaque fichier (`files.trashed_at`) dans ces collections.
 3. Les collections mises à la corbeille et leur contenu ne sont plus visibles dans les listings normaux. Tous les textes chiffrés, `VXCM`, `VXCK`, `VXFM`, `VXFK` et lignes `shares` restent intacts.
 4. Le serveur répond 204.
@@ -2474,7 +2605,7 @@ La mise à jour anticipée (écriture de `trashed_at` sur chaque descendant) est
 
 #### Flux de restauration
 
-1. Le client envoie `POST /api/v1/collections/{id}/restore`.
+1. Le client envoie `POST /api/v1/storage/collections/{id}/restore`.
 2. Le serveur vérifie que le `trash_root_id` de la collection est égal
    à son propre `id` (elle est la racine de sa cascade de mise à la
    corbeille). Sinon, retourne 409 « Restaurez plutôt la collection parente ».
@@ -2496,7 +2627,7 @@ Déclenchée soit par l'utilisateur vidant explicitement la corbeille,
 soit automatiquement après le TTL de la corbeille (recommandé : 30 jours
 à partir de `trashed_at`).
 
-1. Le client envoie `DELETE /v1/storage/collections/{id}`.
+1. Le client envoie `DELETE /api/v1/storage/collections/{id}`.
 2. Le serveur vérifie que la collection est dans la corbeille.
    Retourne **409** si non.
 3. Le serveur collecte récursivement tous les IDs de collections descendantes.
@@ -2529,31 +2660,28 @@ Les noms de collections restent chiffrés dans `VXCM`. Le serveur voit qu'une co
 
 ### 19.3 Suppression de compte
 
-La suppression de compte supprime définitivement l'utilisateur et toutes les données associées.
+La suppression de compte se fait en deux temps : anonymisation immédiate, puis purge.
+
+**Préconditions :** un abonnement payant actif bloque la suppression. L'utilisateur **DOIT** d'abord le résilier.
 
 **Flux de suppression :**
 
-1. L'utilisateur initie la suppression de compte depuis les paramètres.
-2. Le serveur envoie un email de confirmation contenant un jeton à usage unique avec un TTL de 15 minutes.
-3. L'utilisateur clique sur le lien de confirmation.
-4. Le serveur exécute une transaction atomique unique :
+1. L'utilisateur initie la suppression de compte depuis les paramètres : `POST /api/v1/account/deletion/request`.
+2. Le serveur envoie un code à usage unique par email, valable 15 minutes.
+3. L'utilisateur confirme avec `POST /api/v1/account/deletion/confirm { code, otp }` (`otp` seulement si la 2FA est activée).
+4. **Anonymisation immédiate**, dans une seule transaction :
 
-   - Supprime toutes les lignes `file_keys`, `file_versions`,
-    `collection_keys`, `tus_uploads`, `public_links` et `shares`
-    pour cet utilisateur.
-   - Supprime toutes les lignes `collections` pour cet utilisateur.
-   - Supprime toutes les lignes `sessions` et `persistent_sessions` pour cet utilisateur.
-   - Supprime `VXWM`, `VXRM`, `VXSK` et `registration_record` de la ligne `users`.
-   - Supprime la ligne `users`.
+   - Supprime toutes les lignes `sessions` et `persistent_sessions`, le journal d'audit, l'index de recherche, les codes de vérification d'email et les notifications de cet utilisateur.
+   - Efface de la ligne `users` `registration_record`, `VXWM`, `VXRM`, `VXSK` et les deux clés publiques de partage, le secret 2FA, les données de profil et de facturation, remplace l'email par une valeur factice et pose `deleted_at`.
+   - Enregistre un hash de l'email dans une table de suppression pendant 30 jours, ce qui bloque la réinscription avec la même adresse pendant cette période.
 
-   > La suppression des blobs de stockage est planifiée de manière asynchrone après la validation de la transaction.
+5. Tous les cookies de session actifs pour cet utilisateur deviennent invalides immédiatement.
+6. **Purge des données :** une tâche planifiée supprime les fichiers, collections, clés, partages, liens publics et objets de stockage de l'utilisateur, puis pose `purged_at`.
+7. **Purge de la ligne :** la ligne `users` anonymisée est conservée pour l'intégrité référentielle des factures et paiements, et supprimée à la fin de la durée légale de conservation des factures (10 ans).
 
-5. Tous les cookies de session actifs pour cet utilisateur deviennent invalides immédiatement à la prochaine requête.
-6. Le serveur répond 204 à la requête de confirmation de suppression.
+Sans `VXWM`, `VXRM` ni `registration_record`, le compte ne peut plus être ouvert ni récupéré dès l'étape 4, avant même la purge des données.
 
-L'adresse email est conservée dans une table de suppression pendant une période configurable par l'opérateur après la suppression. Cela empêche la réinscription immédiate avec la même adresse, qui pourrait être utilisée pour abuser des flux de partage ou d'invitation référençant l'ancien compte par email. Après la période de suppression, l'adresse est définitivement purgée.
-
-> **La séquence de suppression est obligatoire et appliquée par la base de données.** Le schéma utilise `ON DELETE RESTRICT` partout. Tenter `DELETE FROM users WHERE id = X` directement échoue avec une violation de clé étrangère. L'application **DOIT** parcourir l'arbre de dépendances (sessions -> tus_uploads -> file_keys -> collection_keys -> shares -> files -> collections -> users) et planifier le nettoyage du stockage par fichier avant de supprimer la ligne. Cela empêche les textes chiffrés orphelins dans le **Stockage** résultant d'une cascade mal configurée.
+> **La séquence de suppression est obligatoire et appliquée par la base de données.** Le schéma utilise `ON DELETE RESTRICT` partout. Tenter `DELETE FROM users WHERE id = X` directement échoue avec une violation de clé étrangère. L'application **DOIT** parcourir l'arbre de dépendances et planifier le nettoyage du stockage par fichier avant de supprimer les lignes. Cela empêche les textes chiffrés orphelins dans le **Stockage** résultant d'une cascade mal configurée.
 
 ### 19.4 Vider la corbeille (en masse)
 
@@ -2562,7 +2690,7 @@ L'adresse email est conservée dans une table de suppression pendant une périod
 **Point d'accès :**
 
 ```sh
-DELETE /api/v1/trash
+DELETE /api/v1/storage/trash
 ```
 
 **Comportement du serveur :**
@@ -2583,13 +2711,39 @@ Le client **DOIT** évincer toutes les entrées `fileKey` et `collectionKey` de 
 
 Le serveur **NE DOIT PAS** permettre à ce point d'accès d'affecter des éléments appartenant à d'autres utilisateurs. Le périmètre `user_id` est appliqué au niveau de la requête.
 
-[//]: # (LINKS)
+### 19.5 Versions de fichiers
+
+Quand une nouvelle génération d'un fichier est validée, la précédente est conservée comme version dans `file_versions` ([§10.2](#102-tables-des-fichiers-et-collections)), selon le réglage de rétention de l'utilisateur.
+
+**Rétention** (`users.version_retention_days`, réglée par `POST /api/v1/account/version-retention`) :
+
+- `NULL` : versionnage désactivé, les générations précédentes sont abandonnées.
+- `7`, `30`, `180` ou `365` jours. Par défaut : **7**.
+- `0` : sans limite de durée, seulement si l'offre le permet.
+
+La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée supprime les versions dont `expires_at` est dépassé.
+
+**Routes :**
+
+- `GET /api/v1/storage/files/{id}/versions` : liste les versions d'un fichier.
+- `POST /api/v1/storage/files/{id}/versions/{versionId}/restore` : restaure une version.
+- `POST /api/v1/storage/files/{id}/versions/{versionId}/delete` : supprime une version.
+- `DELETE /api/v1/account/file-versions` : supprime toutes les versions du compte.
+
+**Ce qu'une version conserve côté chiffrement :** son propre texte chiffré (`storage_path`), sa `generation` et le `VXFM` de cette génération. Elle n'a pas de clé propre : elle se déchiffre avec la `fileKey` du fichier, et ses nonces de segment viennent de sa propre `generation` ([§6.2](#62-dérivation-de-nonce-par-segment)). Le contrôle du `VXFM` de l'étape 16a du [§8.2](#82-connexion) s'applique avec la génération de la version.
+
+**Restauration :** le serveur bascule la ligne du fichier sur le texte chiffré, le `VXFM` et la `generation` de la version, et abandonne la génération courante ainsi que toutes les versions plus récentes que celle restaurée. `files.max_generation` garde la plus haute génération jamais validée et ne recule jamais. Tout envoi **DOIT** utiliser une génération supérieure à `max_generation` : une génération n'est donc jamais réutilisée sous la même `fileContentKey`, même après une restauration ([§6.3](#63-compteur-de-génération-de-fichier-mutabilité)).
+
+## Historique des modifications
+
+- **16 :** alignement sur le code actuel. Chemins d'API sous `/api/v1` (same-origin), UUID v7 partout, routes et schémas réels. `session_id` de `VXPS` généré par le client (§5.6, §9.2). `vxwm` et `vxsk` renvoyés seulement après `signin/finish`, `signin/start` uniforme (§8.2). `ts` informatif, sans contrôle obligatoire (§11.2). Nouveaux `VXMC` (§5.12) et `VXSI` (§5.13), dérivations `localCacheKey`, `sessionToken` et `childCollectionKeyWrap` (§4). Envoi direct pour les petits fichiers (§6.5). Flux de récupération (§12.1), CSP (§16.1) et suppression de compte (§19.3) réécrits. Nouvelle section sur les versions de fichiers (§19.5). Rechiffrement après révocation (§11.1.1) et sessions persistantes web (§9.2) marqués comme prévus. Nouveau blob `VXCC` pour les sous-collections créées par un éditeur, transitoire côté propriétaire (§5.14).
+
+[//]: # "LINKS"
 [opaque_rfc]: https://www.rfc-editor.org/info/rfc9807
 [xwing_draft]: https://datatracker.ietf.org/doc/draft-connolly-cfrg-xwing-kem/
 [pqpake_draft]: https://datatracker.ietf.org/doc/draft-vos-cfrg-pqpake/
 [cbor_rfc]: https://www.rfc-editor.org/rfc/rfc8949.html#section-4.2.1
 [tus_protocol]: https://tus.io/protocols/resumable-upload/1-0-x
-
-[//]: # (CONSTANTS | not substitutable, documentation only)
-[//]: # (SEGMENT_SIZE = 1048576)
-[//]: # (PROTOCOL_VERSION = 1)
+[//]: # "CONSTANTS | not substitutable, documentation only"
+[//]: # "SEGMENT_SIZE = 1048576"
+[//]: # "PROTOCOL_VERSION = 1"
