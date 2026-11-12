@@ -1,6 +1,6 @@
 # VexaHub - Authentication & Key Material Reference
 
-> **Status:** (Draft) *Proposed*
+> **Status:** (Draft) _Proposed_
 
 This document covers the authentication system: the **OPAQUE** protocol, what gets **created at registration**, what gets **reconstructed at login**, and how sessions are managed.
 
@@ -43,18 +43,18 @@ For a **zero-knowledge**, **end-to-end encrypted** cloud storage system, this pr
 ### Ciphersuite (frozen at protocol version 1)
 
 | Parameter      | Value                                               |
-|----------------|-----------------------------------------------------|
+| -------------- | --------------------------------------------------- |
 | **OPRF** group | **Ristretto255**                                    |
 | KE group       | **Ristretto255**                                    |
 | Hash           | **SHA-512**                                         |
 | Key exchange   | **TripleDhKem** (`Triple DH` + `ML-KEM-768` hybrid) |
 | Key stretching | **Argon2id** (`m=128 MiB, t=3, p=4`)                |
 
-The `TripleDhKem` variant augments standard **OPAQUE 3DH** with a **post-quantum KEM hop**. During **KE1** the client generates an **ephemeral ML-KEM-768 keypair** and sends the encapsulation key alongside the **DH ephemeral**. In **KE2** the server encapsulates to the **client's ML-KEM-768 key**. Both **parties mix the ML-KEM shared secret into the key schedule** alongside the **three DH products**. The result: session keys are **quantum-resistant**. An attacker recording login transcripts today cannot recover session keys with a **future cryptographically-relevant quantum computer** (*CRQC*). The **OPRF** itself remains classical **Ristretto255**.
+The `TripleDhKem` variant augments standard **OPAQUE 3DH** with a **post-quantum KEM hop**. During **KE1** the client generates an **ephemeral ML-KEM-768 keypair** and sends the encapsulation key alongside the **DH ephemeral**. In **KE2** the server encapsulates to the **client's ML-KEM-768 key**. Both **parties mix the ML-KEM shared secret into the key schedule** alongside the **three DH products**. The result: session keys are **quantum-resistant**. An attacker recording login transcripts today cannot recover session keys with a **future cryptographically-relevant quantum computer** (_CRQC_). The **OPRF** itself remains classical **Ristretto255**.
 
 ### `serverSetup`
 
-At first deployment the server generates a one-time `serverSetup` blob containing the **OPRF** secret key (*the global pepper*) and the server's static **AKE keypair**. This blob:
+At first deployment the server generates a one-time `serverSetup` blob containing the **OPRF** secret key (_the global pepper_) and the server's static **AKE keypair**. This blob:
 
 - Is loaded via the `OPAQUE_SERVER_SETUP` environment variable only.
 - Is never committed to Git, never logged, never returned in any **API** response.
@@ -72,21 +72,23 @@ Every client hardcodes the server's static public key at build time (derived fro
 OPAQUE produces two outputs from a successful exchange:
 
 - **`exportKey`** (64 bytes) client-only, stable across every login for the same password. Never sent to the server. The root from which `masterKeyWrapper` is derived.
-- **`sessionKey`** (64 bytes)  negotiated with the server and used to mint the **API** session cookie. The server derives the cookie token from this; the raw `sessionKey` is zeroized afterward.
+- **`sessionKey`** (64 bytes) negotiated with the server and used to mint the **API** session cookie. The server derives the cookie token from it with `HKDF-SHA-512(sessionKey, 32 zero bytes, "vexahub:v1:sessionToken", 32)` ([CRYPTO §8.2](./CRYPTO.md#82-login)); the raw `sessionKey` is zeroized afterward.
 
 Both are derived from the password + **OPRF** interaction and the **three-DH key exchange**. Neither can be reconstructed without the correct password and the server's `serverSetup`.
 
 ## 3. Registration
 
-Registration is the only time most **permanent key material is generated**. Everything created here is either stored **server-side in wrapped (encrypted) form**, or shown once to the **user (recovery phrase)** *and* **then discarded**.
+Registration is the only time most **permanent key material is generated**. Everything created here is either stored **server-side in wrapped (encrypted) form**, or shown once to the **user (recovery phrase)** _and_ **then discarded**.
 
 ### 3.1 Full Registration Flow
 
 > See **diagram** in the rendered documentation.
 >
-> **Steps**: user input -> **OPAQUE** exchange ->
+> **Steps**: user input -> `POST /api/v1/auth/signup/start` (returns `registrationResponse` and `userId`) -> **OPAQUE** exchange ->
 > pin verification -> key generation (`masterKey`, **X-Wing**, **ML-DSA-65**) -> blob wrapping
-> (`VXWM`, `VXSK`, `VXRM`) -> recovery phrase confirmation -> `POST /register/finish` -> **zeroize**.
+> (`VXWM`, `VXSK`, `VXRM`, AAD `userId`) -> root collection (`VXCK`, `VXCM`) -> recovery phrase confirmation -> `POST /api/v1/auth/signup/finish` -> **zeroize** -> email verification by code (`POST /api/v1/auth/signup/verify-email`).
+>
+> `userId` is returned by `signup/start` because it is the AAD of `VXWM`, `VXRM` and `VXSK`. The full flow is in [CRYPTO §8.1](./CRYPTO.md#81-registration).
 
 <!-- markdownlint-disable MD033 -->
 <img src="/public/vexahub-registration-flow.svg" alt="Registration Flow" width="1000" />
@@ -94,36 +96,21 @@ Registration is the only time most **permanent key material is generated**. Ever
 
 ### 3.2 What Gets Created at Registration
 
-| Item                 | How                                             | Stored where                                          | Server can read?     |
-|----------------------|-------------------------------------------------|-------------------------------------------------------|----------------------|
-| `registrationRecord` | OPAQUE output                                   | Server (DB)                                           | No (opaque envelope) |
-| `masterKey`          | CSPRNG (32 bytes)                               | Server as `VXWM` (wrapped)                            | No                   |
-| `VXWM` blob          | `masterKey` encrypted with `masterKeyWrapper`   | Server (DB)                                           | No                   |
-| `VXRM` blob          | `masterKey` encrypted with `recoveryKey`        | Server (DB)                                           | No                   |
-| X-Wing keypair       | CSPRNG                                          | Decaps key in `VXSK`; encaps key plaintext on server  | Public key only      |
-| ML-DSA-65 keypair    | CSPRNG                                          | Signing key in `VXSK`; verify key plaintext on server | Public key only      |
-| `VXSK` blob          | Sharing private keys encrypted with `masterKey` | Server (DB)                                           | No                   |
-| Recovery phrase      | BIP39 (256-bit entropy)                         | Shown once, never stored                              | Never                |
+| Item                 | How                                                 | Stored where                                          | Server can read?         |
+| -------------------- | --------------------------------------------------- | ----------------------------------------------------- | ------------------------ |
+| `registrationRecord` | OPAQUE output                                       | Server (DB)                                           | No (opaque envelope)     |
+| `masterKey`          | CSPRNG (32 bytes)                                   | Server as `VXWM` (wrapped)                            | No                       |
+| `VXWM` blob          | `masterKey` encrypted with `masterKeyWrapper`       | Server (DB)                                           | No                       |
+| `VXRM` blob          | `masterKey` encrypted with `recoveryKey`            | Server (DB)                                           | No                       |
+| X-Wing keypair       | CSPRNG                                              | Decaps key in `VXSK`; encaps key plaintext on server  | Public key only          |
+| ML-DSA-65 keypair    | CSPRNG                                              | Signing key in `VXSK`; verify key plaintext on server | Public key only          |
+| `VXSK` blob          | Sharing private keys encrypted with `masterKey`     | Server (DB)                                           | No                       |
+| Recovery phrase      | BIP39 (256-bit entropy)                             | Shown once, never stored                              | Never                    |
+| Root collection      | UUID v7 + CSPRNG `collectionKey`, `VXCK` and `VXCM` | Server (DB), referenced by `users.root_collection_id` | No (wrapped / encrypted) |
 
 ### 3.3 What the Server Stores (Users Table)
 
-```sql
-CREATE TABLE users (
-    id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email                    CITEXT UNIQUE NOT NULL,
-    locale                   TEXT NOT NULL DEFAULT 'en',
-    opaque_protocol_version  SMALLINT NOT NULL DEFAULT 1,
-    registration_record      BYTEA NOT NULL,        -- OPAQUE envelope
-    vxwm                     BYTEA NOT NULL,        -- wrapped masterKey (password)
-    vxrm                     BYTEA NOT NULL,        -- wrapped masterKey (recovery)
-    vxsk                     BYTEA NOT NULL,        -- wrapped sharing keys
-    sharing_public_xwing     BYTEA NOT NULL,        -- 1216 bytes, plaintext
-    sharing_public_mldsa     BYTEA NOT NULL,        -- ~1952 bytes, plaintext
-    reset_generation         INTEGER NOT NULL DEFAULT 0,
-    created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-```
+The schema of the `users` table is defined in [CRYPTO §10.1](./CRYPTO.md#101-users-table). Summary: email, `registration_record` (OPAQUE envelope), the wrapped blobs `vxwm`, `vxrm`, `vxsk`, the two public sharing keys (`sharing_public_xwing`, `sharing_public_signature`), `root_collection_id`, and account state columns.
 
 ### 3.4 Key Derivation at Registration
 
@@ -139,9 +126,11 @@ The `masterKey` is unwrapped and loaded into the **Crypto Worker**, then discard
 
 ### 4.1 Full Login Flow
 
-> See diagram in the rendered documentation. Steps: user input -> **OPAQUE** exchange ->
-> pin verification -> `masterKeyWrapper` derivation -> `VXWM`/`VXSK` unwrap -> `POST /login/finish`
-> -> session cookie -> **zeroize** -> Crypto Worker load.
+> See diagram in the rendered documentation. Steps: user input -> `POST /api/v1/auth/signin/start` (returns `loginResponse` and `loginSessionId`) -> **OPAQUE** exchange ->
+> pin verification -> `POST /api/v1/auth/signin/finish { loginSessionId, authFinish }` -> email verification or 2FA if required ([§4.5](#45-email-verification-and-two-factor-authentication))
+> -> session cookie, `vxwm` and `vxsk` returned -> `masterKeyWrapper` derivation -> `VXWM`/`VXSK` unwrap -> **zeroize** -> Crypto Worker load.
+>
+> `signin/start` returns the same response shape whether the account exists or not; `vxwm` and `vxsk` are only returned once the password is proven. `loginSessionId` expires after 120 seconds (401). The full flow is in [CRYPTO §8.2](./CRYPTO.md#82-login).
 
 <!-- markdownlint-disable MD033 -->
 <img src="/public/vexahub-login-flow.svg" alt="Login Flow" width="1000" />
@@ -152,7 +141,7 @@ The `masterKey` is unwrapped and loaded into the **Crypto Worker**, then discard
 Nothing permanent is created at login. The following are derived transiently from the correct password and discarded when the session ends:
 
 | Item                  | Derived from                          | Lives where                        | Discarded when                                  |
-|-----------------------|---------------------------------------|------------------------------------|-------------------------------------------------|
+| --------------------- | ------------------------------------- | ---------------------------------- | ----------------------------------------------- |
 | `exportKey`           | OPAQUE exchange                       | Client memory only                 | Immediately after `masterKeyWrapper` derivation |
 | `masterKeyWrapper`    | HKDF(`exportKey`)                     | Client memory only                 | Immediately after unwrapping `masterKey`        |
 | `masterKey`           | Unwrapped from `VXWM`                 | Crypto Worker only                 | Session timeout / logout                        |
@@ -170,13 +159,26 @@ The `exportKey` is stable: as long as the password is the same and `serverSetup`
 
 ### 4.4 Session Cookie
 
-The server derives an HTTP session token from `sessionKey` and stores a **SHA-256 hash** of it in the database. The raw token is returned to the client as a cookie. Cookie attributes:
+The server derives an HTTP session token from `sessionKey` (HKDF, info `vexahub:v1:sessionToken`) and stores a **SHA-256 hash** of it in the database. The cookie `APPSESSID` carries `{session_id}.{token}`. Cookie attributes:
 
 ```rs
 HttpOnly; Secure; SameSite=Strict; Path=/
+Domain=.vexahub.com   // production only, shared with checkout.vexahub.com
 ```
 
 Absolute lifetime: 24 hours, renewed on activity. The raw `sessionKey` is zeroized on both client and server immediately after the cookie is issued. The server never stores it.
+
+### 4.5 Email verification and two-factor authentication
+
+After `signin/finish` has proven the password, the server can still stop the login before creating a session:
+
+1. **Account suspended:** an error, no session. This is only revealed after the password is proven.
+2. **Email not verified:** the server sends a verification code by email and answers `{ requiresEmailVerification: true }`. The pending verification is tied to an `HttpOnly` cookie, never to the JSON body. The client sends the code to `POST /api/v1/auth/signup/verify-email`. A new code can be requested with `POST /api/v1/auth/resend-verification`.
+3. **2FA enabled:** the server answers with a short-lived `twoFactorToken` and no session. The client completes with `POST /api/v1/auth/2fa/verify { twoFactorToken, code }`, where `code` is a TOTP code or one of the single-use **recovery codes**. Only then is the session cookie issued.
+
+2FA is set up from the account settings (`POST /api/v1/account/2fa/setup`, then `POST /api/v1/account/2fa/verify`), recovery codes are renewed with `POST /api/v1/account/2fa/recovery-codes`, and 2FA is turned off with `DELETE /api/v1/account/2fa`. Some sensitive account actions require a fresh 2FA code (`POST /api/v1/auth/2fa/elevate`).
+
+> **2FA is a server-side access control.** It decides whether the server creates a session. It does **not** protect the keys: `VXWM` is wrapped only by the password-derived `masterKeyWrapper`, and nothing in the key hierarchy depends on the TOTP secret. The server holds the TOTP secret (`users.two_factor_secret`).
 
 ## 5. Session Management
 
@@ -184,15 +186,17 @@ Absolute lifetime: 24 hours, renewed on activity. The raw `sessionKey` is zeroiz
 
 Once logged in, the `masterKey` and sharing private keys live exclusively inside a dedicated **Crypto Web Worker**. They never touch the main JavaScript thread's heap.
 
-The Worker exposes only operation endpoints. It never returns raw key material:
+The Worker exposes only operation messages. A few of them:
 
-| Worker endpoint       | What it does                                             |
-|-----------------------|----------------------------------------------------------|
-| `encryptFileSegment`  | Returns ciphertext                                       |
-| `decryptFileSegment`  | Returns plaintext segment                                |
-| `deriveCollectionKey` | Returns encrypted operation result                       |
-| `wrapForSharing`      | Returns `VXSH` blob (includes `"p"` permission field)    |
-| `unwrapFromSharing`   | Returns operation result; never returns raw key material |
+| Worker message          | What it does                                                    |
+| ----------------------- | --------------------------------------------------------------- |
+| `encryptSegment`        | Returns a `VXFC` ciphertext segment                             |
+| `decryptSegment`        | Returns a plaintext segment                                     |
+| `unwrapCollectionKey`   | Unwraps a `VXCK` into the Worker cache, returns nothing secret  |
+| `createShareInvitation` | Returns the `VXSH` blob and the signed payload (includes `"p"`) |
+| `acceptShareInvitation` | Verifies and unwraps an invitation, returns the re-wrapped blob |
+
+The Worker does not return raw key material, with one exception: `localKey` is returned to the main thread when a persistent session is created (`wrapPersistentSession`), so it can be stored in IndexedDB (§5.2).
 
 **Inactivity timeout:** 30 minutes. The Worker is terminated and all in-memory key material is zeroized. The user must re-authenticate. Closing the browser tab has the same effect.
 
@@ -203,14 +207,15 @@ Never enabled by default. When opted in, a device-bound blob lets the user resum
 **Activation:**
 
 ```rs
-1. Client generates localKey (32 random bytes, CSPRNG)
-2. Client encrypts masterKey with localKey -> VXPS blob // (see CRYPTO.md §5.6)
-3. Client stores localKey in IndexedDB
-4. Client -> Server: POST /auth/persistent-session/create { vxps, deviceLabel }
+1. Client generates localKey (32 random bytes, CSPRNG) and session_id (UUID v7)
+2. Client encrypts masterKey with localKey -> VXPS blob, AAD user_id ‖ session_id // (see CRYPTO.md §5.6)
+3. Client stores localKey and session_id in IndexedDB
+4. Client -> Server: POST /api/v1/auth/persistent-session/create { sessionId, vxps, device }
    // Implementation note: if the client crashes between step 3 and step 4,
    // localKey is orphaned in IndexedDB. Harmless: absence of PS-AUTH cookie
    // causes it to be silently ignored. MAY be GC'd on startup.
-5. Server stores { userId, vxps, cookieHash, deviceLabel, createdAt, expiresAt }
+5. Server stores { id: sessionId, userId, vxps, secretHash, device, createdAt, expiresAt }
+   // 409 if sessionId already exists
 6. Server issues PS-AUTH cookie (HttpOnly; Secure; SameSite=Strict; Max-Age=30d)
 ```
 
@@ -221,7 +226,7 @@ Never enabled by default. When opted in, a device-bound blob lets the user resum
    // If PS-AUTH present but localKey absent (storage cleared): silently discard,
    // show password form. Server-side session remains valid until expiry or revocation.
 2. Client shows "Resume as <user>" prompt (no password form)
-3. Client -> Server: GET /auth/persistent-session/resume (cookie auto-attached)
+3. Client -> Server: GET /api/v1/auth/persistent-session/resume (cookie auto-attached)
 4. Server validates cookie, returns { vxps, vxsk }
 5. Client retrieves localKey from IndexedDB, decrypts VXPS -> masterKey -> loaded into Worker
 6. Server issues fresh active-session cookie alongside the persistent one
@@ -229,8 +234,8 @@ Never enabled by default. When opted in, a device-bound blob lets the user resum
 
 **Revocation:**
 
-- **Logout**: client deletes `localKey` from IndexedDB + `DELETE /auth/persistent-session/{id}`
-- **Sign out everywhere**: client clears IndexedDB + server wipes all `persistent_sessions` for the user
+- **Logout**: client deletes `localKey` from IndexedDB + `DELETE /api/v1/account/persistent-sessions/{id}`
+- **Sign out everywhere**: client clears IndexedDB + `DELETE /api/v1/account/persistent-sessions` (no id) revokes all `persistent_sessions` for the user
 - **Password change**: server wipes all `persistent_sessions`; client must re-activate "Remember me"
 
 **Security trade-off (displayed at opt-in):**
@@ -244,10 +249,10 @@ Never enabled by default. When opted in, a device-bound blob lets the user resum
 **Zero-knowledge tiers:**
 
 | Mode                                 | True ZK?                          | Server holds            |
-|--------------------------------------|-----------------------------------|-------------------------|
+| ------------------------------------ | --------------------------------- | ----------------------- |
 | Web (no `Remember me`)               | ✅ Yes                            | Nothing session-side    |
 | Web (`Remember me`)                  | ⚠️ Trade-off (opt-in, documented) | `vxps` (encrypted blob) |
-| Web (`Remember me` + `WebAuthn` PRF) | ✅ Yes                            | Nothing                 |
+| Web (`Remember me` + `WebAuthn` PRF) | ✅ Yes                            | `vxps` (encrypted blob) |
 | Desktop / Mobile                     | ✅ Yes                            | Nothing                 |
 
 **Mandatory safeguards:**
@@ -255,40 +260,12 @@ Never enabled by default. When opted in, a device-bound blob lets the user resum
 - Strict opt-in only. No nudging.
 - Settings page lists every persistent session with device label, creation time, last use, and one-click revoke.
 - Password change revokes all persistent sessions server-side.
-- Server-side inactivity timeout: session deleted after 30 days of disuse.
+- Server-side expiry: the persistent session expires server-side after 30 days.
 - "Sign out everywhere" wipes all server-side persistent sessions and the local IndexedDB `localKey`.
-- `localKey` is never stored client-side in plaintext beyond the instant it is used to decrypt the `VXPS` blob.
 
 ### 5.3 Session Database Schema
 
-```sql
-CREATE TABLE sessions (
-    id           UUID PRIMARY KEY,
-    user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    cookie_hash  BYTEA NOT NULL,           -- SHA-256 of the cookie value
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_used_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at   TIMESTAMPTZ NOT NULL,
-    revoked_at   TIMESTAMPTZ,
-    user_agent   TEXT,
-    ip_network   CIDR                      -- /24 IPv4 or /48 IPv6, host bits zeroed at insert
-);
-
-CREATE TABLE persistent_sessions (
-    id           UUID PRIMARY KEY,
-    user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    vxps         BYTEA NOT NULL,
-    cookie_hash  BYTEA NOT NULL,
-    device_label TEXT NOT NULL,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_used_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at   TIMESTAMPTZ NOT NULL,
-    revoked_at   TIMESTAMPTZ
-);
-
-CREATE INDEX ON sessions (user_id) WHERE revoked_at IS NULL;
-CREATE INDEX ON persistent_sessions (user_id) WHERE revoked_at IS NULL;
-```
+The `sessions` and `persistent_sessions` schemas are defined in [CRYPTO §9.3](./CRYPTO.md#93-session-schemas). The session row stores the full client IP (`remote_ip INET`), used for the active session list and incident response; it is removed with the session.
 
 ## 6. Account Recovery
 
@@ -312,43 +289,56 @@ The phrase is shown once at registration, never stored client-side, never transm
 
 **Recovery flow (password forgotten, phrase available):**
 
-1. User enters **email + recovery** phrase
-2. Client -> Server: `GET /auth/recovery/lookup?email={email}`  (*rate-limited*) <- { **vxrm**, **user_uuid** }
-3. Client re-derives `recoveryKey` from phrase + **user_uuid**
-4. Client decrypts `VXRM` -> `masterKey` (same `masterKey` as always)
+1. User enters their **email**. Client -> Server: `POST /api/v1/auth/recovery/start { email }` (_rate-limited_). Same response whether the account exists or not; a code is sent by email if it does.
+2. User enters the code. Client -> Server: `POST /api/v1/auth/recovery/verify { email, code }` <- { **recoveryToken**, **userId**, **vxrm** }
+3. User enters the **recovery phrase**. Client re-derives `recoveryKey` from phrase + **userId**
+4. Client decrypts `VXRM` (AAD **userId**) -> `masterKey` (same `masterKey` as always)
 5. User chooses a new password
-6. Client runs a fresh **OPAQUE** registration with the new password
+6. Client runs a fresh **OPAQUE** registration: `POST /api/v1/auth/recovery/opaque { recoveryToken, registrationRequest }`
 7. Client re-wraps `masterKey` with the new `masterKeyWrapper` -> new `VXWM`
-8. Client -> Server: `POST /auth/recovery/finish`
-              { **registrationRecord**, **vxwm**, **vxsk** }  (*atomic replace*)
-9. All existing files, collections, and shares remain valid. `masterKey` never changed
+8. Client -> Server: `POST /api/v1/auth/recovery/finish`
+   { **recoveryToken**, **registrationRecord**, **vxwm** } (_atomic replace_, all sessions revoked)
+9. All existing files, collections, and shares remain valid. `masterKey`, `VXRM` and `VXSK` never changed
+
+Full flow: [CRYPTO §12.1](./CRYPTO.md#121-recovery-phrase-non-destructive).
 
 ### 6.2 Destructive Reset
 
-When both password and recovery phrase are lost. Triggered only via an email-confirmed link. Displays an explicit data-loss warning, then atomically wipes all files and rotates all key material under a new `reset_generation`. There is no way back from this path.
+When both password and recovery phrase are lost. Confirmed only by a code sent by email. Displays an explicit data-loss warning, then atomically wipes all files and rotates all key material under a new `reset_generation`. There is no way back from this path.
+
+Routes: `POST /api/v1/auth/recovery/destructive-reset/request`, `.../verify`, `.../start`, then `POST /api/v1/auth/recovery/destructive-reset` ([CRYPTO §12.2](./CRYPTO.md#122-destructive-reset)).
 
 ### 6.3 Phrase Rotation
 
-From settings, an authenticated user can regenerate their recovery phrase. The new phrase wraps the existing `masterKey`; the old `VXRM` is replaced atomically. The `masterKey` itself does not change, so no file re-encryption is needed.
+From settings, an authenticated user can regenerate their recovery phrase with `POST /api/v1/account/recovery-phrase/rotate` ([CRYPTO §12.3](./CRYPTO.md#123-phrase-rotation)). The new phrase wraps the existing `masterKey`; the old `VXRM` is replaced atomically. The `masterKey` itself does not change, so no file re-encryption is needed.
+
+### 6.4 Password Change
+
+An authenticated user changes their password in two steps:
+
+1. `POST /api/v1/auth/change-password/start { registrationRequest }` -> `{ registrationResponse }`: a fresh **OPAQUE** registration for the new password.
+2. `POST /api/v1/auth/change-password { registrationRecord, vxwm }`: the client re-wraps the same `masterKey` under the new `masterKeyWrapper`.
+
+Only `registration_record` and `VXWM` change. `VXRM`, `VXSK` and every file and collection key stay as they are. All sessions and persistent sessions of the user are revoked.
 
 ## 7. Key Material Quick Reference
 
 ### What exists only at registration
 
 | Item              | Notes                                                                   |
-|-------------------|-------------------------------------------------------------------------|
+| ----------------- | ----------------------------------------------------------------------- |
 | `masterKey`       | Generated once via CSPRNG. Never regenerated unless destructive reset.  |
 | X-Wing keypair    | Permanent. Decaps key wrapped in `VXSK`.                                |
 | ML-DSA-65 keypair | Permanent. Signing key wrapped in `VXSK`.                               |
 | `VXWM` blob       | Wrapped `masterKey` keyed to the password. Replaced on password change. |
 | `VXRM` blob       | Wrapped `masterKey` keyed to the recovery phrase.                       |
-| `VXSK` blob       | Wrapped sharing keypair. Re-wrapped on password change.                 |
+| `VXSK` blob       | Wrapped sharing keypair. Unchanged on password change.                  |
 | Recovery phrase   | Shown once. Never stored anywhere.                                      |
 
 ### What exists only during a session
 
 | Item                         | Origin                | Discarded                                       |
-|------------------------------|-----------------------|-------------------------------------------------|
+| ---------------------------- | --------------------- | ----------------------------------------------- |
 | `exportKey`                  | OPAQUE output         | Immediately after `masterKeyWrapper` derivation |
 | `masterKeyWrapper`           | HKDF(`exportKey`)     | Immediately after unwrapping `masterKey`        |
 | `sessionKey`                 | OPAQUE output         | Immediately after cookie is issued              |
@@ -359,7 +349,7 @@ From settings, an authenticated user can regenerate their recovery phrase. The n
 ### What the server knows vs does not know
 
 | Server knows                                        | Server never knows                   |
-|-----------------------------------------------------|--------------------------------------|
+| --------------------------------------------------- | ------------------------------------ |
 | Email address                                       | Password (or any hash of it)         |
 | OPAQUE `registrationRecord` (opaque envelope)       | `exportKey`                          |
 | `VXWM`, `VXRM`, `VXSK` blobs (ciphertext only)      | `masterKeyWrapper`                   |
