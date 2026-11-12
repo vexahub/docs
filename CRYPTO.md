@@ -1227,7 +1227,7 @@ A device-bound resume mechanism. **NEVER** enabled by default.
    > silently ignored. Implementations **MAY** garbage-collect orphaned `localKey` entries on startup.
 
 5. Server stores `{ id: sessionId, userId, vxps, secretHash, device, createdAt, lastVerifiedAt, expiresAt }` in `persistent_sessions`, or responds **409** if `sessionId` already exists.
-6. Server issues a `PS-AUTH` cookie: `HttpOnly; Secure; SameSite=Strict; Max-Age=30d`.
+6. Server issues a `PS-AUTH` cookie: `HttpOnly; Secure; SameSite=Strict; Max-Age=30d`. Its value is `{session_id}.{secret}`, where the secret is 120 random bits (base32); only its SHA-256 is stored (`secret_hash`). The cookie is not rotated on use.
 
 #### Resume
 
@@ -1273,7 +1273,7 @@ Browsers supporting the WebAuthn `prf` extension can derive a device-bound secre
 - Strict opt-in.
 - Settings page listing every persistent session with device label, creation time, last use, and a one-click revoke.
 - Password change revokes all persistent sessions.
-- Server-side expiry: the persistent session expires server-side after 30 days.
+- Server-side expiry: the persistent session expires server-side after 30 days without use; each use pushes the deadline back.
 - "Sign out everywhere" wipes server-side persistent sessions and the local IndexedDB blob.
 
 ### 9.3 Session schemas

@@ -217,6 +217,7 @@ Never enabled by default. When opted in, a device-bound blob lets the user resum
 5. Server stores { id: sessionId, userId, vxps, secretHash, device, createdAt, expiresAt }
    // 409 if sessionId already exists
 6. Server issues PS-AUTH cookie (HttpOnly; Secure; SameSite=Strict; Max-Age=30d)
+   // value {session_id}.{secret}, secret = 120 random bits, not rotated on use
 ```
 
 **Resume:**
@@ -260,7 +261,7 @@ Never enabled by default. When opted in, a device-bound blob lets the user resum
 - Strict opt-in only. No nudging.
 - Settings page lists every persistent session with device label, creation time, last use, and one-click revoke.
 - Password change revokes all persistent sessions server-side.
-- Server-side expiry: the persistent session expires server-side after 30 days.
+- Server-side expiry: the persistent session expires server-side after 30 days without use; each use pushes the deadline back.
 - "Sign out everywhere" wipes all server-side persistent sessions and the local IndexedDB `localKey`.
 
 ### 5.3 Session Database Schema

@@ -1221,7 +1221,7 @@ Un mécanisme de reprise lié à l'appareil. **JAMAIS** activé par défaut.
    > lors de la prochaine visite, l'absence de cookie `PS-AUTH` fait ignorer silencieusement le `localKey` orphané. Les implémentations **PEUT** effectuer une purge des entrées `localKey` orphelines au démarrage.
 
 5. Le serveur stocke `{ id: sessionId, userId, vxps, secretHash, device, createdAt, lastVerifiedAt, expiresAt }` dans `persistent_sessions`, ou répond **409** si `sessionId` existe déjà.
-6. Server délivre un cookie `PS-AUTH` : `HttpOnly; Secure; SameSite=Strict; Max-Age=30d`.
+6. Le serveur délivre un cookie `PS-AUTH` : `HttpOnly; Secure; SameSite=Strict; Max-Age=30d`. Sa valeur est `{session_id}.{secret}`, où le secret fait 120 bits aléatoires (base32) ; seul son SHA-256 est stocké (`secret_hash`). Le cookie n'est pas renouvelé à l'usage.
 
 #### Reprise
 
@@ -1267,7 +1267,7 @@ Les navigateurs prenant en charge l'extension WebAuthn `prf` peuvent dériver un
 - Opt-in strict.
 - Page de paramètres listant chaque session persistante avec le label de l'appareil, l'heure de création, la dernière utilisation, et une révocation en un clic.
 - Le changement de mot de passe révoque toutes les sessions persistantes.
-- Expiration côté serveur : la session persistante expire côté serveur après 30 jours.
+- Expiration côté serveur : la session persistante expire côté serveur après 30 jours sans utilisation ; chaque usage repousse l'échéance.
 - « Déconnecter partout » efface les sessions persistantes côté serveur et le blob IndexedDB local.
 
 ### 9.3 Schémas de session

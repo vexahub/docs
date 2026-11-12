@@ -217,6 +217,7 @@ Jamais activé par défaut. Lorsqu'il est choisi, un blob lié à l'appareil per
 5. Le serveur stocke { id: sessionId, userId, vxps, secretHash, device, createdAt, expiresAt }
    // 409 si sessionId existe déjà
 6. Le serveur émet le cookie PS-AUTH (HttpOnly; Secure; SameSite=Strict; Max-Age=30d)
+   // valeur {session_id}.{secret}, secret = 120 bits aléatoires, non renouvelé à l'usage
 ```
 
 **Reprise:**
@@ -260,7 +261,7 @@ Jamais activé par défaut. Lorsqu'il est choisi, un blob lié à l'appareil per
 - Opt-in strict uniquement. Aucune incitation.
 - La page des paramètres liste chaque session persistante avec le label de l'appareil, l'heure de création, la dernière utilisation, et une révocation en un clic.
 - Le changement de mot de passe révoque toutes les sessions persistantes côté serveur.
-- Expiration côté serveur : la session persistante expire côté serveur après 30 jours.
+- Expiration côté serveur : la session persistante expire côté serveur après 30 jours sans utilisation ; chaque usage repousse l'échéance.
 - « Déconnecter partout » efface toutes les sessions persistantes côté serveur et la `localKey` IndexedDB locale.
 
 ### 5.3 Schéma de base de données des sessions
