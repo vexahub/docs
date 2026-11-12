@@ -321,7 +321,7 @@ Total : 78 octets
 AAD = user_id ‖ session_id (32 octets, UUID brut)
 ```
 
-> `session_id` est un **UUID v7** généré **côté client** à l'activation, avant le chiffrement. Le client chiffre `VXPS` avec `user_id ‖ session_id` en **AAD**, puis envoie `{ sessionId, vxps, device }` à `POST /api/v1/auth/persistent-session/create`. Le serveur utilise `sessionId` comme id de la ligne `persistent_sessions` et répond **409** si cet id existe déjà.
+> `session_id` est un **UUID v4** généré **côté client** à l'activation, avant le chiffrement. Le client chiffre `VXPS` avec `user_id ‖ session_id` en **AAD**, puis envoie `{ sessionId, vxps, device }` à `POST /api/v1/auth/persistent-session/create`. Le serveur utilise `sessionId` comme id de la ligne `persistent_sessions` et répond **409** si cet id existe déjà.
 >
 > Le client **DOIT** stocker `session_id` aux côtés de `localKey` dans `IndexedDB` et l'inclure dans l'**AAD** à chaque chiffrement et déchiffrement `VXPS`. Cela lie cryptographiquement le blob à une session spécifique.
 >
@@ -1211,7 +1211,7 @@ Un mécanisme de reprise lié à l'appareil. **JAMAIS** activé par défaut.
 
 #### Activation
 
-1. Le client génère `localKey` (**32 octets aléatoires** _via_ **CSPRNG**) et un `session_id` (UUID v7).
+1. Le client génère `localKey` (**32 octets aléatoires** _via_ **CSPRNG**) et un `session_id` (UUID v4).
 2. Le client chiffre `masterKey` avec `localKey` -> blob `VXPS`, AAD `user_id ‖ session_id` (voir [§5.6](#56-vxps---blob-de-session-persistante)).
 3. Le client stocke `localKey` et `session_id` dans l'**IndexedDB**.
 4. Le client envoie `POST /api/v1/auth/persistent-session/create { sessionId, vxps, device }`.
@@ -1286,7 +1286,7 @@ CREATE TABLE sessions (
 );
 
 CREATE TABLE persistent_sessions (
-    id               UUID PRIMARY KEY,         -- session_id, UUID v7 généré côté client
+    id               UUID PRIMARY KEY,         -- session_id, UUID v4 généré côté client
     user_id          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     vxps             BYTEA NOT NULL,
     secret_hash      BYTEA NOT NULL,
@@ -2736,7 +2736,7 @@ La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée suppri
 
 ## Historique des modifications
 
-- **16 :** alignement sur le code actuel. Chemins d'API sous `/api/v1` (same-origin), UUID v7 partout, routes et schémas réels. `session_id` de `VXPS` généré par le client (§5.6, §9.2). `vxwm` et `vxsk` renvoyés seulement après `signin/finish`, `signin/start` uniforme (§8.2). `ts` informatif, sans contrôle obligatoire (§11.2). Nouveaux `VXMC` (§5.12) et `VXSI` (§5.13), dérivations `localCacheKey`, `sessionToken` et `childCollectionKeyWrap` (§4). Envoi direct pour les petits fichiers (§6.5). Flux de récupération (§12.1), CSP (§16.1) et suppression de compte (§19.3) réécrits. Nouvelle section sur les versions de fichiers (§19.5). Rechiffrement après révocation (§11.1.1) et sessions persistantes web (§9.2) marqués comme prévus. Nouveau blob `VXCC` pour les sous-collections créées par un éditeur, transitoire côté propriétaire (§5.14).
+- **16 :** alignement sur le code actuel. Chemins d'API sous `/api/v1` (same-origin), UUID v7 presque partout, routes et schémas réels. `session_id` de `VXPS` généré par le client (§5.6, §9.2). `vxwm` et `vxsk` renvoyés seulement après `signin/finish`, `signin/start` uniforme (§8.2). `ts` informatif, sans contrôle obligatoire (§11.2). Nouveaux `VXMC` (§5.12) et `VXSI` (§5.13), dérivations `localCacheKey`, `sessionToken` et `childCollectionKeyWrap` (§4). Envoi direct pour les petits fichiers (§6.5). Flux de récupération (§12.1), CSP (§16.1) et suppression de compte (§19.3) réécrits. Nouvelle section sur les versions de fichiers (§19.5). Rechiffrement après révocation (§11.1.1) et sessions persistantes web (§9.2) marqués comme prévus. Nouveau blob `VXCC` pour les sous-collections créées par un éditeur, transitoire côté propriétaire (§5.14).
 
 [//]: # "LINKS"
 [opaque_rfc]: https://www.rfc-editor.org/info/rfc9807

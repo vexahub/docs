@@ -207,7 +207,7 @@ Never enabled by default. When opted in, a device-bound blob lets the user resum
 **Activation:**
 
 ```rs
-1. Client generates localKey (32 random bytes, CSPRNG) and session_id (UUID v7)
+1. Client generates localKey (32 random bytes, CSPRNG) and session_id (UUID v4)
 2. Client encrypts masterKey with localKey -> VXPS blob, AAD user_id ‖ session_id // (see CRYPTO.md §5.6)
 3. Client stores localKey and session_id in IndexedDB
 4. Client -> Server: POST /api/v1/auth/persistent-session/create { sessionId, vxps, device }

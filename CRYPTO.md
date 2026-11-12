@@ -325,7 +325,7 @@ Total: 78 bytes
 AAD = user_id ‖ session_id (32 bytes, raw UUID)
 ```
 
-> `session_id` is a **UUID v7** generated **client-side** at activation, before encryption. The client encrypts `VXPS` with `user_id ‖ session_id` as **AAD**, then sends `{ sessionId, vxps, device }` to `POST /api/v1/auth/persistent-session/create`. The server uses `sessionId` as the `persistent_sessions` row id and responds **409** if that id already exists.
+> `session_id` is a **UUID v4** generated **client-side** at activation, before encryption. The client encrypts `VXPS` with `user_id ‖ session_id` as **AAD**, then sends `{ sessionId, vxps, device }` to `POST /api/v1/auth/persistent-session/create`. The server uses `sessionId` as the `persistent_sessions` row id and responds **409** if that id already exists.
 >
 > The client **MUST** store `session_id` alongside `localKey` in `IndexedDB` and include it in the **AAD** on every
 > `VXPS` encryption and decryption. This cryptographically binds the blob to a specific session.
@@ -1216,7 +1216,7 @@ A device-bound resume mechanism. **NEVER** enabled by default.
 
 #### Activation
 
-1. Client generates `localKey` (**32 random bytes** _via_ **CSPRNG**) and a `session_id` (UUID v7).
+1. Client generates `localKey` (**32 random bytes** _via_ **CSPRNG**) and a `session_id` (UUID v4).
 2. Client encrypts `masterKey` with `localKey` -> `VXPS` blob, AAD `user_id ‖ session_id` (see [§5.6](#56-vxps---persistent-session-blob)).
 3. Client stores `localKey` and `session_id` in **IndexedDB**.
 4. Client sends `POST /api/v1/auth/persistent-session/create { sessionId, vxps, device }`.
@@ -1292,7 +1292,7 @@ CREATE TABLE sessions (
 );
 
 CREATE TABLE persistent_sessions (
-    id               UUID PRIMARY KEY,         -- session_id, UUID v7 generated client-side
+    id               UUID PRIMARY KEY,         -- session_id, UUID v4 generated client-side
     user_id          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     vxps             BYTEA NOT NULL,
     secret_hash      BYTEA NOT NULL,
@@ -2923,7 +2923,7 @@ The value is capped by the plan's maximum. A scheduled job deletes versions whos
 
 ## Changelog
 
-- **16:** aligned with the current code. API paths under `/api/v1` (same-origin), UUID v7 everywhere, real routes and schemas. Client-generated `session_id` for `VXPS` (§5.6, §9.2). `vxwm` and `vxsk` returned only after `signin/finish`, uniform `signin/start` (§8.2). `ts` informative, no mandatory check (§11.2). New `VXMC` (§5.12) and `VXSI` (§5.13), `localCacheKey`, `sessionToken` and `childCollectionKeyWrap` derivations (§4). Direct upload for small files (§6.5). Rewritten recovery flow (§12.1), CSP (§16.1), account deletion (§19.3). New file versions section (§19.5). Re-encryption after revocation (§11.1.1) and web persistent sessions (§9.2) marked as planned. New `VXCC` blob for editor-created sub-collections, transitional on the owner side (§5.14).
+- **16:** aligned with the current code. API paths under `/api/v1` (same-origin), UUID v7 mostly everywhere, real routes and schemas. Client-generated `session_id` for `VXPS` (§5.6, §9.2). `vxwm` and `vxsk` returned only after `signin/finish`, uniform `signin/start` (§8.2). `ts` informative, no mandatory check (§11.2). New `VXMC` (§5.12) and `VXSI` (§5.13), `localCacheKey`, `sessionToken` and `childCollectionKeyWrap` derivations (§4). Direct upload for small files (§6.5). Rewritten recovery flow (§12.1), CSP (§16.1), account deletion (§19.3). New file versions section (§19.5). Re-encryption after revocation (§11.1.1) and web persistent sessions (§9.2) marked as planned. New `VXCC` blob for editor-created sub-collections, transitional on the owner side (§5.14).
 
 [//]: # "LINKS"
 [opaque_rfc]: https://www.rfc-editor.org/info/rfc9807

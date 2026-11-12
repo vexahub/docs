@@ -207,7 +207,7 @@ Jamais activé par défaut. Lorsqu'il est choisi, un blob lié à l'appareil per
 **Activation:**
 
 ```rs
-1. Le client génère localKey (32 octets aléatoires, CSPRNG) et session_id (UUID v7)
+1. Le client génère localKey (32 octets aléatoires, CSPRNG) et session_id (UUID v4)
 2. Le client chiffre masterKey avec localKey -> blob VXPS, AAD user_id ‖ session_id // (voir CRYPTO.md §5.6)
 3. Le client stocke localKey et session_id dans IndexedDB
 4. Client -> Serveur : POST /api/v1/auth/persistent-session/create { sessionId, vxps, device }
