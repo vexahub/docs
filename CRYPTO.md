@@ -711,7 +711,7 @@ This prevents the catastrophic XChaCha20-Poly1305 nonce-reuse vulnerability that
 
 **Mandatory invariants:**
 
-- The server **MUST** reject any upload whose `generation` value is less than or equal to the currently stored generation for that file.
+- The server **MUST** reject any upload whose `generation` value is less than or equal to `files.max_generation`, the highest generation ever committed for that file. `max_generation` is updated in the same transaction as `generation` on every commit, and a version restore never moves it back ([§19.5](#195-file-versions)), so a generation is never reused under the same `fileContentKey`.
 - The server **MUST** store `generation` in the file row and return it with file metadata so clients can verify monotonicity.
 - When a client uploads a new generation, all segments belonging to that generation **MUST** be uploaded atomically (transactional or staged commit). Partial generation uploads **MUST** be garbage-collected after a short TTL.
 - Clients **MUST** refuse to decrypt a segment whose `generation` field in the `VXFC` header does not match the expected generation from file metadata.
@@ -858,7 +858,12 @@ The route parameter is the tus upload id (`tusId`), not the `tus_uploads` row id
 
 The client **MUST** generate `fileKey` via CSPRNG, derive `fileKeyWrapKey` from the parent `collectionKey`, wrap `fileKey` into the `VXFK` blob, derive `fileMetadataKey` from `fileKey`, and encrypt the file metadata into the `VXFM` blob **before** calling commit. The server validates blob magic and minimum sizes but cannot verify cryptographic correctness (zero-knowledge).
 
-If the upload targets an existing file (`file_id` set in tus metadata), the server enforces monotonic generation and optional optimistic concurrency (`expected_current_generation`) as described in [§6.3](#63-file-generation-counter-mutability) and [§11.5.2](#1152-resolution-flow).
+If the upload targets an existing file (`file_id` set in tus metadata, or in the direct upload metadata), the server enforces:
+
+- **Monotonic generation:** `generation` **MUST** be greater than `files.max_generation`, at upload creation and again at commit. The commit sets `generation` and `max_generation` to the new value in the same transaction ([§6.3](#63-file-generation-counter-mutability)).
+- **Optimistic concurrency:** when the client sends the generation its update is based on (`expected_generation` in tus metadata, `expectedGeneration` in direct upload metadata), the server **MUST** check `files.generation` against it inside the commit transaction and reject with HTTP 409 on mismatch ([§11.5.2](#1152-resolution-flow)).
+
+Clients compute the next generation as `max_generation + 1`, read from `GET /api/v1/storage/files/{id}` just before the upload, not as `generation + 1`.
 
 ### 6.5.7 Resume alignment
 
@@ -1721,7 +1726,7 @@ CREATE TABLE files (
     storage_bytes           BIGINT,
     original_bytes          BIGINT,
     generation              INTEGER NOT NULL DEFAULT 0,
-    max_generation          INTEGER NOT NULL DEFAULT 0,
+    max_generation          INTEGER NOT NULL DEFAULT 0,  -- highest generation ever committed, never moved back
     content_id              BYTEA,
     upload_length           BIGINT,
     crypto_version          SMALLINT NOT NULL DEFAULT 1,
@@ -2213,7 +2218,9 @@ The client **MUST NOT** silently retry with an incremented generation. Because, 
 
 The client cannot determine cryptographically whether the local version is newer than the server's committed version (both are valid generations from the server's perspective).
 
-**All clients MUST** surface the conflict to the user and **MUST NOT** silently retry with `generation + 1`. The web client shows a conflict error and lets the user upload again.
+**All clients MUST** surface the conflict to the user and **MUST NOT** silently retry with a higher generation.
+
+**All clients MUST** send the generation their update is based on (`expected_generation` / `expectedGeneration`, see [§6.5.6.1](#6561-commit)) on every update of an existing file. A local check before the upload is only a shortcut: another device can commit between that check and the commit, and only the server can decide inside the write transaction. The web client shows a conflict error and lets the user upload again.
 
 **Sync clients SHOULD** offer the three-choice dialog below.
 
@@ -2290,7 +2297,7 @@ No key material is shared between the original file and the conflicted copy. The
 
 The server **MUST**:
 
-- Return `HTTP 409 Conflict` when a client uploads a generation ≤ the currently stored generation, with a response body identifying the conflict:
+- Return `HTTP 409 Conflict` when a client uploads a generation ≤ `files.max_generation`, or when the `expected_generation` it sent no longer matches `files.generation`, with a response body identifying the conflict:
 
   ```json
   {

@@ -706,7 +706,7 @@ Cela prévient la vulnérabilité catastrophique de réutilisation de nonce XCha
 
 **Invariants obligatoires :**
 
-- Le serveur **DOIT** rejeter tout envoi dont la valeur `generation` est inférieure ou égale à la génération actuellement stockée pour ce fichier.
+- Le serveur **DOIT** rejeter tout envoi dont la valeur `generation` est inférieure ou égale à `files.max_generation`, la plus haute génération jamais validée pour ce fichier. `max_generation` est mise à jour dans la même transaction que `generation` à chaque commit, et une restauration de version ne la fait jamais reculer ([§19.5](#195-versions-de-fichiers)) : une génération n'est donc jamais réutilisée sous la même `fileContentKey`.
 - Le serveur **DOIT** stocker `generation` dans la ligne du fichier et la retourner avec les métadonnées du fichier afin que les clients puissent vérifier la monotonicité.
 - Lorsqu'un client envoie une nouvelle génération, tous les segments appartenant à cette génération **DOIVENT** être envoyés de manière atomique (commit transactionnel ou par étapes). Les envois de génération partiels **DOIVENT** être supprimés par le ramasse-miettes après un court TTL.
 - Les clients **DOIVENT** refuser de déchiffrer un segment dont le champ `generation` dans l'en-tête `VXFC` ne correspond pas à la génération attendue issue des métadonnées du fichier.
@@ -853,7 +853,12 @@ Le paramètre de route est l'id d'envoi tus (`tusId`), et non l'id de la ligne `
 
 Le client **DOIT** générer `fileKey` via CSPRNG, dériver `fileKeyWrapKey` depuis la `collectionKey` parente, envelopper `fileKey` dans le blob `VXFK`, dériver `fileMetadataKey` depuis `fileKey`, et chiffrer les métadonnées du fichier dans le blob `VXFM` **avant** d'appeler le commit. Le serveur valide le magic et les tailles minimales des blobs mais ne peut pas vérifier l'exactitude cryptographique (zero-knowledge).
 
-Si l'upload cible un fichier existant (`file_id` défini dans les métadonnées tus), le serveur applique la génération monotone et la concurrence optimiste optionnelle (`expected_current_generation`) tel que décrit dans [§6.3](#63-compteur-de-génération-de-fichier-mutabilité) et [§11.5.2](#1152-flux-de-résolution).
+Si l'upload cible un fichier existant (`file_id` défini dans les métadonnées tus ou dans celles de l'envoi direct), le serveur applique :
+
+- **Génération monotone :** `generation` **DOIT** être supérieure à `files.max_generation`, à la création de l'envoi puis au commit. Le commit pose `generation` et `max_generation` à la nouvelle valeur dans la même transaction ([§6.3](#63-compteur-de-génération-de-fichier-mutabilité)).
+- **Concurrence optimiste :** quand le client envoie la génération sur laquelle se base sa modification (`expected_generation` dans les métadonnées tus, `expectedGeneration` dans celles de l'envoi direct), le serveur **DOIT** la comparer à `files.generation` dans la transaction du commit et rejeter avec HTTP 409 en cas d'écart ([§11.5.2](#1152-flux-de-résolution)).
+
+Les clients calculent la génération suivante comme `max_generation + 1`, lue sur `GET /api/v1/storage/files/{id}` juste avant l'envoi, et non comme `generation + 1`.
 
 ### 6.5.7 Alignement de reprise
 
@@ -1612,7 +1617,7 @@ CREATE TABLE files (
     storage_bytes           BIGINT,
     original_bytes          BIGINT,
     generation              INTEGER NOT NULL DEFAULT 0,
-    max_generation          INTEGER NOT NULL DEFAULT 0,
+    max_generation          INTEGER NOT NULL DEFAULT 0, -- plus haute génération jamais validée, ne recule jamais
     content_id              BYTEA,
     upload_length           BIGINT,
     crypto_version          SMALLINT NOT NULL DEFAULT 1,
@@ -2085,7 +2090,9 @@ Le client **NE DOIT PAS** réessayer silencieusement avec une génération incr�
 
 Le client ne peut pas déterminer cryptographiquement si sa version locale est plus récente que la version validée par le serveur (les deux sont des générations valides du point de vue du serveur).
 
-**Tous les clients DOIVENT** présenter le conflit à l'utilisateur et **NE DOIVENT PAS** réessayer en silence avec `generation + 1`. Le client web affiche une erreur de conflit et laisse l'utilisateur renvoyer le fichier.
+**Tous les clients DOIVENT** présenter le conflit à l'utilisateur et **NE DOIVENT PAS** réessayer en silence avec une génération plus haute.
+
+**Tous les clients DOIVENT** envoyer la génération sur laquelle se base leur modification (`expected_generation` / `expectedGeneration`, voir [§6.5.6.1](#6561-commit)) à chaque mise à jour d'un fichier existant. Un contrôle local avant l'envoi n'est qu'un raccourci : un autre appareil peut valider entre ce contrôle et le commit, et seul le serveur peut trancher dans la transaction d'écriture. Le client web affiche une erreur de conflit et laisse l'utilisateur renvoyer le fichier.
 
 **Les clients de synchronisation DEVRAIENT** proposer le dialogue à trois choix ci-dessous.
 
@@ -2163,7 +2170,7 @@ Aucun matériel de clés n'est partagé entre le fichier original et la copie en
 
 Le serveur **DOIT** :
 
-- Retourner `HTTP 409 Conflict` lorsqu'un client téléverse une génération <= la génération actuellement stockée, avec un corps de réponse identifiant le conflit :
+- Retourner `HTTP 409 Conflict` lorsqu'un client téléverse une génération ≤ `files.max_generation`, ou lorsque l'`expected_generation` envoyé ne correspond plus à `files.generation`, avec un corps de réponse identifiant le conflit :
 
 ```json
 {
