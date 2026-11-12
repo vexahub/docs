@@ -1,27 +1,357 @@
-:root{--max-screen:1600px;--border-radius:8px;--grad-primary:#2f013a;--grad-secondary:#4a025c;--yeah:#3b8bd4}
-.vp-doc[data-theme=light],:root,html[class~=light]{--bg:#fbf7ff;--bg2:#f6eeff;--bgh:#f9f3ff8c;--border-low:#45226641;--border-lower:#33184d33;--text:#1e112e;--text2:#4f3a66;--text3:#9a88b8;--text4:#f0f0f0;--text5:#2f013a;--text6:#322441;--copytext:#1f1f1fb7;--texthov:#2f013a;--surface:#f7f7f7;--surface2:#f8f2ff;--glow:#6216754b;--glow2:#630d793b;--success:#059669;--fail:#e53e3e;--tag-bg:#6b30a73a;--soon-bg:#c88c000f;--soon-border:#c88c002e;--soon-text:#b45309;--vp-c-bg:var(--bg);--vp-c-bg-soft:var(--bg2);--vp-c-bg-alt:var(--surface);--vp-c-bg-elv:var(--surface2);--vp-c-text-1:var(--text);--vp-c-text-2:var(--text2);--vp-c-text-3:var(--text3);--vp-c-divider:var(--border-low);--vp-c-border:var(--border-low);--vp-c-brand-1:var(--grad-secondary);--vp-c-brand-2:var(--grad-primary);--vp-c-brand-3:var(--yeah);--vp-c-brand-soft:var(--tag-bg);--vp-c-success-1:var(--success);--vp-c-danger-1:var(--fail);--vp-nav-bg-color:var(--bg);--vp-sidebar-bg-color:var(--bg);--vp-local-nav-bg-color:var(--bg);--vp-c-gutter:var(--border-low)}
-.dark,html[class~=dark]{--bg:#0c090f;--bg2:#130e18;--bgh:#0c090f79;--border-low:#301b4479;--border-lower:#351a4e41;--text:#f4e9ff;--text2:#a793c0;--text3:#695880;--text4:#141414;--text5:#65107a;--text6:#78688b;--copytext:#ffffffb7;--texthov:#591869;--surface:#1e1427;--surface2:#1f1329;--glow:#5a0d6d8a;--glow2:#4a025c67;--success:#34d399;--fail:#b31b1b;--tag-bg:#6b30a73a;--soon-bg:#ffc85012;--soon-border:#ffc85033;--soon-text:#f5c842;--vp-c-bg:var(--bg);--vp-c-bg-soft:var(--bg2);--vp-c-bg-alt:var(--surface);--vp-c-bg-elv:var(--surface2);--vp-c-text-1:var(--text);--vp-c-text-2:var(--text2);--vp-c-text-3:var(--text3);--vp-c-divider:var(--border-low);--vp-c-border:var(--border-low);--vp-c-brand-1:var(--grad-secondary);--vp-c-brand-2:var(--grad-primary);--vp-c-brand-3:var(--yeah);--vp-c-brand-soft:var(--tag-bg);--vp-c-success-1:var(--success);--vp-c-danger-1:var(--fail);--vp-nav-bg-color:var(--bg);--vp-sidebar-bg-color:var(--bg);--vp-local-nav-bg-color:var(--bg);--vp-c-gutter:var(--border-low)}
-:root,html[class~=light]{--vp-button-brand-border:transparent;--vp-button-brand-text:#ffffff;--vp-button-brand-bg:var(--grad-secondary);--vp-button-brand-hover-border:transparent;--vp-button-brand-hover-text:#ffffff;--vp-button-brand-hover-bg:var(--grad-primary);--vp-button-brand-active-border:transparent;--vp-button-brand-active-bg:var(--grad-primary);--vp-home-hero-name-color:var(--grad-secondary);--vp-home-hero-name-background:none}
-.dark,html[class~=dark]{--vp-button-brand-border:transparent;--vp-button-brand-text:#ffffff;--vp-button-brand-bg:var(--grad-secondary);--vp-button-brand-hover-border:transparent;--vp-button-brand-hover-text:#ffffff;--vp-button-brand-hover-bg:var(--grad-primary);--vp-button-brand-active-border:transparent;--vp-button-brand-active-bg:var(--grad-primary);--vp-home-hero-name-color:var(--text);--vp-home-hero-name-background:none}
-*{box-sizing:border-box}
-body{background-color:var(--bg);color:var(--text);max-width:var(--max-screen);margin-inline:auto}
-.custom-block,.vp-code-group,.vp-doc :not(pre)>code,.vp-doc div[class*=language-]{border-radius:var(--border-radius)!important}
-.vp-doc a{color:#a855f7}
-.vp-doc a:hover{color:var(--texthov)}
-.vp-doc :not(pre)>code{background-color:#f3e8ff;color:#7e22ce;border:1px solid #d8b4fe55;padding:2px 6px;border-radius:4px}
-.dark .vp-doc :not(pre)>code{background-color:#2a1040;color:#d8b4fe;border-color:#4a1d7a55}
-.VPNav{border-bottom:1px solid var(--border-low)!important;background:var(--bgh)!important;backdrop-filter:blur(12px)}
-.VPSidebar{background:var(--bg2)!important;border-right:1px solid var(--border-low)}
-.VPSidebarItem .VPLink .text{color:var(--text2);transition:color .2s}
-.VPSidebarItem .VPLink:hover .text{color:#a855f7}
-.VPSidebarItem.is-active>.item .VPLink .text,.VPSidebarItem.is-active>.item .text{color:#a855f7!important}
-.vp-doc div[class*=language-]{background:var(--surface)!important;border:1px solid var(--border-low)}
-.custom-block.tip{border-color:var(--yeah);background:color-mix(in srgb,var(--yeah) 8%,transparent)}
-.custom-block.warning{background:var(--soon-bg);border-color:var(--soon-border);color:var(--soon-text)}
-.custom-block.danger{background:color-mix(in srgb,var(--fail) 8%,transparent);border-color:var(--fail)}
-.VPDocAsideOutline a,.outline-link{color:var(--text2)!important}
-.VPDocAsideOutline a.active,.VPDocAsideOutline a:hover,.outline-link.active,.outline-link:hover{color:#a855f7!important}
-.vp-doc blockquote p{margin:0}
-.vp-doc blockquote>p+p{margin-top:16px}
-.vp-doc p>img{margin:0;display:inline}
-.VPNavScreen{bottom:auto!important}
+/* Theme aligned on the webapp tokens (src/lib/styles/_tokens.scss) */
+
+/* Fonts: copy overpass-light, overpass-bold and fraunces-semibold
+   from the webapp static/fonts/static/ into public/fonts/static/ */
+
+@font-face {
+    font-family: 'Overpass';
+    src: url('/fonts/static/overpass-light.woff2') format('woff2');
+    font-weight: 300;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'Overpass';
+    src: url('/fonts/static/overpass-bold.woff2') format('woff2');
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'Fraunces';
+    src: url('/fonts/static/fraunces-semibold.woff2') format('woff2');
+    font-weight: 600;
+    font-style: normal;
+    font-display: swap;
+}
+
+/* Tokens */
+
+:root {
+    --max-screen: 1600px;
+    --border-radius: 8px;
+    --brand: #4b055c;
+    --yeah: #3b8bd4;
+    --font-title: 'Fraunces', Georgia, serif;
+    --font-heading: 'Overpass', sans-serif;
+    --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+        'Helvetica Neue', Arial, sans-serif;
+}
+
+:root,
+html.light {
+    --bg: #faf8f6;
+    --bg2: #f3f0ed;
+    --border-low: #d9d2d7;
+    --border-lower: #e7e2e5;
+    --text: #1c1519;
+    --text2: #4b4148;
+    --text3: #675c64;
+    --text5: #4b055c;
+    --texthov: #4b055c;
+    --surface: #ffffff;
+    --surface2: #f6f1f4;
+    --success: #05704c;
+    --fail: #c53030;
+    --tag-bg: #4b055c12;
+    --soon-bg: #8a4b000d;
+    --soon-border: #8a4b002e;
+    --soon-text: #8a4b00;
+    --btn-primary-bg: #4b055c;
+    --btn-primary-bg-hover: #3a0447;
+    --btn-border: #cbc2c8;
+    --code-bg: #4b055c0d;
+    --code-text: #4b055c;
+    --code-border: #4b055c1f;
+}
+
+html.dark {
+    --bg: #131113;
+    --bg2: #1a171a;
+    --border-low: #332c31;
+    --border-lower: #262125;
+    --text: #f3eff2;
+    --text2: #bfb5bc;
+    --text3: #9d929a;
+    --text5: #aa62bc;
+    --texthov: #c58ad6;
+    --surface: #1b181b;
+    --surface2: #221e21;
+    --success: #4cc99a;
+    --fail: #e05a5a;
+    --tag-bg: #aa62bc1a;
+    --soon-bg: #e8b84a0f;
+    --soon-border: #e8b84a33;
+    --soon-text: #e8b84a;
+    --btn-primary-bg: #5c0b70;
+    --btn-primary-bg-hover: #6c1582;
+    --btn-border: #3d353b;
+    --code-bg: #aa62bc14;
+    --code-text: #d3a6df;
+    --code-border: #aa62bc29;
+}
+
+/* VitePress mapping */
+
+:root,
+html.light,
+html.dark {
+    --vp-font-family-base: var(--font-body);
+
+    --vp-c-bg: var(--bg);
+    --vp-c-bg-soft: var(--bg2);
+    --vp-c-bg-alt: var(--bg2);
+    --vp-c-bg-elv: var(--surface);
+
+    --vp-c-text-1: var(--text);
+    --vp-c-text-2: var(--text2);
+    --vp-c-text-3: var(--text3);
+
+    --vp-c-divider: var(--border-low);
+    --vp-c-border: var(--border-low);
+    --vp-c-gutter: var(--border-lower);
+
+    --vp-c-brand-1: var(--text5);
+    --vp-c-brand-2: var(--texthov);
+    --vp-c-brand-3: var(--btn-primary-bg);
+    --vp-c-brand-soft: var(--tag-bg);
+
+    --vp-c-success-1: var(--success);
+    --vp-c-danger-1: var(--fail);
+
+    --vp-nav-bg-color: var(--bg);
+    --vp-sidebar-bg-color: var(--bg2);
+    --vp-local-nav-bg-color: var(--bg);
+
+    --vp-code-block-bg: var(--surface);
+    --vp-code-bg: var(--code-bg);
+    --vp-code-color: var(--code-text);
+
+    --vp-button-brand-border: transparent;
+    --vp-button-brand-text: #ffffff;
+    --vp-button-brand-bg: var(--btn-primary-bg);
+    --vp-button-brand-hover-border: transparent;
+    --vp-button-brand-hover-text: #ffffff;
+    --vp-button-brand-hover-bg: var(--btn-primary-bg-hover);
+    --vp-button-brand-active-border: transparent;
+    --vp-button-brand-active-text: #ffffff;
+    --vp-button-brand-active-bg: var(--btn-primary-bg-hover);
+
+    --vp-button-alt-border: var(--btn-border);
+    --vp-button-alt-bg: var(--surface);
+    --vp-button-alt-text: var(--text);
+    --vp-button-alt-hover-border: var(--text5);
+    --vp-button-alt-hover-bg: var(--surface);
+    --vp-button-alt-hover-text: var(--text);
+
+    --vp-home-hero-name-color: var(--text);
+    --vp-home-hero-name-background: none;
+    --vp-home-hero-image-background-image: none;
+}
+
+/* Base */
+
+*,
+::before,
+::after {
+    box-sizing: border-box;
+}
+
+::selection {
+    background: color-mix(in srgb, var(--text5) 30%, transparent);
+    color: var(--text);
+}
+
+body {
+    background-color: var(--bg);
+    color: var(--text);
+    max-width: var(--max-screen);
+    margin-inline: auto;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+:focus-visible {
+    outline: 2px solid var(--text5);
+    outline-offset: 2px;
+}
+
+/* Headings: Fraunces for page titles, Overpass for the rest */
+
+.vp-doc h1,
+.VPHero .name,
+.VPHero .text {
+    font-family: var(--font-title);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+.vp-doc h2,
+.vp-doc h3,
+.vp-doc h4,
+.vp-doc h5,
+.vp-doc h6,
+.VPFeature .title {
+    font-family: var(--font-heading);
+    font-weight: 700;
+}
+
+.vp-doc h2 {
+    border-top-color: var(--border-lower);
+}
+
+/* Links */
+
+.vp-doc a {
+    color: var(--text5);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--text5) 35%, transparent);
+    text-underline-offset: 2px;
+    transition: color 0.15s, text-decoration-color 0.15s;
+}
+
+.vp-doc a:hover {
+    color: var(--texthov);
+    text-decoration-color: currentColor;
+}
+
+/* Code */
+
+.vp-doc :not(pre) > code {
+    background-color: var(--code-bg);
+    color: var(--code-text);
+    border: 1px solid var(--code-border);
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+.vp-doc div[class*='language-'] {
+    background: var(--surface) !important;
+    border: 1px solid var(--border-low);
+}
+
+.custom-block,
+.vp-code-group,
+.vp-doc div[class*='language-'] {
+    border-radius: var(--border-radius) !important;
+}
+
+/* Tables */
+
+.vp-doc table {
+    border-radius: var(--border-radius);
+}
+
+.vp-doc tr {
+    border-top-color: var(--border-low);
+}
+
+.vp-doc tr:nth-child(2n) {
+    background-color: var(--surface2);
+}
+
+.vp-doc th {
+    background-color: var(--bg2);
+    color: var(--text);
+}
+
+.vp-doc th,
+.vp-doc td {
+    border-color: var(--border-low);
+}
+
+/* Blocks */
+
+.vp-doc blockquote {
+    border-left-color: var(--text5);
+    color: var(--text2);
+}
+
+.vp-doc blockquote p {
+    margin: 0;
+}
+
+.vp-doc blockquote > p + p {
+    margin-top: 16px;
+}
+
+.custom-block.tip {
+    border-color: var(--yeah);
+    background: color-mix(in srgb, var(--yeah) 8%, transparent);
+}
+
+.custom-block.warning {
+    background: var(--soon-bg);
+    border-color: var(--soon-border);
+    color: var(--soon-text);
+}
+
+.custom-block.danger {
+    background: color-mix(in srgb, var(--fail) 8%, transparent);
+    border-color: var(--fail);
+}
+
+/* Layout: nav, sidebar, outline */
+
+.VPNav {
+    border-bottom: 1px solid var(--border-low) !important;
+    background: var(--bg) !important;
+}
+
+.VPSidebar {
+    background: var(--bg2) !important;
+    border-right: 1px solid var(--border-low);
+}
+
+.VPSidebarItem .VPLink .text {
+    color: var(--text2);
+    transition: color 0.15s;
+}
+
+.VPSidebarItem .VPLink:hover .text {
+    color: var(--text);
+}
+
+.VPSidebarItem.is-active > .item .VPLink .text,
+.VPSidebarItem.is-active > .item .text {
+    color: var(--text5) !important;
+    font-weight: 600;
+}
+
+.VPDocAsideOutline a,
+.outline-link {
+    color: var(--text2) !important;
+}
+
+.VPDocAsideOutline a.active,
+.VPDocAsideOutline a:hover,
+.outline-link.active,
+.outline-link:hover {
+    color: var(--text5) !important;
+}
+
+/* Home */
+
+.VPFeature {
+    background-color: var(--surface) !important;
+    border: 1px solid var(--border-low) !important;
+    border-radius: var(--border-radius) !important;
+    transition: border-color 0.15s;
+}
+
+.VPFeature:hover {
+    border-color: var(--text5) !important;
+}
+
+/* Misc */
+
+.vp-doc p > img {
+    margin: 0;
+    display: inline;
+}
+
+.VPNavScreen {
+    bottom: auto !important;
+}
