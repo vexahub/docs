@@ -688,6 +688,26 @@ Un `VXCC` est toujours encapsulé sous la **dernière** `key_generation` de la `
 
 **Transitoire côté propriétaire :** le client du propriétaire remplace son `VXCC` par un `VXCK` classique la première fois qu'il le désencapsule ([Addenda §21.3](/fr/CRYPTO_ADDENDUM.md#213-accès)). Le remplacement est conditionnel : le serveur ne l'accepte que si le blob stocké est encore ce `VXCC`, à la même `key_generation`. En cas de refus (rotation concurrente, compte en lecture seule), le client continue avec le `VXCC` et réessaie plus tard.
 
+### 5.15 `VXSW` - Copie de la clé d'encapsulation de partage
+
+Chaque côté d'un partage garde sa propre copie de `shareWrapKey` ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)), encapsulée sous une clé dérivée de sa propre `masterKey`. Cette copie permet à un côté de retrouver `shareWrapKey` sans la désencapsulation X-Wing : une fois les deux copies posées, le partage ne dépend plus de la paire de clés de partage.
+
+```rs
+Décalage  Taille  Champ
+--------  ------  ---------------------------------------
+0         4       Magique "VXSW" (0x56 0x58 0x53 0x57)
+4         1       Version de format (0x01)
+5         1       Identifiant d'algorithme (0x01)
+6         24      Nonce (aléatoire)
+30        48      Texte chiffré (32 o shareWrapKey + 16 o tag)
+------
+Total : 78 octets
+```
+
+> **En attente :** l'AAD et la dérivation de la clé d'encapsulation ([§4](#4-séparation-de-domaine-hkdf)) sont fixées dans cette révision avant que le client web ne produise de blobs `VXSW`. Le serveur ne vérifie que la taille et le magique.
+
+Stockage côté serveur : `shares.sender_vxsw` (posé à la création) et `shares.recipient_vxsw` (posé à l'acceptation ou plus tard, voir [§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)). Chaque côté ne reçoit jamais que sa propre copie.
+
 ## 6. Chiffrement de fichier
 
 ### 6.1 Segmentation
@@ -1763,7 +1783,8 @@ Flux d'envoi :
    Ordre : clés d'un caractère (`p` < `v`), puis de deux (`ct` < `sh` < `ts`), puis de trois (`rcp` < `sid` < `snd`), puis `salt`. Un décodeur **DOIT** rejeter une map avec un autre nombre de clés, un autre ordre ou toute autre clé.
 
 6. L'expéditeur signe la charge utile avec sa clé de signature **ML-DSA-65** en utilisant la chaîne de contexte `"vexahub:v1:share"` -> `signature`. Les signatures sont **déterministes** (aucun aléa par signature).
-7. L'expéditeur envoie `{ signedPayload, signature }` au serveur.
+7. L'expéditeur encapsule `shareWrapKey` sous sa propre `masterKey` -> `senderVxsw` ([§5.15](#515-vxsw---copie-de-la-clé-dencapsulation-de-partage)).
+8. L'expéditeur envoie l'invitation à `POST /api/v1/shares` : l'id du partage (`sid`, un UUID v7 généré par le client), les champs signés, `signedPayload`, `signature` et `senderVxsw`. Le serveur refuse un id qui existe déjà (HTTP 409).
 
 Flux de réception :
 
@@ -1773,6 +1794,7 @@ Flux de réception :
 4. Le destinataire désencapsule : `sharedSecret = X-Wing.Decaps(privXwing, ctXwing)`.
 5. Le destinataire dérive `shareWrapKey` et désencapsule `VXSH`.
 6. Le destinataire stocke la clé partagée dans sa propre étendue.
+7. Le destinataire encapsule `shareWrapKey` sous sa propre `masterKey` -> `recipientVxsw` ([§5.15](#515-vxsw---copie-de-la-clé-dencapsulation-de-partage)), envoyé avec l'acceptation.
 
 > La sécurité se dégrade uniquement si **X25519 et ML-KEM-768 sont tous deux** compromis (garantie hybride X-Wing). L'authenticité du partage se dégrade uniquement si ML-DSA-65 est compromis. La signature couvre l'intégralité de la charge utile de l'invitation, y compris `recipient_id` et `ctXwing`, empêchant le serveur de rediriger des partages vers d'autres utilisateurs ou de substituer le matériel de clé encapsulé.
 >
@@ -1786,7 +1808,7 @@ La signature ne fait pas partie du blob `VXSH`. Elle est stockée à ses côtés
 
 ```sql
 CREATE TABLE shares (
-    id              UUID PRIMARY KEY DEFAULT uuidv7(),
+    id              UUID PRIMARY KEY DEFAULT uuidv7(), -- posé par le client : c'est sid dans la charge signée
     sender_id       UUID NOT NULL REFERENCES users(id),
     recipient_id    UUID NOT NULL REFERENCES users(id),
     collection_id   UUID REFERENCES collections(id) ON DELETE RESTRICT,
@@ -1798,6 +1820,8 @@ CREATE TABLE shares (
     signature       BYTEA NOT NULL,         -- signature ML-DSA-65 sur la charge utile canonique
     signed_payload  BYTEA NOT NULL,         -- CBOR canonique des champs signés
     permission      INTEGER NOT NULL DEFAULT 1,
+    sender_vxsw     BYTEA NOT NULL,         -- VXSW, copie expéditeur de shareWrapKey (78 octets)
+    recipient_vxsw  BYTEA,                  -- VXSW, copie destinataire, NULL tant qu'elle n'est pas envoyée
     pending_rekey   BOOLEAN NOT NULL DEFAULT FALSE, -- le destinataire doit recevoir une clé renouvelée
     accepted_at     TIMESTAMPTZ,            -- NULL = invitation en attente
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1832,7 +1856,9 @@ CREATE UNIQUE INDEX share_collection_keys_active
     ON share_collection_keys (share_id, collection_id, key_generation);
 ```
 
-**Acceptation et refus :** un partage commence comme invitation en attente (`accepted_at IS NULL`). Le destinataire le vérifie et le désencapsule (flux de réception ci-dessus), puis appelle `POST /api/v1/shares/{id}/accept`, qui pose `accepted_at`. Refuser appelle `POST /api/v1/shares/{id}/deny`, qui révoque le partage. Les invitations en attente sont listées par `GET /api/v1/shares/incoming`.
+**Acceptation et refus :** un partage commence comme invitation en attente (`accepted_at IS NULL`). Le destinataire le vérifie et le désencapsule (flux de réception ci-dessus), puis appelle `POST /api/v1/shares/{id}/accept` avec `{ vxsw }`, qui pose `accepted_at` et `recipient_vxsw` en une seule étape. Refuser appelle `POST /api/v1/shares/{id}/deny`, qui révoque le partage. Les invitations en attente sont listées par `GET /api/v1/shares/incoming`.
+
+**Copies de la clé d'encapsulation de partage :** chaque invitation porte `senderVxsw`, y compris celles renvoyées par une rotation de clé ([§11.1](#111-révocation-de-partage)), une rotation de la paire de clés de partage ([§11.3](#113-rotation-de-la-paire-de-clés-de-partage)) ou un renouvellement (rekey). Après une rotation de clé, les nouvelles invitations sont en attente et s'acceptent normalement. Après une rotation de la paire de clés de partage ou un renouvellement, un partage déjà accepté reste accepté et `recipient_vxsw` vaut `NULL` : le destinataire envoie sa copie ensuite avec `PUT /api/v1/shares/{id}/recipient-copy` et `{ vxsw }`. Le serveur ne l'accepte qu'une fois, sur un partage accepté et actif sans copie destinataire (HTTP 404 sinon). Les routes de partage ne renvoient que la copie du côté de l'appelant (`vxsw`, `NULL` tant qu'elle manque).
 
 ### 11.1 Révocation de partage
 
@@ -1852,7 +1878,7 @@ La révocation supprime l'accès d'un destinataire et effectue une rotation des 
 
 6. L'expéditeur chiffre un `VXFM` par fichier sous la nouvelle `fileMetadataKey` (dérivée de la nouvelle `fileKey` via la chaîne d'info **HKDF** standard), stocké dans la nouvelle ligne `file_keys`. `files.vxfm` n'est **pas** remplacé : il reste sous la clé du contenu, comme le contenu, jusqu'à la prochaine version ([§6.5.6.1](#6561-commit)).
 
-7. L'expéditeur repartage la nouvelle `collectionKey` avec tous les destinataires restants via de nouvelles invitations **X-Wing** + **ML-DSA-65**.
+7. L'expéditeur repartage la nouvelle `collectionKey` avec tous les destinataires restants via de nouvelles invitations **X-Wing** + **ML-DSA-65**, chacune avec un id de partage généré par le client et un `senderVxsw` ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)).
 
     7a. Pour chaque sous-collection dont la clé est encore détenue sous forme de `VXCC` sous cette collection ([§5.14](#514-vxcc---clé-de-collection-encapsulée-par-la-collection-parente)), l'expéditeur la désencapsule avec l'**ancienne** `collectionKey` et la réencapsule avec la **nouvelle** dans le même appel de rotation. Le serveur **DOIT** refuser la rotation s'il y manque un `VXCC` dépendant de la collection.
 
@@ -1865,7 +1891,7 @@ La révocation supprime l'accès d'un destinataire et effectue une rotation des 
 3. L'expéditeur génère une nouvelle `fileKey` via **CSPRNG**, incrémente `key_generation`.
 4. L'expéditeur réencapsule la nouvelle `fileKey` avec `fileKeyWrapKey` -> nouveau blob `VXFK`.
 5. L'expéditeur chiffre un `VXFM` sous la nouvelle `fileMetadataKey`, stocké dans la nouvelle ligne `file_keys`. `files.vxfm` reste sous la clé du contenu jusqu'à la prochaine version ([§6.5.6.1](#6561-commit)).
-6. L'expéditeur repartage avec les destinataires restants via de nouvelles invitations.
+6. L'expéditeur repartage avec les destinataires restants via de nouvelles invitations, chacune avec un id de partage généré par le client et un `senderVxsw`.
 7. Le contenu du fichier **n'est PAS rechiffré par défaut**. Le fichier est marqué `pending_key_rotation = TRUE` ; les anciennes lignes `VXFK` à `key_generation` <= `M` sont conservées aux côtés du nouveau `VXFK` à `key_generation` = `M+1`. Le compteur de `generation` du fichier **n'est PAS** incrémenté. Le rechiffrement n'a lieu que si le propriétaire **opte pour cette option** ([§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation)).
 
 **Garanties et limitations :**
@@ -2760,7 +2786,7 @@ La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée suppri
 
 ## Historique des modifications
 
-- **17 :** alignement sur les changements de clés de fichier du code. Une nouvelle version garde la clé du fichier : `vxfk` seulement pour un nouveau fichier, `content_key_generation` posée à la dernière clé, `vxfk` et `latestVxfk` renvoyés par les routes de fichier, invariant sur `files.vxfm` (§6.5, §6.5.6.1, §10.2, §11.5.2). `file_versions.content_key_generation`, restauration non destructive (§10.2, §19.5). Liens publics servis depuis `files.vxfm`, HTTP 410 quand le contenu a changé de clé (§5.11). `file_keys.vxfm` obsolète (§10.3). Les rotations laissent `files.vxfm` sous la clé du contenu (§11.1, §11.1.1, §17).
+- **17 :** alignement sur les changements de clés de fichier et de partage du code. Une nouvelle version garde la clé du fichier : `vxfk` seulement pour un nouveau fichier, `content_key_generation` posée à la dernière clé, `vxfk` et `latestVxfk` renvoyés par les routes de fichier, invariant sur `files.vxfm` (§6.5, §6.5.6.1, §10.2, §11.5.2). `file_versions.content_key_generation`, restauration non destructive (§10.2, §19.5). Liens publics servis depuis `files.vxfm`, HTTP 410 quand le contenu a changé de clé (§5.11). `file_keys.vxfm` obsolète (§10.3). Les rotations laissent `files.vxfm` sous la clé du contenu (§11.1, §11.1.1, §17). Nouveau blob `VXSW`, AAD et clé d'encapsulation en attente (§5.15). Id de partage généré par le client, `sender_vxsw` et `recipient_vxsw`, `vxsw` à l'acceptation, `PUT /api/v1/shares/{id}/recipient-copy` (§11).
 - **16 :** alignement sur le code actuel. Chemins d'API sous `/api/v1` (same-origin), UUID v7 presque partout, routes et schémas réels. `session_id` de `VXPS` généré par le client (§5.6, §9.2). `vxwm` et `vxsk` renvoyés seulement après `signin/finish`, `signin/start` uniforme (§8.2). `ts` informatif, sans contrôle obligatoire (§11.2). Nouveaux `VXMC` (§5.12) et `VXSI` (§5.13), dérivations `localCacheKey`, `sessionToken` et `childCollectionKeyWrap` (§4). Envoi direct pour les petits fichiers (§6.5). Flux de récupération (§12.1), CSP (§16.1) et suppression de compte (§19.3) réécrits. Nouvelle section sur les versions de fichiers (§19.5). Rechiffrement après révocation (§11.1.1) et sessions persistantes web (§9.2) marqués comme prévus. Nouveau blob `VXCC` pour les sous-collections créées par un éditeur, transitoire côté propriétaire (§5.14). Email vérifié par code avant la création du compte, `signup/start` uniforme (§8.1).
 
 [//]: # "LINKS"
