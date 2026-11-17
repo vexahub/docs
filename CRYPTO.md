@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-> **Document version:** 16
+> **Document version:** 17
 >
 > **Protocol version:** 1
 >
@@ -531,7 +531,10 @@ No fragment in the URL. The visitor requests the link via `token`, the server re
 
 Password-protected links are limited to **5 attempts per 15 minutes**. Beyond that the server refuses access until the window expires.
 
-The `VXFM` served for a file behind a public link is the one stored with the key generation pinned on the link (`key_generation`), so the visitor can decrypt it with the key wrapped in `VXPL` even after a later key rotation.
+The link pins the key generation it was created with (`key_generation`): the `fileKey` generation for a file link, the `collectionKey` generation for a collection link. A key rotation does not touch the content nor `files.vxfm`, which both stay under the content key (`files.content_key_generation`, [§10.2](#102-file-and-collection-table)), so the server serves `files.vxfm` directly:
+
+- **File link:** served while `files.content_key_generation` equals the pinned generation. Once the content is under another key (a new version after a rotation, or a re-encryption), the visitor's key can no longer decrypt it and the server answers HTTP 410.
+- **Collection link:** the server lists the files whose content key (the `file_keys` row at `files.content_key_generation`) is wrapped under the pinned `collectionKey` generation, with that `VXFK`. The other files cannot be decrypted by the visitor and are left out.
 
 > **Argon2id parameters** are identical to the OPAQUE registration parameters in [§2](#2-primitives). This is intentional: the same WASM/native implementation is reused, and the cost is appropriate for a one-time unlock operation.
 
@@ -736,7 +739,7 @@ The `generation` field is 32 bits, providing 4 billion modifications per file. T
 
 ### 6.5 Content Identification and Resumable Upload Integration
 
-VexaHub uses the [tus 1.0.0][tus_protocol] resumable upload protocol for file uploads between clients and the server, with one exception: files whose plaintext is smaller than **5 MiB** are sent in a single request to `POST /api/v1/uploads/direct` (multipart body with a `metadata` field carrying `vxfk`, `vxfm` and the upload parameters, and a `ciphertext` file part). The server rejects a direct upload whose ciphertext exceeds **5 MiB + 370 bytes** (5 segments of 74 bytes of overhead). The ciphertext format is identical in both paths. This section specifies how the cryptographic design integrates with **tus**, and how the **client** identifies file content in a way that preserves the **zero-knowledge** guarantee.
+VexaHub uses the [tus 1.0.0][tus_protocol] resumable upload protocol for file uploads between clients and the server, with one exception: files whose plaintext is smaller than **5 MiB** are sent in a single request to `POST /api/v1/uploads/direct` (multipart body with a `metadata` field carrying `vxfm`, `vxfk` for a new file only ([§6.5.6.1](#6561-commit)), and the upload parameters, and a `ciphertext` file part). The server rejects a direct upload whose ciphertext exceeds **5 MiB + 370 bytes** (5 segments of 74 bytes of overhead). The ciphertext format is identical in both paths. This section specifies how the cryptographic design integrates with **tus**, and how the **client** identifies file content in a way that preserves the **zero-knowledge** guarantee.
 
 ### 6.5.1 Goals
 
@@ -847,24 +850,26 @@ POST /api/v1/uploads/{tus_id}/commit
 Content-Type: application/json
 
 {
-    "vxfk": "<base64url>",   // VXFK blob (78 bytes)
+    "vxfk": "<base64url>",   // VXFK blob (78 bytes), new file only
     "vxfm": "<base64url>"    // VXFM blob (>=66 bytes)
 }
 ```
+
+`vxfk` is **required** for a new file and **refused** (HTTP 400) for a new version of an existing file: a new version keeps the file key. A fresh key would cut off the file shares and public links that hold the current one.
 
 The commit endpoint performs the following atomically within a single transaction:
 
 1. Verifies the upload is fully transferred.
 2. Checks storage quota.
-3. Creates the `files` row (new file) or updates it (existing file, generation bump), including `vxfm`.
-4. Creates the `file_keys` row with `vxfk`, `vxfm`, `keyGeneration`, and `collectionKeyGeneration` (pinned to the current collection key generation for public link support, see [§5.11](#511-vxpl---public-link-blob)).
+3. **New file:** creates the `files` row, including `vxfm`, with `content_key_generation = 0`, and the `file_keys` row with `vxfk`, `key_generation = 0` and `collection_key_generation` set to the current collection key generation.
+4. **New version:** keeps the previous generation as a version ([§19.5](#195-file-versions)), then updates the `files` row (generation bump, `vxfm`) and sets `content_key_generation` to the latest `key_generation` in `file_keys` and `pending_key_rotation` to `FALSE`. No `file_keys` row is created.
 5. Marks the `tus_uploads` row as completed.
 
-For **new files**, `keyGeneration` starts at `0`. For **file updates** (generation bump), `keyGeneration` is incremented from the current maximum.
+**Invariant:** `files.vxfm` and the current content are always encrypted under the `fileKey` at `files.content_key_generation`. The file routes return two keys: `vxfk`, the `VXFK` at `content_key_generation`, to read the content and `files.vxfm`, and `latestVxfk`, the `VXFK` at the latest `key_generation`, to encrypt a new version. They differ only after a key rotation ([§11.1](#111-share-revocation)).
 
 The route parameter is the tus upload id (`tusId`), not the `tus_uploads` row id. The `VXFM` minimum is 66 bytes: 50-byte header and nonce, plus the 16-byte tag.
 
-The client **MUST** generate `fileKey` via CSPRNG, derive `fileKeyWrapKey` from the parent `collectionKey`, wrap `fileKey` into the `VXFK` blob, derive `fileMetadataKey` from `fileKey`, and encrypt the file metadata into the `VXFM` blob **before** calling commit. The server validates blob magic and minimum sizes but cannot verify cryptographic correctness (zero-knowledge).
+For a **new file**, the client **MUST** generate `fileKey` via CSPRNG, derive `fileKeyWrapKey` from the parent `collectionKey`, wrap `fileKey` into the `VXFK` blob, derive `fileMetadataKey` from `fileKey`, and encrypt the file metadata into the `VXFM` blob **before** calling commit. For a **new version**, the client unwraps `latestVxfk`, encrypts the content and the `VXFM` under that `fileKey`, and sends no `vxfk`. The server validates blob magic and minimum sizes but cannot verify cryptographic correctness (zero-knowledge).
 
 If the upload targets an existing file (`file_id` set in tus metadata, or in the direct upload metadata), the server enforces:
 
@@ -1750,6 +1755,8 @@ CREATE INDEX ON files (collection_id) WHERE pending_key_rotation = TRUE;
 CREATE INDEX ON files (user_id) WHERE trashed_at IS NOT NULL;
 ```
 
+`content_key_generation` is the `file_keys.key_generation` under which the current content and `files.vxfm` are encrypted ([§6.5.6.1](#6561-commit)). A key rotation leaves it untouched.
+
 `trashed_at` exists on both `files` and `collections` for symmetric trash UX. See [§19.1](#191-file-deletion) (**file trash**) and [§19.2](#192-collection-deletion) (**collection trash**).
 
 ```sql
@@ -1762,6 +1769,7 @@ CREATE TABLE file_versions (
     storage_bytes   BIGINT NOT NULL,
     original_bytes  BIGINT,
     vxfm            BYTEA NOT NULL,           -- VXFM of that generation
+    content_key_generation INTEGER NOT NULL DEFAULT 0, -- file key generation of that content and VXFM
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at      TIMESTAMPTZ               -- NULL = kept without limit
 );
@@ -1798,7 +1806,7 @@ CREATE TABLE file_keys (
     file_id                     UUID NOT NULL REFERENCES files(id) ON DELETE RESTRICT,
     collection_id               UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
     vxfk                        BYTEA NOT NULL,
-    vxfm                        BYTEA,
+    vxfm                        BYTEA,           -- deprecated: never read
     key_generation              INTEGER NOT NULL DEFAULT 0,
     collection_key_generation   INTEGER NOT NULL DEFAULT 0,
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1816,6 +1824,8 @@ CREATE INDEX file_keys_collection_gen
 ```
 
 > **Multiple `file_keys` rows per file:** This introduces a model where multiple `file_keys` rows coexist for the same `file_id` during the window between key rotation and content re-encryption. The `key_generation DESC` index supports the "latest key" lookup. Server-side GC of old rows is described in [§11.1.1](#1111-optional-content-re-encryption-after-revocation).
+>
+> **`file_keys.vxfm` is deprecated.** The `VXFM` that is read is always `files.vxfm` (or `file_versions.vxfm` for a version), under the content key ([§6.5.6.1](#6561-commit)). The column will be removed together with the re-encryption work.
 
 ### 10.4 What the server knows vs does not know
 
@@ -1957,9 +1967,11 @@ Revocation removes a recipient's access and rotates keys so new content is crypt
    Retention lets the owner decrypt existing content under the old
    `fileKey`; **without re-encryption**, the old `VXFK` row is permanent.
 
-6. Sender re-encrypts all `VXFM` metadata blobs under new
-   `fileMetadataKey` values (derived from new `fileKey` via the standard
-   **HKDF** info string). Metadata is small, this is synchronous.
+6. Sender encrypts a `VXFM` per file under the new `fileMetadataKey`
+   (derived from the new `fileKey` via the standard **HKDF** info string),
+   stored in the new `file_keys` row. `files.vxfm` is **not** replaced:
+   it stays under the content key, like the content, until the next
+   version ([§6.5.6.1](#6561-commit)).
 
 7. Sender re-shares the new `collectionKey` with all remaining
    recipients via fresh `X-Wing` + `ML-DSA-65` invitations.
@@ -1978,7 +1990,7 @@ Revocation removes a recipient's access and rotates keys so new content is crypt
 2. Server sets `revoked_at = now()`. Revoked **recipient gets 403 immediately**.
 3. Sender generates a new `fileKey` via **CSPRNG**, increments `key_generation`.
 4. Sender re-wraps the new `fileKey` with `fileKeyWrapKey` -> new `VXFK` blob.
-5. Sender re-encrypts the `VXFM` metadata blob under new `fileMetadataKey`. Immediate.
+5. Sender encrypts a `VXFM` under the new `fileMetadataKey`, stored in the new `file_keys` row. `files.vxfm` stays under the content key until the next version ([§6.5.6.1](#6561-commit)).
 6. Sender re-shares with remaining recipients via fresh invitations.
 7. File content is **NOT re-encrypted by default**. The file is marked
    `pending_key_rotation = TRUE`; old `VXFK` rows at `key_generation` <= `M`
@@ -1992,7 +2004,7 @@ Revocation removes a recipient's access and rotates keys so new content is crypt
 | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | Revoked user cannot access content via the API                              | ✅ Immediate, server-enforced                                                                    |
 | New content after rotation uses fresh keys                                  | ✅ Both collection and file level                                                                |
-| Metadata re-encrypted immediately                                           | ✅ Small blobs, synchronous                                                                      |
+| Metadata re-encrypted immediately                                           | ❌ `files.vxfm` stays under the content key until the next version                               |
 | File content re-encrypted by default                                        | ❌ Off by default, opt-in per ([§11.1.1](#1111-optional-content-re-encryption-after-revocation)) |
 | File content re-encrypted when opted in                                     | ✅ Progressive, user-pausable, with progress UI                                                  |
 | File-level revocation without affecting other files in collection           | ✅ Independent fileKey rotation                                                                  |
@@ -2010,7 +2022,7 @@ Revocation removes a recipient's access and rotates keys so new content is crypt
 
 > Planned, not implemented in protocol version 1
 
-The default behavior on revocation is **key rotation only**: `collectionKey` and per-file `fileKey` values rotate, metadata blobs re-encrypt immediately, but file content remains encrypted under the previous `fileKey`. The owner retains old `VXFK` rows so they can still read existing content; revoked recipients lose access at the **API** layer.
+The default behavior on revocation is **key rotation only**: `collectionKey` and per-file `fileKey` values rotate, but file content and `files.vxfm` remain encrypted under the previous `fileKey` until the next version. The owner retains old `VXFK` rows so they can still read existing content; revoked recipients lose access at the **API** layer.
 
 This protects against future server compromise on the **strong assumption** that the revoked recipient did not retain a local copy of the old key. Recipients who kept local copies of files cannot have those copies retroactively invalidated; this is an inherent **E2EE** limitation.
 
@@ -2048,7 +2060,7 @@ This sets correct expectations: the user understands a large file is in progress
 
 #### Behavior when the setting is OFF (default)
 
-- Keys rotate, metadata re-encrypts, content remains under old keys.
+- Keys rotate, content and `files.vxfm` remain under old keys.
 - `pending_key_rotation = TRUE` is set on affected files but no client-side work is triggered.
 - The owner sees a per-collection notice: _"N files use older encryption keys."_ with an inline _"Re-encrypt now"_ action.
 - The flag remains until cleared explicitly (per file or collection-wide), or until the owner enables the setting.
@@ -2262,14 +2274,13 @@ The client cannot determine cryptographically whether the local version is newer
    3. Client re-encrypts local content under generation `M+1` nonce space.
    4. Client creates a new tus upload via `POST /api/v1/cloud` with metadata fields `generation = M+1` AND `expected_current_generation = M`. The server **MUST** persist `expected_current_generation = M` on the resulting `tus_uploads` row.
    5. The client uploads ciphertext via `PATCH` requests as usual. The `expected_current_generation` value is **NOT** re-checked on each PATCH (which would be racy and pointless); it is checked exactly once, at commit.
-   6. Client unwraps the existing `fileKey` at the current `key_generation`
-      (or uses the cached one if still in memory), wraps it into a `VXFK`
-      blob under the parent `collectionKey`, and encrypts metadata into a
-      new `VXFM` blob under the same `fileKey` with generation `M+1`.
-      The `key_generation` in `file_keys` does NOT increment. This is a
-      content update, not a key rotation.
-   7. On commit (`POST /api/v1/uploads/{tus_id}/commit` with `{ vxfk, vxfm }`, see [§6.5.6.1](#6561-commit)), the server validates: if `files.generation != tus_uploads.expected_current_generation`, the server returns HTTP 409 with the actual current generation in the response body and discards the upload. The client **MUST** re-enter conflict resolution from step 1, AND the user **MUST** be re-prompted because their previous decision was based on stale state.
-   8. On successful validation, the server commits atomically: increments `files.generation` to `M+1`, replaces ciphertext, stores the `VXFK` and `VXFM` blobs in `file_keys`, returns 204.
+   6. Client unwraps `latestVxfk`, the `fileKey` at the latest
+      `key_generation` (or uses the cached one if still in memory), and
+      encrypts the content and a new `VXFM` blob under it with generation
+      `M+1`. No `VXFK` is sent and no `file_keys` row is created. This is
+      a content update, not a key rotation.
+   7. On commit (`POST /api/v1/uploads/{tus_id}/commit` with `{ vxfm }`, see [§6.5.6.1](#6561-commit)), the server validates: if `files.generation != tus_uploads.expected_current_generation`, the server returns HTTP 409 with the actual current generation in the response body and discards the upload. The client **MUST** re-enter conflict resolution from step 1, AND the user **MUST** be re-prompted because their previous decision was based on stale state.
+   8. On successful validation, the server commits atomically: increments `files.generation` to `M+1`, replaces ciphertext and `files.vxfm`, sets `content_key_generation` to the latest `key_generation`, returns 204.
 
    **Keep both (conflicted copy):**
    1. Client sends `DELETE {tus_url}` to discard the failed upload.
@@ -2703,7 +2714,7 @@ isolation model of the **Crypto Worker**.
 | Server serves stale VXFM from previous generation      | Detected by client verifying VXFM generation matches file row generation                                                                                                                                                                                                                                                           |
 | Server truncates download (drops trailing segments)    | Detected by segment count in VXFM before full download                                                                                                                                                                                                                                                                             |
 | Email enumeration                                      | Uniform response on signup and on recovery start, and on login start (`signin/start` returns the same response shape whether the account exists or not; `vxwm` and `vxsk` only after the password is proven)                                                                                                                       |
-| Share revocation by collection/file owner              | New content protected by rotated keys; metadata re-encrypted immediately; old ciphertext unreachable via API; already-downloaded content not recoverable (E2EE limitation)                                                                                                                                                         |
+| Share revocation by collection/file owner              | New content protected by rotated keys; existing content and metadata stay under the old key until the next version; old ciphertext unreachable via API; already-downloaded content not recoverable (E2EE limitation)                                                                                                                                                         |
 | ML-DSA-65 signing key observed by attacker             | Mitigated by explicit sharing keypair rotation ([§11.3](#113-sharing-keypair-rotation)), which invalidates all pending outgoing shares and replaces public keys server-side                                                                                                                                                        |
 
 ## 18. Open Questions and Future Work
@@ -2932,12 +2943,13 @@ The value is capped by the plan's maximum. A scheduled job deletes versions whos
 - `POST /api/v1/storage/files/{id}/versions/{versionId}/delete`: delete one version.
 - `DELETE /api/v1/account/file-versions`: delete all versions of the account.
 
-**What a version keeps on the encryption side:** its own ciphertext (`storage_path`), its `generation` and the `VXFM` of that generation. It has no key of its own: it is decrypted with the file's `fileKey`, and its segment nonces come from its own `generation` ([§6.2](#62-per-segment-nonce-derivation)). The `VXFM` check of [§8.2](#82-login) step 16a applies with the version's generation.
+**What a version keeps on the encryption side:** its own ciphertext (`storage_path`), its `generation` and the `VXFM` of that generation. It has no key of its own: it is decrypted with the file's `fileKey` at its own `content_key_generation`, which can be older than the current one after a key rotation, and its segment nonces come from its own `generation` ([§6.2](#62-per-segment-nonce-derivation)). The `VXFM` check of [§8.2](#82-login) step 16a applies with the version's generation.
 
-**Restore:** the server switches the file row to the version's ciphertext, `VXFM` and `generation`, and discards the current generation and every version newer than the restored one. `files.max_generation` keeps the highest generation ever committed and is never moved back. Every upload **MUST** use a generation greater than `max_generation`, so a generation is never reused under the same `fileContentKey`, even after a restore ([§6.3](#63-file-generation-counter-mutability)).
+**Restore:** non-destructive. The server switches the file row to the version's ciphertext, `VXFM`, `generation` and `content_key_generation`, and keeps the current content as a version, according to the retention setting, so a restore can itself be undone. No version is discarded. `pending_key_rotation` is `TRUE` when the restored content is under an older key than the latest one, `FALSE` otherwise. `files.max_generation` keeps the highest generation ever committed and is never moved back. Every upload **MUST** use a generation greater than `max_generation`, so a generation is never reused under the same `fileContentKey`, even after a restore ([§6.3](#63-file-generation-counter-mutability)).
 
 ## Changelog
 
+- **17:** aligned with the file key changes in the code. A new version keeps the file key: `vxfk` only for a new file, `content_key_generation` set to the latest key, `vxfk` and `latestVxfk` returned by the file routes, invariant on `files.vxfm` (§6.5, §6.5.6.1, §10.2, §11.5.2). `file_versions.content_key_generation`, non-destructive restore (§10.2, §19.5). Public links served from `files.vxfm`, HTTP 410 once the content changed key (§5.11). `file_keys.vxfm` deprecated (§10.3). Rotations leave `files.vxfm` under the content key (§11.1, §11.1.1, §17).
 - **16:** aligned with the current code. API paths under `/api/v1` (same-origin), UUID v7 mostly everywhere, real routes and schemas. Client-generated `session_id` for `VXPS` (§5.6, §9.2). `vxwm` and `vxsk` returned only after `signin/finish`, uniform `signin/start` (§8.2). `ts` informative, no mandatory check (§11.2). New `VXMC` (§5.12) and `VXSI` (§5.13), `localCacheKey`, `sessionToken` and `childCollectionKeyWrap` derivations (§4). Direct upload for small files (§6.5). Rewritten recovery flow (§12.1), CSP (§16.1), account deletion (§19.3). New file versions section (§19.5). Re-encryption after revocation (§11.1.1) and web persistent sessions (§9.2) marked as planned. New `VXCC` blob for editor-created sub-collections, transitional on the owner side (§5.14). Email verified by code before the account is created, uniform `signup/start` (§8.1).
 
 [//]: # "LINKS"

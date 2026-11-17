@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique
 
-> **Version du document :** 16
+> **Version du document :** 17
 >
 > **Version du protocole :** 1
 >
@@ -526,7 +526,10 @@ Pas de fragment dans l'URL. Le visiteur accède au lien via `token`, le serveur 
 
 Les liens protégés par mot de passe sont limités à **5 tentatives par 15 minutes**. Au-delà, le serveur refuse l'accès jusqu'à la fin de la fenêtre.
 
-Le `VXFM` servi pour un fichier derrière un lien public est celui stocké avec la génération de clé épinglée sur le lien (`key_generation`). Le visiteur peut ainsi le déchiffrer avec la clé encapsulée dans `VXPL`, même après une rotation de clés ultérieure.
+Le lien épingle la génération de clé avec laquelle il a été créé (`key_generation`) : la génération de la `fileKey` pour un lien de fichier, celle de la `collectionKey` pour un lien de collection. Une rotation de clé ne touche ni au contenu ni à `files.vxfm`, qui restent tous deux sous la clé du contenu (`files.content_key_generation`, [§10.2](#102-tables-des-fichiers-et-collections)), donc le serveur sert directement `files.vxfm` :
+
+- **Lien de fichier :** servi tant que `files.content_key_generation` est égale à la génération épinglée. Dès que le contenu est sous une autre clé (nouvelle version après une rotation, ou rechiffrement), la clé du visiteur ne peut plus le déchiffrer et le serveur répond HTTP 410.
+- **Lien de collection :** le serveur liste les fichiers dont la clé du contenu (la ligne `file_keys` à `files.content_key_generation`) est encapsulée sous la génération de `collectionKey` épinglée, avec ce `VXFK`. Les autres fichiers ne peuvent pas être déchiffrés par le visiteur et sont écartés.
 
 > **Les paramètres Argon2id** sont identiques à ceux de l'enregistrement OPAQUE dans [§2](#2-primitives). C'est intentionnel : la même implémentation WASM/native est réutilisée, et le coût est approprié pour une opération de déverrouillage unique.
 
@@ -731,7 +734,7 @@ Le champ `generation` est sur 32 bits, offrant 4 milliards de modifications par 
 
 ### 6.5 Identification du contenu et intégration des envois reprenables
 
-VexaHub utilise le protocole d'envoi reprenable [tus 1.0.0][tus_protocol] pour les envois de fichiers entre clients et serveur, avec une exception : les fichiers dont le clair fait moins de **5 Mio** sont envoyés en une seule requête à `POST /api/v1/uploads/direct` (corps multipart avec un champ `metadata` qui porte `vxfk`, `vxfm` et les paramètres d'envoi, et une partie fichier `ciphertext`). Le serveur refuse un envoi direct dont le texte chiffré dépasse **5 Mio + 370 octets** (5 segments de 74 octets de surcoût). Le format du texte chiffré est identique dans les deux cas. Cette section spécifie comment la conception cryptographique s'intègre avec **tus**, et comment le **client** identifie le contenu du fichier d'une manière qui préserve la garantie **zéro-connaissance**.
+VexaHub utilise le protocole d'envoi reprenable [tus 1.0.0][tus_protocol] pour les envois de fichiers entre clients et serveur, avec une exception : les fichiers dont le clair fait moins de **5 Mio** sont envoyés en une seule requête à `POST /api/v1/uploads/direct` (corps multipart avec un champ `metadata` qui porte `vxfm`, `vxfk` pour un nouveau fichier seulement ([§6.5.6.1](#6561-commit)), et les paramètres d'envoi, et une partie fichier `ciphertext`). Le serveur refuse un envoi direct dont le texte chiffré dépasse **5 Mio + 370 octets** (5 segments de 74 octets de surcoût). Le format du texte chiffré est identique dans les deux cas. Cette section spécifie comment la conception cryptographique s'intègre avec **tus**, et comment le **client** identifie le contenu du fichier d'une manière qui préserve la garantie **zéro-connaissance**.
 
 ### 6.5.1 Objectifs
 
@@ -842,24 +845,26 @@ POST /api/v1/uploads/{tus_id}/commit
 Content-Type: application/json
 
 {
-    "vxfk": "<base64url>",   // blob VXFK (78 octets)
+    "vxfk": "<base64url>",   // blob VXFK (78 octets), nouveau fichier seulement
     "vxfm": "<base64url>"    // blob VXFM (>=66 octets)
 }
 ```
+
+`vxfk` est **obligatoire** pour un nouveau fichier et **refusé** (HTTP 400) pour une nouvelle version d'un fichier existant : une nouvelle version garde la clé du fichier. Une clé neuve couperait les partages de fichier et les liens publics qui détiennent la clé actuelle.
 
 Le endpoint de commit effectue les opérations suivantes de manière atomique au sein d'une seule transaction :
 
 1. Vérifie que le transfert est complet.
 2. Vérifie le quota de stockage.
-3. Crée la ligne `files` (nouveau fichier) ou la met à jour (fichier existant, incrémentation de génération), incluant `vxfm`.
-4. Crée la ligne `file_keys` avec `vxfk`, `vxfm`, `keyGeneration` et `collectionKeyGeneration` (épinglé à la génération de clé de collection courante pour le support des liens publics, voir [§5.11](#511-vxpl---blob-de-lien-public)).
+3. **Nouveau fichier :** crée la ligne `files`, incluant `vxfm`, avec `content_key_generation = 0`, et la ligne `file_keys` avec `vxfk`, `key_generation = 0` et `collection_key_generation` posée à la génération de clé de collection courante.
+4. **Nouvelle version :** conserve la génération précédente comme version ([§19.5](#195-versions-de-fichiers)), puis met à jour la ligne `files` (incrémentation de génération, `vxfm`), pose `content_key_generation` à la dernière `key_generation` de `file_keys` et `pending_key_rotation` à `FALSE`. Aucune ligne `file_keys` n'est créée.
 5. Marque la ligne `tus_uploads` comme terminée.
 
-Pour les **nouveaux fichiers**, `keyGeneration` commence à `0`. Pour les **mises à jour** (incrémentation de génération), `keyGeneration` est incrémenté à partir du maximum actuel.
+**Invariant :** `files.vxfm` et le contenu courant sont toujours chiffrés sous la `fileKey` à `files.content_key_generation`. Les routes de fichier renvoient deux clés : `vxfk`, le `VXFK` à `content_key_generation`, pour lire le contenu et `files.vxfm`, et `latestVxfk`, le `VXFK` à la dernière `key_generation`, pour chiffrer une nouvelle version. Elles ne diffèrent qu'après une rotation de clé ([§11.1](#111-révocation-de-partage)).
 
 Le paramètre de route est l'id d'envoi tus (`tusId`), et non l'id de la ligne `tus_uploads`. Le minimum de `VXFM` est de 66 octets : 50 octets d'en-tête et de nonce, plus le tag de 16 octets.
 
-Le client **DOIT** générer `fileKey` via CSPRNG, dériver `fileKeyWrapKey` depuis la `collectionKey` parente, envelopper `fileKey` dans le blob `VXFK`, dériver `fileMetadataKey` depuis `fileKey`, et chiffrer les métadonnées du fichier dans le blob `VXFM` **avant** d'appeler le commit. Le serveur valide le magic et les tailles minimales des blobs mais ne peut pas vérifier l'exactitude cryptographique (zero-knowledge).
+Pour un **nouveau fichier**, le client **DOIT** générer `fileKey` via CSPRNG, dériver `fileKeyWrapKey` depuis la `collectionKey` parente, envelopper `fileKey` dans le blob `VXFK`, dériver `fileMetadataKey` depuis `fileKey`, et chiffrer les métadonnées du fichier dans le blob `VXFM` **avant** d'appeler le commit. Pour une **nouvelle version**, le client désencapsule `latestVxfk`, chiffre le contenu et le `VXFM` sous cette `fileKey`, et n'envoie pas de `vxfk`. Le serveur valide le magic et les tailles minimales des blobs mais ne peut pas vérifier l'exactitude cryptographique (zero-knowledge).
 
 Si l'upload cible un fichier existant (`file_id` défini dans les métadonnées tus ou dans celles de l'envoi direct), le serveur applique :
 
@@ -1641,6 +1646,8 @@ CREATE INDEX ON files (collection_id) WHERE pending_key_rotation = TRUE;
 CREATE INDEX ON files (user_id) WHERE trashed_at IS NOT NULL;
 ```
 
+`content_key_generation` est la `file_keys.key_generation` sous laquelle le contenu courant et `files.vxfm` sont chiffrés ([§6.5.6.1](#6561-commit)). Une rotation de clé ne la modifie pas.
+
 `trashed_at` existe sur `files` et `collections` pour une expérience de corbeille symétrique. Voir [§19.1](#191-suppression-de-fichier) (**corbeille de fichiers**) et [§19.2](#192-suppression-de-collection) (**corbeille de collections**).
 
 ```sql
@@ -1653,6 +1660,7 @@ CREATE TABLE file_versions (
     storage_bytes   BIGINT NOT NULL,
     original_bytes  BIGINT,
     vxfm            BYTEA NOT NULL,           -- VXFM de cette génération
+    content_key_generation INTEGER NOT NULL DEFAULT 0, -- génération de clé de ce contenu et de ce VXFM
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at      TIMESTAMPTZ               -- NULL = conservée sans limite
 );
@@ -1689,7 +1697,7 @@ CREATE TABLE file_keys (
     file_id                     UUID NOT NULL REFERENCES files(id) ON DELETE RESTRICT,
     collection_id               UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
     vxfk                        BYTEA NOT NULL,
-    vxfm                        BYTEA,
+    vxfm                        BYTEA,           -- obsolète : jamais lu
     key_generation              INTEGER NOT NULL DEFAULT 0,
     collection_key_generation   INTEGER NOT NULL DEFAULT 0,
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1707,6 +1715,8 @@ CREATE INDEX file_keys_collection_gen
 ```
 
 > **Plusieurs lignes `file_keys` par fichier :** ce modèle permet à plusieurs lignes `file_keys` de coexister pour le même `file_id` pendant la fenêtre entre la rotation de clé et le rechiffrement du contenu. L'index `key_generation DESC` permet la recherche de la « clé la plus récente ». Le GC côté serveur des anciennes lignes est décrit au [§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation).
+>
+> **`file_keys.vxfm` est obsolète.** Le `VXFM` lu est toujours `files.vxfm` (ou `file_versions.vxfm` pour une version), sous la clé du contenu ([§6.5.6.1](#6561-commit)). La colonne sera supprimée avec le travail de rechiffrement.
 
 ### 10.4 Ce que le serveur sait et ne sait pas
 
@@ -1840,7 +1850,7 @@ La révocation supprime l'accès d'un destinataire et effectue une rotation des 
 
 5. L'expéditeur génère une nouvelle `fileKey` via **CSPRNG** pour chaque fichier de la collection. La nouvelle `fileKey` est encapsulée sous le nouveau `fileKeyWrapKey` (dérivé de la nouvelle `collectionKey`) et stockée comme nouvelle ligne `VXFK` dans `file_keys` avec `key_generation` = `M+1` (où M était le `key_generation` actuel avant la révocation). Les anciennes lignes `VXFK` à `key_generation` <= `M` sont **CONSERVÉES** indéfiniment sauf si le propriétaire **opte pour le rechiffrement du contenu** ([§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation)). La conservation permet au propriétaire de déchiffrer le contenu existant sous l'ancienne `fileKey` ; **sans rechiffrement**, l'ancienne ligne `VXFK` est permanente.
 
-6. L'expéditeur rechiffre tous les blobs de métadonnées `VXFM` sous les nouvelles valeurs de `fileMetadataKey` (dérivées de la nouvelle `fileKey` via la chaîne d'info **HKDF** standard). Les métadonnées sont petites, c'est synchrone.
+6. L'expéditeur chiffre un `VXFM` par fichier sous la nouvelle `fileMetadataKey` (dérivée de la nouvelle `fileKey` via la chaîne d'info **HKDF** standard), stocké dans la nouvelle ligne `file_keys`. `files.vxfm` n'est **pas** remplacé : il reste sous la clé du contenu, comme le contenu, jusqu'à la prochaine version ([§6.5.6.1](#6561-commit)).
 
 7. L'expéditeur repartage la nouvelle `collectionKey` avec tous les destinataires restants via de nouvelles invitations **X-Wing** + **ML-DSA-65**.
 
@@ -1854,7 +1864,7 @@ La révocation supprime l'accès d'un destinataire et effectue une rotation des 
 2. Le serveur définit `revoked_at = now()`. Le **destinataire révoqué obtient immédiatement un 403**.
 3. L'expéditeur génère une nouvelle `fileKey` via **CSPRNG**, incrémente `key_generation`.
 4. L'expéditeur réencapsule la nouvelle `fileKey` avec `fileKeyWrapKey` -> nouveau blob `VXFK`.
-5. L'expéditeur rechiffre le blob de métadonnées `VXFM` sous la nouvelle `fileMetadataKey`. Immédiat.
+5. L'expéditeur chiffre un `VXFM` sous la nouvelle `fileMetadataKey`, stocké dans la nouvelle ligne `file_keys`. `files.vxfm` reste sous la clé du contenu jusqu'à la prochaine version ([§6.5.6.1](#6561-commit)).
 6. L'expéditeur repartage avec les destinataires restants via de nouvelles invitations.
 7. Le contenu du fichier **n'est PAS rechiffré par défaut**. Le fichier est marqué `pending_key_rotation = TRUE` ; les anciennes lignes `VXFK` à `key_generation` <= `M` sont conservées aux côtés du nouveau `VXFK` à `key_generation` = `M+1`. Le compteur de `generation` du fichier **n'est PAS** incrémenté. Le rechiffrement n'a lieu que si le propriétaire **opte pour cette option** ([§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation)).
 
@@ -1864,7 +1874,7 @@ La révocation supprime l'accès d'un destinataire et effectue une rotation des 
 | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | L'utilisateur révoqué ne peut pas accéder au contenu via l'API                                                   | ✅ Immédiat, appliqué par le serveur                                                                       |
 | Le nouveau contenu après rotation utilise des clés fraîches                                                      | ✅ Au niveau collection et fichier                                                                         |
-| Les métadonnées sont rechiffrées immédiatement                                                                   | ✅ Petits blobs, synchrone                                                                                 |
+| Les métadonnées sont rechiffrées immédiatement                                                                   | ❌ `files.vxfm` reste sous la clé du contenu jusqu'à la prochaine version                                  |
 | Le contenu des fichiers est rechiffré par défaut                                                                 | ❌ Désactivé par défaut, opt-in via ([§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation)) |
 | Le contenu des fichiers est rechiffré lors de l'opt-in                                                           | ✅ Progressif, pausable par l'utilisateur, avec interface de progression                                   |
 | Révocation au niveau fichier sans affecter les autres fichiers de la collection                                  | ✅ Rotation indépendante de fileKey                                                                        |
@@ -1882,7 +1892,7 @@ La révocation supprime l'accès d'un destinataire et effectue une rotation des 
 
 > Prévu, non implémenté dans la version 1 du protocole
 
-Le comportement par défaut lors d'une révocation est **la rotation des clés uniquement** : les valeurs de `collectionKey` et de `fileKey` par fichier sont renouvelées, les blobs de métadonnées sont rechiffrés immédiatement, mais le contenu des fichiers reste chiffré sous l'ancienne `fileKey`. Le propriétaire conserve les anciennes lignes `VXFK` pour pouvoir lire le contenu existant ; les destinataires révoqués perdent l'accès au niveau de l'**API**.
+Le comportement par défaut lors d'une révocation est **la rotation des clés uniquement** : les valeurs de `collectionKey` et de `fileKey` par fichier sont renouvelées, mais le contenu des fichiers et `files.vxfm` restent chiffrés sous l'ancienne `fileKey` jusqu'à la prochaine version. Le propriétaire conserve les anciennes lignes `VXFK` pour pouvoir lire le contenu existant ; les destinataires révoqués perdent l'accès au niveau de l'**API**.
 
 Cela protège contre une future compromission du serveur, à la **condition forte** que le destinataire révoqué n'ait pas conservé une copie locale de l'ancienne clé. Les destinataires ayant gardé des copies locales de fichiers ne peuvent pas voir ces copies invalidées rétroactivement ; il s'agit d'une limitation inhérente à l'**E2EE**.
 
@@ -1920,7 +1930,7 @@ Cela fixe des attentes correctes : l'utilisateur comprend qu'un fichier volumine
 
 #### Comportement lorsque le paramètre est DÉSACTIVÉ (par défaut)
 
-- Les clés sont renouvelées, les métadonnées rechiffrées, le contenu reste sous les anciennes clés.
+- Les clés sont renouvelées, le contenu et `files.vxfm` restent sous les anciennes clés.
 - `pending_key_rotation = TRUE` est défini sur les fichiers concernés mais aucun travail côté client n'est déclenché.
 - Le propriétaire voit une notification par collection : _« N fichiers utilisent d'anciennes clés de chiffrement. »_ avec une action _« Rechiffrer maintenant »_ intégrée.
 - L'indicateur reste jusqu'à ce qu'il soit effacé explicitement (par fichier ou par collection entière), ou jusqu'à ce que le propriétaire active le paramètre.
@@ -2134,14 +2144,13 @@ Le client ne peut pas déterminer cryptographiquement si sa version locale est p
    3. Le client rechiffre le contenu local sous l'espace de nonces de génération `M+1`.
    4. Le client crée un nouveau téléversement tus via `POST /api/v1/cloud` avec les champs de métadonnées `generation = M+1` ET `expected_current_generation = M`. Le serveur **DOIT** persister `expected_current_generation = M` sur la ligne `tus_uploads` résultante.
    5. Le client téléverse le texte chiffré via des requêtes `PATCH` comme d'habitude. La valeur `expected_current_generation` **n'est PAS** revérifiée à chaque PATCH (ce qui serait sujet aux courses et inutile) ; elle est vérifiée exactement une fois, à la validation.
-   6. Le client désencapsule la `fileKey` existante à la `key_generation` courante
-      (ou utilise celle en cache si encore en mémoire), l'enveloppe dans un blob
-      `VXFK` sous la `collectionKey` parente, et chiffre les métadonnées dans un
-      nouveau blob `VXFM` sous la même `fileKey` avec la génération `M+1`.
-      La `key_generation` dans `file_keys` **n'est PAS** incrémentée. Il s'agit
-      d'une mise à jour de contenu, pas d'une rotation de clé.
-   7. Au commit (`POST /api/v1/uploads/{tus_id}/commit` avec `{ vxfk, vxfm }`, voir [§6.5.6.1](#6561-commit)), le serveur vérifie : si `files.generation != tus_uploads.expected_current_generation`, le serveur retourne HTTP 409 avec la génération actuelle réelle dans le corps de la réponse et abandonne le téléversement. Le client **DOIT** réentrer dans la résolution de conflit depuis l'étape 1, ET l'utilisateur **DOIT** être reinvité car sa décision précédente était basée sur un état périmé.
-   8. Après validation réussie, le serveur valide atomiquement : incrémente `files.generation` à `M+1`, remplace le texte chiffré, stocke les blobs `VXFK` et `VXFM` dans `file_keys`, retourne 204.
+   6. Le client désencapsule `latestVxfk`, la `fileKey` à la dernière
+      `key_generation` (ou utilise celle en cache si encore en mémoire), et
+      chiffre sous elle le contenu et un nouveau blob `VXFM` avec la génération
+      `M+1`. Aucun `VXFK` n'est envoyé et aucune ligne `file_keys` n'est créée.
+      Il s'agit d'une mise à jour de contenu, pas d'une rotation de clé.
+   7. Au commit (`POST /api/v1/uploads/{tus_id}/commit` avec `{ vxfm }`, voir [§6.5.6.1](#6561-commit)), le serveur vérifie : si `files.generation != tus_uploads.expected_current_generation`, le serveur retourne HTTP 409 avec la génération actuelle réelle dans le corps de la réponse et abandonne le téléversement. Le client **DOIT** réentrer dans la résolution de conflit depuis l'étape 1, ET l'utilisateur **DOIT** être reinvité car sa décision précédente était basée sur un état périmé.
+   8. Après validation réussie, le serveur valide atomiquement : incrémente `files.generation` à `M+1`, remplace le texte chiffré et `files.vxfm`, pose `content_key_generation` à la dernière `key_generation`, retourne 204.
 
    **Conserver les deux (copie en conflit) :**
    1. Le client envoie `DELETE {tus_url}` pour annuler le téléversement échoué.
@@ -2536,7 +2545,7 @@ Le matériel de clés traverse les frontières de threads exclusivement via `pos
 | Le serveur sert un VXFM périmé d'une génération précédente                         | Détecté par le client vérifiant que la génération VXFM correspond à la génération de la ligne du fichier                                                                                                                                                                                                                                                                                        |
 | Le serveur tronque le téléchargement (supprime les segments de fin)                | Détecté par le nombre de segments dans VXFM avant le téléchargement complet                                                                                                                                                                                                                                                                                                                     |
 | Énumération d'emails                                                               | Réponse uniforme à l'inscription et au démarrage de la récupération, et au démarrage de la connexion (`signin/start` renvoie la même forme de réponse que le compte existe ou non ; `vxwm` et `vxsk` seulement après preuve du mot de passe)                                                                                                                                                    |
-| Révocation de partage par le propriétaire de collection/fichier                    | Le nouveau contenu est protégé par des clés renouvelées ; les métadonnées sont rechiffrées immédiatement ; l'ancien texte chiffré est inaccessible via l'API ; le contenu déjà téléchargé ne peut pas être récupéré (limitation E2EE)                                                                                                                                                           |
+| Révocation de partage par le propriétaire de collection/fichier                    | Le nouveau contenu est protégé par des clés renouvelées ; le contenu et les métadonnées existants restent sous l'ancienne clé jusqu'à la prochaine version ; l'ancien texte chiffré est inaccessible via l'API ; le contenu déjà téléchargé ne peut pas être récupéré (limitation E2EE)                                                                                                                                                           |
 | Clé de signature ML-DSA-65 observée par un attaquant                               | Mitigé par la rotation explicite de la paire de clés de partage ([§11.3](#113-rotation-de-la-paire-de-clés-de-partage)), qui invalide tous les partages sortants en attente et remplace les clés publiques côté serveur                                                                                                                                                                         |
 
 ## 18. Questions ouvertes et travaux futurs
@@ -2745,12 +2754,13 @@ La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée suppri
 - `POST /api/v1/storage/files/{id}/versions/{versionId}/delete` : supprime une version.
 - `DELETE /api/v1/account/file-versions` : supprime toutes les versions du compte.
 
-**Ce qu'une version conserve côté chiffrement :** son propre texte chiffré (`storage_path`), sa `generation` et le `VXFM` de cette génération. Elle n'a pas de clé propre : elle se déchiffre avec la `fileKey` du fichier, et ses nonces de segment viennent de sa propre `generation` ([§6.2](#62-dérivation-de-nonce-par-segment)). Le contrôle du `VXFM` de l'étape 16a du [§8.2](#82-connexion) s'applique avec la génération de la version.
+**Ce qu'une version conserve côté chiffrement :** son propre texte chiffré (`storage_path`), sa `generation` et le `VXFM` de cette génération. Elle n'a pas de clé propre : elle se déchiffre avec la `fileKey` du fichier à sa propre `content_key_generation`, qui peut être plus ancienne que la courante après une rotation de clé, et ses nonces de segment viennent de sa propre `generation` ([§6.2](#62-dérivation-de-nonce-par-segment)). Le contrôle du `VXFM` de l'étape 16a du [§8.2](#82-connexion) s'applique avec la génération de la version.
 
-**Restauration :** le serveur bascule la ligne du fichier sur le texte chiffré, le `VXFM` et la `generation` de la version, et abandonne la génération courante ainsi que toutes les versions plus récentes que celle restaurée. `files.max_generation` garde la plus haute génération jamais validée et ne recule jamais. Tout envoi **DOIT** utiliser une génération supérieure à `max_generation` : une génération n'est donc jamais réutilisée sous la même `fileContentKey`, même après une restauration ([§6.3](#63-compteur-de-génération-de-fichier-mutabilité)).
+**Restauration :** non destructive. Le serveur bascule la ligne du fichier sur le texte chiffré, le `VXFM`, la `generation` et la `content_key_generation` de la version, et conserve le contenu courant comme version, selon le réglage de rétention : une restauration peut donc elle-même être annulée. Aucune version n'est abandonnée. `pending_key_rotation` vaut `TRUE` quand le contenu restauré est sous une clé plus ancienne que la dernière, `FALSE` sinon. `files.max_generation` garde la plus haute génération jamais validée et ne recule jamais. Tout envoi **DOIT** utiliser une génération supérieure à `max_generation` : une génération n'est donc jamais réutilisée sous la même `fileContentKey`, même après une restauration ([§6.3](#63-compteur-de-génération-de-fichier-mutabilité)).
 
 ## Historique des modifications
 
+- **17 :** alignement sur les changements de clés de fichier du code. Une nouvelle version garde la clé du fichier : `vxfk` seulement pour un nouveau fichier, `content_key_generation` posée à la dernière clé, `vxfk` et `latestVxfk` renvoyés par les routes de fichier, invariant sur `files.vxfm` (§6.5, §6.5.6.1, §10.2, §11.5.2). `file_versions.content_key_generation`, restauration non destructive (§10.2, §19.5). Liens publics servis depuis `files.vxfm`, HTTP 410 quand le contenu a changé de clé (§5.11). `file_keys.vxfm` obsolète (§10.3). Les rotations laissent `files.vxfm` sous la clé du contenu (§11.1, §11.1.1, §17).
 - **16 :** alignement sur le code actuel. Chemins d'API sous `/api/v1` (same-origin), UUID v7 presque partout, routes et schémas réels. `session_id` de `VXPS` généré par le client (§5.6, §9.2). `vxwm` et `vxsk` renvoyés seulement après `signin/finish`, `signin/start` uniforme (§8.2). `ts` informatif, sans contrôle obligatoire (§11.2). Nouveaux `VXMC` (§5.12) et `VXSI` (§5.13), dérivations `localCacheKey`, `sessionToken` et `childCollectionKeyWrap` (§4). Envoi direct pour les petits fichiers (§6.5). Flux de récupération (§12.1), CSP (§16.1) et suppression de compte (§19.3) réécrits. Nouvelle section sur les versions de fichiers (§19.5). Rechiffrement après révocation (§11.1.1) et sessions persistantes web (§9.2) marqués comme prévus. Nouveau blob `VXCC` pour les sous-collections créées par un éditeur, transitoire côté propriétaire (§5.14). Email vérifié par code avant la création du compte, `signup/start` uniforme (§8.1).
 
 [//]: # "LINKS"
