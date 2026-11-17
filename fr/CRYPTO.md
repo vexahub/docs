@@ -155,6 +155,8 @@ fileKeyWrapKey = HKDF-SHA-512(
 
 Tous les blobs chiffrés utilisent des formats binaires versionnés et auto-descriptifs, préfixés par 4 octets magiques, une version de format et un identifiant d'algorithme. Les parseurs **DOIVENT** vérifier les octets magiques, la version et l'algorithme avant le déchiffrement. Les valeurs inconnues **DOIVENT** provoquer une erreur, jamais un repli silencieux.
 
+Le serveur vérifie les mêmes champs d'en-tête sur chaque blob qu'il reçoit, ainsi que sa taille (exacte ou minimale, selon chaque section) et son encodage base64url sans padding. Sinon, il refuse la requête (HTTP 400). Il ne peut pas vérifier le texte chiffré lui-même (zero-knowledge).
+
 Identifiants d'algorithme :
 
 - `0x01` -> XChaCha20-Poly1305
@@ -704,7 +706,7 @@ Décalage  Taille  Champ
 Total : 78 octets
 ```
 
-> **En attente :** l'AAD et la dérivation de la clé d'encapsulation ([§4](#4-séparation-de-domaine-hkdf)) sont fixées dans cette révision avant que le client web ne produise de blobs `VXSW`. Le serveur ne vérifie que la taille et le magique.
+> **En attente :** l'AAD et la dérivation de la clé d'encapsulation ([§4](#4-séparation-de-domaine-hkdf)) sont fixées dans cette révision avant que le client web ne produise de blobs `VXSW`. Le serveur vérifie le format comme pour tout autre blob ([§5](#5-formats-de-blob-binaires)).
 
 Stockage côté serveur : `shares.sender_vxsw` (posé à la création) et `shares.recipient_vxsw` (posé à l'acceptation ou plus tard, voir [§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)). Chaque côté ne reçoit jamais que sa propre copie.
 
@@ -884,7 +886,7 @@ Le endpoint de commit effectue les opérations suivantes de manière atomique au
 
 Le paramètre de route est l'id d'envoi tus (`tusId`), et non l'id de la ligne `tus_uploads`. Le minimum de `VXFM` est de 66 octets : 50 octets d'en-tête et de nonce, plus le tag de 16 octets.
 
-Pour un **nouveau fichier**, le client **DOIT** générer `fileKey` via CSPRNG, dériver `fileKeyWrapKey` depuis la `collectionKey` parente, envelopper `fileKey` dans le blob `VXFK`, dériver `fileMetadataKey` depuis `fileKey`, et chiffrer les métadonnées du fichier dans le blob `VXFM` **avant** d'appeler le commit. Pour une **nouvelle version**, le client désencapsule `latestVxfk`, chiffre le contenu et le `VXFM` sous cette `fileKey`, et n'envoie pas de `vxfk`. Le serveur valide le magic et les tailles minimales des blobs mais ne peut pas vérifier l'exactitude cryptographique (zero-knowledge).
+Pour un **nouveau fichier**, le client **DOIT** générer `fileKey` via CSPRNG, dériver `fileKeyWrapKey` depuis la `collectionKey` parente, envelopper `fileKey` dans le blob `VXFK`, dériver `fileMetadataKey` depuis `fileKey`, et chiffrer les métadonnées du fichier dans le blob `VXFM` **avant** d'appeler le commit. Pour une **nouvelle version**, le client désencapsule `latestVxfk`, chiffre le contenu et le `VXFM` sous cette `fileKey`, et n'envoie pas de `vxfk`. Le serveur valide le format des blobs ([§5](#5-formats-de-blob-binaires)) mais ne peut pas vérifier l'exactitude cryptographique (zero-knowledge).
 
 Si l'upload cible un fichier existant (`file_id` défini dans les métadonnées tus ou dans celles de l'envoi direct), le serveur applique :
 
@@ -2786,7 +2788,7 @@ La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée suppri
 
 ## Historique des modifications
 
-- **17 :** alignement sur les changements de clés de fichier et de partage du code. Une nouvelle version garde la clé du fichier : `vxfk` seulement pour un nouveau fichier, `content_key_generation` posée à la dernière clé, `vxfk` et `latestVxfk` renvoyés par les routes de fichier, invariant sur `files.vxfm` (§6.5, §6.5.6.1, §10.2, §11.5.2). `file_versions.content_key_generation`, restauration non destructive (§10.2, §19.5). Liens publics servis depuis `files.vxfm`, HTTP 410 quand le contenu a changé de clé (§5.11). `file_keys.vxfm` obsolète (§10.3). Les rotations laissent `files.vxfm` sous la clé du contenu (§11.1, §11.1.1, §17). Nouveau blob `VXSW`, AAD et clé d'encapsulation en attente (§5.15). Id de partage généré par le client, `sender_vxsw` et `recipient_vxsw`, `vxsw` à l'acceptation, `PUT /api/v1/shares/{id}/recipient-copy` (§11).
+- **17 :** alignement sur les changements de clés de fichier et de partage du code. Une nouvelle version garde la clé du fichier : `vxfk` seulement pour un nouveau fichier, `content_key_generation` posée à la dernière clé, `vxfk` et `latestVxfk` renvoyés par les routes de fichier, invariant sur `files.vxfm` (§6.5, §6.5.6.1, §10.2, §11.5.2). `file_versions.content_key_generation`, restauration non destructive (§10.2, §19.5). Liens publics servis depuis `files.vxfm`, HTTP 410 quand le contenu a changé de clé (§5.11). `file_keys.vxfm` obsolète (§10.3). Les rotations laissent `files.vxfm` sous la clé du contenu (§11.1, §11.1.1, §17). Nouveau blob `VXSW`, AAD et clé d'encapsulation en attente (§5.15). Id de partage généré par le client, `sender_vxsw` et `recipient_vxsw`, `vxsw` à l'acceptation, `PUT /api/v1/shares/{id}/recipient-copy` (§11). Vérification côté serveur du format de chaque blob (§5, §5.15, §6.5.6.1).
 - **16 :** alignement sur le code actuel. Chemins d'API sous `/api/v1` (same-origin), UUID v7 presque partout, routes et schémas réels. `session_id` de `VXPS` généré par le client (§5.6, §9.2). `vxwm` et `vxsk` renvoyés seulement après `signin/finish`, `signin/start` uniforme (§8.2). `ts` informatif, sans contrôle obligatoire (§11.2). Nouveaux `VXMC` (§5.12) et `VXSI` (§5.13), dérivations `localCacheKey`, `sessionToken` et `childCollectionKeyWrap` (§4). Envoi direct pour les petits fichiers (§6.5). Flux de récupération (§12.1), CSP (§16.1) et suppression de compte (§19.3) réécrits. Nouvelle section sur les versions de fichiers (§19.5). Rechiffrement après révocation (§11.1.1) et sessions persistantes web (§9.2) marqués comme prévus. Nouveau blob `VXCC` pour les sous-collections créées par un éditeur, transitoire côté propriétaire (§5.14). Email vérifié par code avant la création du compte, `signup/start` uniforme (§8.1).
 
 [//]: # "LINKS"
