@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique | **Addenda**
 
-> **Version du document :** 3
+> **Version du document :** 4
 >
 > **Statut :** (Brouillon) Proposé
 
@@ -238,7 +238,7 @@ L'IKM est une sortie **CSPRNG** uniformément aléatoire (héritée de `collecti
 3. L'éditeur dérive `childCollectionKeyWrapKey` depuis `parentCollectionKey` et `child_uuid`.
 4. L'éditeur encapsule `collectionKey` avec `childCollectionKeyWrapKey` -> blob `VXCC`.
 
-   `VXCC` a la même structure que `VXCK` (78 octets), avec le magique `"VXCC"` (0x56 0x58 0x43 0x43) et l'AAD `parent_id ‖ collection_id` (32 octets, UUIDs bruts). Le magique indique à tout lecteur de le désencapsuler avec la `collectionKey` parente, et non avec une `masterKey`.
+   `VXCC` a la même structure que `VXCK` (78 octets), avec le magique `"VXCC"` (0x56 0x58 0x43 0x43) et l'AAD `parent_id ‖ collection_id ‖ uint32_be(parent_key_generation)` (36 octets), où `parent_key_generation` est la génération de la `collectionKey` parente sous laquelle il est encapsulé ([CRYPTO §5.14](/fr/CRYPTO.md#514-vxcc---clé-de-collection-encapsulée-par-la-collection-parente)). Le magique indique à tout lecteur de le désencapsuler avec la `collectionKey` parente, et non avec une `masterKey`.
 
 5. Éditeur -> Serveur : `POST /api/v1/shares/{shareId}/subcollections` avec :
    - `id` (`child_uuid` généré côté client)
@@ -265,7 +265,7 @@ L'éditeur et le propriétaire dérivent tous deux `childCollectionKeyWrapKey` d
 
 La première fois que le client du propriétaire désencapsule un `VXCC` de ses propres `collection_keys`, il **DOIT** :
 
-1. Réencapsuler la même `collectionKey` avec `collectionKeyWrapKey` dérivée de `masterKey` -> `VXCK` classique (AAD `user_id ‖ collection_id`).
+1. Réencapsuler la même `collectionKey` avec `collectionKeyWrapKey` dérivée de `masterKey` -> `VXCK` classique (AAD `user_id ‖ collection_id ‖ uint32_be(key_generation)`, [CRYPTO §5.8](/fr/CRYPTO.md#58-vxck---clé-de-collection-encapsulée)).
 2. Envoyer `PUT /api/v1/storage/collections/{id}/key { vxck, keyGeneration }`, où `keyGeneration` est celle du `VXCC` désencapsulé.
 
 Le serveur **DOIT** l'accepter uniquement du propriétaire de la collection, uniquement si le blob stocké est encore un `VXCC` à cette `keyGeneration`, et **DOIT** le remplacer sur place. Sinon il répond `HTTP 409` (blob changé, par exemple après une rotation) ou `HTTP 403` (compte en lecture seule) : le client continue avec le `VXCC` et réessaie lors d'un prochain déchiffrement.
@@ -317,6 +317,7 @@ La chaîne d'info `"vexahub:v1:childCollectionKeyWrap:"` est distincte de toutes
 
 ## Historique des modifications
 
+- **4 :** génération de clé dans l'AAD de `VXCC` et du `VXCK` du propriétaire (§21.2, §21.3), alignée sur CRYPTO v17.
 - **3 :** journal d'audit activé par défaut, scellé avec la clé publique X-Wing de l'utilisateur, rétention de 6 mois (§20.1, §20.3, §20.4, nouveau §20.9). Liste des événements alignée sur le code (§20.2). Seul `UPDATE` est retiré au rôle applicatif (§20.3). Masquage d'IP décrit pour le backend TypeScript (§20.6). §21 renommé en `childCollectionKeyWrap`, UUID v7, route réelle, marqué comme prévu. Blob `VXCC` pour la clé de sous-collection, réencapsulé en `VXCK` par le propriétaire (§21.2 à §21.5, §21.7).
 
 [//]: # "LINKS"

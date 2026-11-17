@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification | **Addendum**
 
-> **Document version:** 3
+> **Document version:** 4
 >
 > **Status:** (Draft) Proposed
 
@@ -266,7 +266,7 @@ All UUIDs in `info` strings are encoded as raw 16-byte big-endian binary.
    `child_uuid`.
 4. Editor wraps `collectionKey` with `childCollectionKeyWrapKey` -> `VXCC` blob.
 
-   `VXCC` has the same layout as `VXCK` (78 bytes) with magic `"VXCC"` (0x56 0x58 0x43 0x43) and AAD `parent_id ‖ collection_id` (32 bytes, raw UUIDs). The magic tells every reader to unwrap it with the parent `collectionKey`, not with a `masterKey`.
+   `VXCC` has the same layout as `VXCK` (78 bytes) with magic `"VXCC"` (0x56 0x58 0x43 0x43) and AAD `parent_id ‖ collection_id ‖ uint32_be(parent_key_generation)` (36 bytes), where `parent_key_generation` is the generation of the parent `collectionKey` it is wrapped under ([CRYPTO §5.14](CRYPTO.md#514-vxcc---child-wrapped-collection-key)). The magic tells every reader to unwrap it with the parent `collectionKey`, not with a `masterKey`.
 
 5. Editor -> Server: `POST /api/v1/shares/{shareId}/subcollections` with:
    - `id` (client-generated `child_uuid`)
@@ -300,7 +300,7 @@ of `parentCollectionKey` and the `child_uuid`. Both can unwrap
 
 The first time the owner's client unwraps a `VXCC` from its own `collection_keys`, it **MUST**:
 
-1. Re-wrap the same `collectionKey` with `collectionKeyWrapKey` derived from `masterKey` -> regular `VXCK` (AAD `user_id ‖ collection_id`).
+1. Re-wrap the same `collectionKey` with `collectionKeyWrapKey` derived from `masterKey` -> regular `VXCK` (AAD `user_id ‖ collection_id ‖ uint32_be(key_generation)`, [CRYPTO §5.8](CRYPTO.md#58-vxck---wrapped-collection-key)).
 2. Send `PUT /api/v1/storage/collections/{id}/key { vxck, keyGeneration }`, where `keyGeneration` is the one of the `VXCC` it unwrapped.
 
 The server **MUST** accept it only from the collection owner, only while the stored blob is still a `VXCC` at that `keyGeneration`, and **MUST** replace it in place. Otherwise it answers `HTTP 409` (blob changed, for example after a rotation) or `HTTP 403` (read-only account): the client keeps using the `VXCC` and retries on a later unwrap.
@@ -359,6 +359,7 @@ existing info strings in [§4](./CRYPTO.md#4-hkdf-domain-separation). No protoco
 
 ## Changelog
 
+- **4:** key generation in the AAD of `VXCC` and of the owner `VXCK` (§21.2, §21.3), aligned with CRYPTO v17.
 - **3:** audit log enabled by default, sealed with the user's X-Wing public key, 6-month retention (§20.1, §20.3, §20.4, new §20.9). Events list aligned with the code (§20.2). `UPDATE` alone is withheld from the application role (§20.3). IP masking described for the TypeScript backend (§20.6). §21 renamed to `childCollectionKeyWrap`, UUID v7, real route, marked as planned. `VXCC` blob for the sub-collection key, re-wrapped as `VXCK` by the owner (§21.2 to §21.5, §21.7).
 
 [//]: # "LINKS"

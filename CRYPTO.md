@@ -111,6 +111,8 @@ For `shareWrapKey`, the **IKM** is the **X-Wing** shared secret (output of **a K
 | localCacheKey from masterKey                     | `vexahub:v1:localCacheKey`                                                                                                                          | 32                    |
 | searchIndexKey from masterKey                    | `vexahub:v1:searchIndexKey`                                                                                                                         | 32                    |
 | childCollectionKeyWrap from parent collectionKey | `vexahub:v1:childCollectionKeyWrap:{child_uuid}` (see [Addendum §21](CRYPTO_ADDENDUM.md#21-sub-collection-creation-by-an-editor)) | 32                    |
+| shareWrapCopy from masterKey                     | `vexahub:v1:shareWrapCopy:{share_uuid}`                                                                                                             | 32                    |
+| shareCollectionKeyWrap from shareWrapKey         | `vexahub:v1:shareCollectionKeyWrap:{collection_uuid}`                                                                                               | 32                    |
 
 > HKDF salts are not secrets; uniqueness is enforced exclusively by the `info` field.
 >
@@ -148,6 +150,26 @@ fileKeyWrapKey = HKDF-SHA-512(
     L    = 32
 )
 ```
+
+Each side of a share wraps its copy of `shareWrapKey` ([§5.15](#515-vxsw---share-wrap-key-copy)) under a key derived from its own `masterKey`. The collection keys of a share ([§5.8](#58-vxck---wrapped-collection-key)) are wrapped under a key derived from `shareWrapKey`, never under `shareWrapKey` itself, which already wraps the `VXSH`:
+
+```rs
+shareWrapCopyKey = HKDF-SHA-512(
+    ikm  = masterKey,
+    salt = 32 zero bytes,
+    info = "vexahub:v1:shareWrapCopy:" || share_uuid,
+    L    = 32
+)
+
+shareCollectionKeyWrapKey = HKDF-SHA-512(
+    ikm  = shareWrapKey,
+    salt = 32 zero bytes,
+    info = "vexahub:v1:shareCollectionKeyWrap:" || collection_uuid,
+    L    = 32
+)
+```
+
+`shareWrapKey` is itself an HKDF output, uniformly random, so the zero salt policy applies.
 
 > `linkKey` is either raw CSPRNG output (keyless link) or Argon2id output (password-protected link). In both cases, HKDF domain separation via `link_id` ensures distinct wrapping keys per link. Zero salt applies (same policy as other CSPRNG-sourced IKM derivations).
 
@@ -379,8 +401,16 @@ Total: 78 bytes
 ```
 
 ```rs
-AAD: user_id ‖ collection_id (32 bytes, both raw UUID)
+// Owner copy, key: collectionKeyWrapKey (§4)
+AAD: user_id ‖ collection_id ‖ uint32_be(key_generation) // 36 bytes
+
+// Share copy, key: shareCollectionKeyWrapKey (§4)
+AAD: share_id ‖ collection_id ‖ uint32_be(key_generation) // 36 bytes
 ```
+
+`key_generation` is the generation of the wrapped `collectionKey`. The owner copy lives in `collection_keys` ([§10.3](#103-file-and-collection-keys-table)), the share copy in `share_collection_keys` ([§11](#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)). A share copy at generation `K` wraps the same `collectionKey` as the owner copy at generation `K`.
+
+> **Generation binding:** `VXCK`, `VXFK` ([§5.9](#59-vxfk---wrapped-file-key)) and `VXCC` ([§5.14](#514-vxcc---child-wrapped-collection-key)) bind the key generation in their AAD, so the server cannot serve an older key, known to a revoked recipient, as a newer one: the unwrap fails. It can still withhold a newer generation. Clients **SHOULD** keep the highest generation seen per collection and per file in local storage, and **MUST NOT** encrypt new content or wrap a new key under a lower generation than the one they keep.
 
 ### 5.9 `VXFK` - Wrapped File Key
 
@@ -397,8 +427,11 @@ Total: 78 bytes
 ```
 
 ```rs
-AAD: collection_id ‖ file_id (32 bytes, both raw UUID)
+AAD: collection_id ‖ file_id ‖ uint32_be(key_generation) // 36 bytes
+Key: fileKeyWrapKey (§4)
 ```
+
+`key_generation` is the generation of the wrapped `fileKey` in `file_keys` ([§10.3](#103-file-and-collection-keys-table)).
 
 ### 5.10 `VXSH` - Wrapped sharing key
 
@@ -683,9 +716,11 @@ Total: 78 bytes
 ```
 
 ```rs
-AAD: parent_id ‖ collection_id (32 bytes, both raw UUID)
+AAD: parent_id ‖ collection_id ‖ uint32_be(parent_key_generation) // 36 bytes
 Key: childCollectionKeyWrapKey (§4)
 ```
+
+`parent_key_generation` is the generation of the parent `collectionKey` the blob is wrapped under, so a `VXCC` that was not re-wrapped after a rotation of the parent fails to unwrap.
 
 The distinct magic tells every reader to unwrap with the parent `collectionKey`, never with a `masterKey`. Cross-use with `VXCK` is prevented by the different key and AAD; the magic makes the mistake fail early with a clear error instead of an AEAD failure.
 
@@ -711,7 +746,12 @@ Offset  Size  Field
 Total: 78 bytes
 ```
 
-> **Pending:** the AAD and the wrapping key derivation ([§4](#4-hkdf-domain-separation)) are fixed in this revision before the web client produces `VXSW` blobs. The server checks the format like any other blob ([§5](#5-binary-blob-formats)).
+```rs
+AAD: share_id ‖ user_id ‖ role // 33 bytes, role: 0x01 sender, 0x02 recipient
+Key: shareWrapCopyKey (§4)
+```
+
+`user_id` is the side holding the copy. The AAD stops the server from serving a copy to the other side or for another share. The server checks the format like any other blob ([§5](#5-binary-blob-formats)).
 
 Server-side storage: `shares.sender_vxsw` (set at creation) and `shares.recipient_vxsw` (set at acceptance or later, see [§11](#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)). Each side only ever receives its own copy.
 
@@ -1099,6 +1139,7 @@ A scheduled job **MUST** periodically (recommended: hourly) remove rows from `tu
 | Server reorders segments within a generation                                 | Blocked by per-segment **AAD** binding `(version, alg, file_id, generation, segment_index)`                                                                    |
 | Server swaps VXFM metadata between files                                     | Blocked by **AAD** binding `(version, alg, file_id, generation)` on VXFM                                                                                       |
 | Server swaps key-wrapping blobs between users                                | Blocked by **AAD** binding on `VXWM`, `VXRM`, `VXSK` (`user_id`) and `VXPS` (`user_id ‖ session_id`)                                                           |
+| Server serves an older key generation as the latest                          | Blocked by `key_generation` in the AAD of `VXCK`, `VXFK` and `VXCC`. Withholding a newer generation is not blocked (§5.8)                                      |
 | Server truncates download (drops trailing segments)                          | Detected by segment count `sc` in `VXFM` before full download completes                                                                                        |
 | Server rolls back to an older generation                                     | Blocked by monotonic `generation` enforcement ([§6.3](#63-file-generation-counter-mutability)) and client-side verification                                    |
 | Server tries to correlate files across collections for the same user         | Blocked: `contentIdKey` is per-collection, same plaintext produces different `content_id` in different collections                                             |
@@ -1958,7 +1999,7 @@ CREATE TABLE share_collection_keys (
     id              UUID PRIMARY KEY DEFAULT uuidv7(),
     share_id        UUID NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
     collection_id   UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
-    vxck            BYTEA NOT NULL,         -- wrapped with shareWrapKey, not masterKey
+    vxck            BYTEA NOT NULL,         -- VXCK under shareCollectionKeyWrapKey, or a VXCC copy
     key_generation  INTEGER NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -2544,7 +2585,7 @@ Cross-target consistency is verified by **JSON** test vectors. They are to be pr
 Vector categories:
 
 1. **HKDF** derivations (every domain-separated path in [§4](#4-hkdf-domain-separation))
-2. `VXWM`, `VXRM`, `VXFC`, `VXFM`, `VXSK`, `VXPS`, `VXSH`, `VXCM`, `VXCK`, `VXCC`, `VXSI`, `VXFK`, `VXPL`, `VXMC` round-trips with fixed keys and nonces
+2. `VXWM`, `VXRM`, `VXFC`, `VXFM`, `VXSK`, `VXPS`, `VXSH`, `VXCM`, `VXCK`, `VXCC`, `VXSI`, `VXFK`, `VXPL`, `VXMC`, `VXSW` round-trips with fixed keys and nonces
 3. Segment nonce derivation across multiple generations and indices
 4. **OPAQUE** registration and login with deterministic test-only RNG seeds
 5. **ML-KEM-768** encapsulation/decapsulation against **FIPS 203** known-answer tests
@@ -2553,10 +2594,12 @@ Vector categories:
 
    - `VXWM`, `VXRM`, `VXSK` - `user_id` (16 bytes)
    - `VXPS` - `user_id ‖ session_id` (32 bytes)
-   - `VXCK` - `user_id ‖ collection_id` (32 bytes)
-   - `VXCC` - `parent_id ‖ collection_id` (32 bytes)
+   - `VXCK` owner copy - `user_id ‖ collection_id ‖ key_generation` (36 bytes)
+   - `VXCK` share copy - `share_id ‖ collection_id ‖ key_generation` (36 bytes)
+   - `VXCC` - `parent_id ‖ collection_id ‖ parent_key_generation` (36 bytes)
    - `VXSI` - header ‖ `user_id` (22 bytes)
-   - `VXFK` - `collection_id ‖ file_id` (32 bytes)
+   - `VXFK` - `collection_id ‖ file_id ‖ key_generation` (36 bytes)
+   - `VXSW` - `share_id ‖ user_id ‖ role` (33 bytes)
 
 8. `content_id` derivation vectors with `collection_uuid` bound in the **HKDF** info
 9. Segment count **verification** (`VXFM` `sc` field vs actual segment count), including the zero-byte file case (`sc = 0`, zero segments, **BLAKE3** hash over empty input).
@@ -2740,6 +2783,7 @@ isolation model of the **Crypto Worker**.
 | CRQC (post-quantum adversary)                          | Sharing key exchange protected by X-Wing (ML-KEM-768 + X25519 hybrid); share authenticity protected by ML-DSA-65; login session keys protected by TripleDhKem (3DH + ML-KEM-768 hybrid); OPRF remains classical Ristretto255 (CRQC + database + `serverSetup` theft allows offline password attacks mitigated by Argon2id 128 MiB) |
 | Server swaps VXFM metadata blob between files          | Blocked by file_id AAD binding on VXFM                                                                                                                                                                                                                                                                                             |
 | Server swaps key-wrapping blobs between users          | Blocked by **AAD** binding on `VXWM`, `VXRM`, `VXSK` (`user_id`) and `VXPS` (`user_id ‖ session_id`)                                                                                                                                                                                                                               |
+| Server serves an older key generation as the latest    | Blocked by `key_generation` in the AAD of `VXCK`, `VXFK` and `VXCC`. Withholding a newer generation is not blocked (§5.8)                                                                                                                                                                                                          |
 | Server serves stale VXFM from previous generation      | Detected by client verifying VXFM generation matches file row generation                                                                                                                                                                                                                                                           |
 | Server truncates download (drops trailing segments)    | Detected by segment count in VXFM before full download                                                                                                                                                                                                                                                                             |
 | Email enumeration                                      | Uniform response on signup and on recovery start, and on login start (`signin/start` returns the same response shape whether the account exists or not; `vxwm` and `vxsk` only after the password is proven)                                                                                                                       |
@@ -2978,7 +3022,7 @@ The value is capped by the plan's maximum. A scheduled job deletes versions whos
 
 ## Changelog
 
-- **17:** aligned with the share and file key changes in the code. A new version keeps the file key: `vxfk` only for a new file, `content_key_generation` set to the latest key, `vxfk` and `latestVxfk` returned by the file routes, invariant on `files.vxfm` (§6.5, §6.5.6.1, §10.2, §11.5.2). `file_versions.content_key_generation`, non-destructive restore (§10.2, §19.5). Public links served from `files.vxfm`, HTTP 410 once the content changed key (§5.11). `file_keys.vxfm` deprecated (§10.3). Rotations leave `files.vxfm` under the content key (§11.1, §11.1.1, §17). New `VXSW` blob, AAD and wrapping key pending (§5.15). Client-generated share id, `sender_vxsw` and `recipient_vxsw`, `vxsw` on accept, `PUT /api/v1/shares/{id}/recipient-copy` (§11). Server-side checks of every blob format (§5, §5.15, §6.5.6.1).
+- **17:** aligned with the share and file key changes in the code. A new version keeps the file key: `vxfk` only for a new file, `content_key_generation` set to the latest key, `vxfk` and `latestVxfk` returned by the file routes, invariant on `files.vxfm` (§6.5, §6.5.6.1, §10.2, §11.5.2). `file_versions.content_key_generation`, non-destructive restore (§10.2, §19.5). Public links served from `files.vxfm`, HTTP 410 once the content changed key (§5.11). `file_keys.vxfm` deprecated (§10.3). Rotations leave `files.vxfm` under the content key (§11.1, §11.1.1, §17). New `VXSW` blob (§5.15). Client-generated share id, `sender_vxsw` and `recipient_vxsw`, `vxsw` on accept, `PUT /api/v1/shares/{id}/recipient-copy` (§11). Server-side checks of every blob format (§5, §5.15, §6.5.6.1). Key generation in the AAD of `VXCK`, `VXFK` and `VXCC`, distinct AAD and wrapping key for the share copies of `VXCK`, AAD and wrapping key of `VXSW`, highest generation kept by clients (§4, §5.8, §5.9, §5.14, §5.15). These AAD changes break existing blobs: the protocol stays at version 1 because no account was created under the previous AAD.
 - **16:** aligned with the current code. API paths under `/api/v1` (same-origin), UUID v7 mostly everywhere, real routes and schemas. Client-generated `session_id` for `VXPS` (§5.6, §9.2). `vxwm` and `vxsk` returned only after `signin/finish`, uniform `signin/start` (§8.2). `ts` informative, no mandatory check (§11.2). New `VXMC` (§5.12) and `VXSI` (§5.13), `localCacheKey`, `sessionToken` and `childCollectionKeyWrap` derivations (§4). Direct upload for small files (§6.5). Rewritten recovery flow (§12.1), CSP (§16.1), account deletion (§19.3). New file versions section (§19.5). Re-encryption after revocation (§11.1.1) and web persistent sessions (§9.2) marked as planned. New `VXCC` blob for editor-created sub-collections, transitional on the owner side (§5.14). Email verified by code before the account is created, uniform `signup/start` (§8.1).
 
 [//]: # "LINKS"

@@ -111,6 +111,8 @@ Pour `shareWrapKey`, l'**IKM** est le secret partagé **X-Wing** (sortie d'**un 
 | localCacheKey depuis masterKey                         | `vexahub:v1:localCacheKey`                                                                                                                                             | 32                           |
 | searchIndexKey depuis masterKey                        | `vexahub:v1:searchIndexKey`                                                                                                                                            | 32                           |
 | childCollectionKeyWrap depuis la collectionKey parente | `vexahub:v1:childCollectionKeyWrap:{child_uuid}` (voir [Addenda §21](/fr/CRYPTO_ADDENDUM.md#21-création-de-sous-collection-par-un-éditeur)) | 32                           |
+| shareWrapCopy depuis la masterKey                      | `vexahub:v1:shareWrapCopy:{share_uuid}`                                                                                                     | 32                           |
+| shareCollectionKeyWrap depuis shareWrapKey             | `vexahub:v1:shareCollectionKeyWrap:{collection_uuid}`                                                                                       | 32                           |
 
 > Les sels HKDF ne sont pas des secrets ; l'unicité est assurée exclusivement par le champ `info`.
 >
@@ -148,6 +150,26 @@ fileKeyWrapKey = HKDF-SHA-512(
     L    = 32
 )
 ```
+
+Chaque côté d'un partage encapsule sa copie de `shareWrapKey` ([§5.15](#515-vxsw---copie-de-la-clé-dencapsulation-de-partage)) sous une clé dérivée de sa propre `masterKey`. Les clés de collection d'un partage ([§5.8](#58-vxck---clé-de-collection-encapsulée)) sont encapsulées sous une clé dérivée de `shareWrapKey`, jamais sous `shareWrapKey` elle-même, qui encapsule déjà le `VXSH` :
+
+```rs
+shareWrapCopyKey = HKDF-SHA-512(
+    ikm  = masterKey,
+    salt = 32 octets zéro,
+    info = "vexahub:v1:shareWrapCopy:" || share_uuid,
+    L    = 32
+)
+
+shareCollectionKeyWrapKey = HKDF-SHA-512(
+    ikm  = shareWrapKey,
+    salt = 32 octets zéro,
+    info = "vexahub:v1:shareCollectionKeyWrap:" || collection_uuid,
+    L    = 32
+)
+```
+
+`shareWrapKey` est elle-même une sortie HKDF, uniformément aléatoire : la politique du sel zéro s'applique.
 
 > `linkKey` est soit une sortie CSPRNG brute (lien sans mot de passe), soit une sortie Argon2id (lien protégé par mot de passe). Dans les deux cas, la séparation de domaine HKDF via `link_id` garantit des clés d'enveloppement distinctes par lien. Le sel zéro s'applique (même politique que pour les autres dérivations dont l'IKM provient du CSPRNG).
 
@@ -374,8 +396,16 @@ Total : 78 octets
 ```
 
 ```rs
-AAD : user_id ‖ collection_id (32 octets, UUIDs bruts)
+// Copie du propriétaire, clé : collectionKeyWrapKey (§4)
+AAD : user_id ‖ collection_id ‖ uint32_be(key_generation) // 36 octets
+
+// Copie d'un partage, clé : shareCollectionKeyWrapKey (§4)
+AAD : share_id ‖ collection_id ‖ uint32_be(key_generation) // 36 octets
 ```
+
+`key_generation` est la génération de la `collectionKey` encapsulée. La copie du propriétaire est dans `collection_keys` ([§10.3](#103-tables-des-clés-de-fichiers-et-collections)), celle d'un partage dans `share_collection_keys` ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)). Une copie de partage à la génération `K` encapsule la même `collectionKey` que la copie du propriétaire à la génération `K`.
+
+> **Liaison de la génération :** `VXCK`, `VXFK` ([§5.9](#59-vxfk---clé-de-fichier-encapsulée)) et `VXCC` ([§5.14](#514-vxcc---clé-de-collection-encapsulée-par-la-collection-parente)) lient la génération de clé dans leur AAD : le serveur ne peut pas servir une clé plus ancienne, connue d'un destinataire révoqué, comme une plus récente, car la désencapsulation échoue. Il peut encore cacher une génération plus récente. Les clients **DEVRAIENT** garder en local la plus haute génération vue par collection et par fichier, et **NE DOIVENT PAS** chiffrer de nouveau contenu ni encapsuler une nouvelle clé sous une génération plus basse que celle qu'ils gardent.
 
 ### 5.9 `VXFK` - Clé de fichier encapsulée
 
@@ -392,8 +422,11 @@ Total : 78 octets
 ```
 
 ```rs
-AAD : collection_id ‖ file_id (32 octets, UUIDs bruts)
+AAD : collection_id ‖ file_id ‖ uint32_be(key_generation) // 36 octets
+Clé : fileKeyWrapKey (§4)
 ```
+
+`key_generation` est la génération de la `fileKey` encapsulée dans `file_keys` ([§10.3](#103-tables-des-clés-de-fichiers-et-collections)).
 
 ### 5.10 `VXSH` - Clé de partage encapsulée
 
@@ -678,9 +711,11 @@ Total : 78 octets
 ```
 
 ```rs
-AAD : parent_id ‖ collection_id (32 octets, UUIDs bruts)
+AAD : parent_id ‖ collection_id ‖ uint32_be(parent_key_generation) // 36 octets
 Clé : childCollectionKeyWrapKey (§4)
 ```
+
+`parent_key_generation` est la génération de la `collectionKey` parente sous laquelle le blob est encapsulé : un `VXCC` qui n'a pas été réencapsulé après une rotation de la parente ne se désencapsule plus.
 
 Le magique distinct indique à tout lecteur de désencapsuler avec la `collectionKey` parente, jamais avec une `masterKey`. L'usage croisé avec `VXCK` est empêché par la clé et l'AAD différentes ; le magique fait échouer l'erreur tôt, avec un message clair, au lieu d'un échec AEAD.
 
@@ -706,7 +741,12 @@ Décalage  Taille  Champ
 Total : 78 octets
 ```
 
-> **En attente :** l'AAD et la dérivation de la clé d'encapsulation ([§4](#4-séparation-de-domaine-hkdf)) sont fixées dans cette révision avant que le client web ne produise de blobs `VXSW`. Le serveur vérifie le format comme pour tout autre blob ([§5](#5-formats-de-blob-binaires)).
+```rs
+AAD : share_id ‖ user_id ‖ role // 33 octets, role : 0x01 expéditeur, 0x02 destinataire
+Clé : shareWrapCopyKey (§4)
+```
+
+`user_id` est le côté qui détient la copie. L'AAD empêche le serveur de servir une copie à l'autre côté ou pour un autre partage. Le serveur vérifie le format comme pour tout autre blob ([§5](#5-formats-de-blob-binaires)).
 
 Stockage côté serveur : `shares.sender_vxsw` (posé à la création) et `shares.recipient_vxsw` (posé à l'acceptation ou plus tard, voir [§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)). Chaque côté ne reçoit jamais que sa propre copie.
 
@@ -1094,6 +1134,7 @@ Un job planifié **DOIT** périodiquement (recommandé : toutes les heures) supp
 | Le serveur réordonne les segments au sein d'une génération                                         | Bloqué par le **AAD** par segment liant `(version, alg, file_id, generation, segment_index)`                                                                                                                        |
 | Le serveur échange les métadonnées VXFM entre fichiers                                             | Bloqué par le **AAD** liant `(version, alg, file_id, generation)` sur VXFM                                                                                                                                          |
 | Le serveur échange les blobs d'enveloppement de clé entre utilisateurs                             | Bloqué par le **AAD** liant sur `VXWM`, `VXRM`, `VXSK` (`user_id`) et `VXPS` (`user_id ‖ session_id`)                                                                                                               |
+| Le serveur sert une ancienne génération de clé comme la dernière                                   | Bloqué par `key_generation` dans l'AAD de `VXCK`, `VXFK` et `VXCC`. Cacher une génération plus récente n'est pas bloqué (§5.8)                                                                                      |
 | Le serveur tronque le téléchargement (supprime les segments de queue)                              | Détecté par le compte de segments `sc` dans `VXFM` avant la fin du téléchargement complet                                                                                                                           |
 | Le serveur effectue un retour arrière vers une génération plus ancienne                            | Bloqué par l'application monotone de `generation` ([§6.3](#63-compteur-de-génération-de-fichier-mutabilité)) et la vérification côté client                                                                         |
 | Le serveur tente de corréler des fichiers entre collections pour le même utilisateur               | Bloqué : `contentIdKey` est par collection, le même texte clair produit des `content_id` différents dans des collections différentes                                                                                |
@@ -1849,7 +1890,7 @@ CREATE TABLE share_collection_keys (
     id              UUID PRIMARY KEY DEFAULT uuidv7(),
     share_id        UUID NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
     collection_id   UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
-    vxck            BYTEA NOT NULL,         -- encapsulée avec shareWrapKey, pas masterKey
+    vxck            BYTEA NOT NULL,         -- VXCK sous shareCollectionKeyWrapKey, ou copie d'un VXCC
     key_generation  INTEGER NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -2399,7 +2440,7 @@ La cohérence inter-cibles est vérifiée par des vecteurs de test **JSON**. Ils
 Catégories de vecteurs :
 
 1. Dérivations **HKDF** (chaque chemin à séparation de domaine du [§4](#4-séparation-de-domaine-hkdf))
-2. Allers-retours de `VXWM`, `VXRM`, `VXFC`, `VXFM`, `VXSK`, `VXPS`, `VXSH`, `VXCM`, `VXCK`, `VXCC`, `VXSI`, `VXFK`, `VXPL`, `VXMC` avec des clés et nonces fixes
+2. Allers-retours de `VXWM`, `VXRM`, `VXFC`, `VXFM`, `VXSK`, `VXPS`, `VXSH`, `VXCM`, `VXCK`, `VXCC`, `VXSI`, `VXFK`, `VXPL`, `VXMC`, `VXSW` avec des clés et nonces fixes
 3. Dérivation de nonce de segment sur plusieurs générations et indices
 4. Inscription et connexion **OPAQUE** avec des graines de générateur aléatoire déterministes de test uniquement
 5. Encapsulation/désencapsulation **ML-KEM-768** contre les tests de réponse connue **FIPS 203**
@@ -2408,10 +2449,12 @@ Catégories de vecteurs :
 
    - `VXWM`, `VXRM`, `VXSK` - `user_id` (16 octets)
    - `VXPS` - `user_id ‖ session_id` (32 octets)
-   - `VXCK` - `user_id ‖ collection_id` (32 octets)
-   - `VXCC` - `parent_id ‖ collection_id` (32 octets)
+   - `VXCK` copie du propriétaire - `user_id ‖ collection_id ‖ key_generation` (36 octets)
+   - `VXCK` copie d'un partage - `share_id ‖ collection_id ‖ key_generation` (36 octets)
+   - `VXCC` - `parent_id ‖ collection_id ‖ parent_key_generation` (36 octets)
    - `VXSI` - en-tête ‖ `user_id` (22 octets)
-   - `VXFK` - `collection_id ‖ file_id` (32 octets)
+   - `VXFK` - `collection_id ‖ file_id ‖ key_generation` (36 octets)
+   - `VXSW` - `share_id ‖ user_id ‖ role` (33 octets)
 
 8. Vecteurs de dérivation de `content_id` avec `collection_uuid` lié dans l'info **HKDF**
 9. Vecteurs de **vérification du nombre de segments** (champ `sc` de `VXFM` vs nombre réel de segments), y compris le cas du fichier de zéro octet (`sc = 0`, zéro segments, hash **BLAKE3** sur une entrée vide).
@@ -2570,6 +2613,7 @@ Le matériel de clés traverse les frontières de threads exclusivement via `pos
 | CRQC (adversaire post-quantique)                                                   | Échange de clés de partage protégé par X-Wing (hybride ML-KEM-768 + X25519) ; authenticité des partages protégée par ML-DSA-65 ; clés de session de connexion protégées par TripleDhKem (hybride 3DH + ML-KEM-768) ; l'OPRF reste en Ristretto255 classique (CRQC + base de données + vol de `serverSetup` permet des attaques hors-ligne sur les mots de passe, mitigées par Argon2id 128 Mio) |
 | Le serveur substitue le blob de métadonnées VXFM entre fichiers                    | Bloqué par la liaison AAD `file_id` sur VXFM                                                                                                                                                                                                                                                                                                                                                    |
 | Le serveur substitue les blobs d'encapsulation entre utilisateurs                  | Bloqué par la liaison **AAD** sur `VXWM`, `VXRM`, `VXSK` (`user_id`) et `VXPS` (`user_id ‖ session_id`)                                                                                                                                                                                                                                                                                         |
+| Le serveur sert une ancienne génération de clé comme la dernière                   | Bloqué par `key_generation` dans l'AAD de `VXCK`, `VXFK` et `VXCC`. Cacher une génération plus récente n'est pas bloqué (§5.8)                                                                                                                                                                                                                                                                  |
 | Le serveur sert un VXFM périmé d'une génération précédente                         | Détecté par le client vérifiant que la génération VXFM correspond à la génération de la ligne du fichier                                                                                                                                                                                                                                                                                        |
 | Le serveur tronque le téléchargement (supprime les segments de fin)                | Détecté par le nombre de segments dans VXFM avant le téléchargement complet                                                                                                                                                                                                                                                                                                                     |
 | Énumération d'emails                                                               | Réponse uniforme à l'inscription et au démarrage de la récupération, et au démarrage de la connexion (`signin/start` renvoie la même forme de réponse que le compte existe ou non ; `vxwm` et `vxsk` seulement après preuve du mot de passe)                                                                                                                                                    |
@@ -2788,7 +2832,7 @@ La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée suppri
 
 ## Historique des modifications
 
-- **17 :** alignement sur les changements de clés de fichier et de partage du code. Une nouvelle version garde la clé du fichier : `vxfk` seulement pour un nouveau fichier, `content_key_generation` posée à la dernière clé, `vxfk` et `latestVxfk` renvoyés par les routes de fichier, invariant sur `files.vxfm` (§6.5, §6.5.6.1, §10.2, §11.5.2). `file_versions.content_key_generation`, restauration non destructive (§10.2, §19.5). Liens publics servis depuis `files.vxfm`, HTTP 410 quand le contenu a changé de clé (§5.11). `file_keys.vxfm` obsolète (§10.3). Les rotations laissent `files.vxfm` sous la clé du contenu (§11.1, §11.1.1, §17). Nouveau blob `VXSW`, AAD et clé d'encapsulation en attente (§5.15). Id de partage généré par le client, `sender_vxsw` et `recipient_vxsw`, `vxsw` à l'acceptation, `PUT /api/v1/shares/{id}/recipient-copy` (§11). Vérification côté serveur du format de chaque blob (§5, §5.15, §6.5.6.1).
+- **17 :** alignement sur les changements de clés de fichier et de partage du code. Une nouvelle version garde la clé du fichier : `vxfk` seulement pour un nouveau fichier, `content_key_generation` posée à la dernière clé, `vxfk` et `latestVxfk` renvoyés par les routes de fichier, invariant sur `files.vxfm` (§6.5, §6.5.6.1, §10.2, §11.5.2). `file_versions.content_key_generation`, restauration non destructive (§10.2, §19.5). Liens publics servis depuis `files.vxfm`, HTTP 410 quand le contenu a changé de clé (§5.11). `file_keys.vxfm` obsolète (§10.3). Les rotations laissent `files.vxfm` sous la clé du contenu (§11.1, §11.1.1, §17). Nouveau blob `VXSW` (§5.15). Id de partage généré par le client, `sender_vxsw` et `recipient_vxsw`, `vxsw` à l'acceptation, `PUT /api/v1/shares/{id}/recipient-copy` (§11). Vérification côté serveur du format de chaque blob (§5, §5.15, §6.5.6.1). Génération de clé dans l'AAD de `VXCK`, `VXFK` et `VXCC`, AAD et clé d'encapsulation distinctes pour les copies de `VXCK` des partages, AAD et clé d'encapsulation de `VXSW`, plus haute génération gardée par les clients (§4, §5.8, §5.9, §5.14, §5.15). Ces changements d'AAD cassent les blobs existants : le protocole reste en version 1 car aucun compte n'a été créé sous les anciennes AAD.
 - **16 :** alignement sur le code actuel. Chemins d'API sous `/api/v1` (same-origin), UUID v7 presque partout, routes et schémas réels. `session_id` de `VXPS` généré par le client (§5.6, §9.2). `vxwm` et `vxsk` renvoyés seulement après `signin/finish`, `signin/start` uniforme (§8.2). `ts` informatif, sans contrôle obligatoire (§11.2). Nouveaux `VXMC` (§5.12) et `VXSI` (§5.13), dérivations `localCacheKey`, `sessionToken` et `childCollectionKeyWrap` (§4). Envoi direct pour les petits fichiers (§6.5). Flux de récupération (§12.1), CSP (§16.1) et suppression de compte (§19.3) réécrits. Nouvelle section sur les versions de fichiers (§19.5). Rechiffrement après révocation (§11.1.1) et sessions persistantes web (§9.2) marqués comme prévus. Nouveau blob `VXCC` pour les sous-collections créées par un éditeur, transitoire côté propriétaire (§5.14). Email vérifié par code avant la création du compte, `signup/start` uniforme (§8.1).
 
 [//]: # "LINKS"
