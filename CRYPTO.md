@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-> **Document version:** 20
+> **Document version:** 21
 >
 > **Protocol version:** 1
 >
@@ -442,9 +442,10 @@ Offset  Size   Field
 4       1      Format version (0x01)
 5       1      KEM algorithm ID (0x02 = X-Wing)
 6       24     Nonce (random)
-30      N+16   Ciphertext (CBOR { "k": bstr, "p": uint, "id": bstr, "kind": "collection"|"file" }) + tag
+30      N+16   Ciphertext (CBOR { "k": bstr, "p": uint, "id": bstr, "kind": "file" }
+                          or { "p": uint, "id": bstr, "kind": "collection" }) + tag
 ------
-Total: 116 bytes (file share) / 122 bytes (collection share)
+Total: 116 bytes (file share) / 86 bytes (collection share)
 ```
 
 ```rs
@@ -455,7 +456,7 @@ AAD: sender_id ‖ recipient_id (32 bytes, both raw UUID)
 // Inner CBOR object (canonical, RFC 8949 §4.2.1):
 
 {
-  "k":    bstr .size 32,    // fileKey, 32 zero bytes for a collection share
+  "k":    bstr .size 32,    // fileKey, file share only
   "p":    uint,             // permission bitmask (see §11.6)
   "id":   bstr .size 16,    // collection_id or file_id, raw 16-byte UUID
   "kind": tstr ("collection" | "file"),
@@ -473,13 +474,15 @@ AAD: sender_id ‖ recipient_id (32 bytes, both raw UUID)
 
 "k" and "p" are both 2-byte encodings; tie-break is lexicographic on the
 second byte: 0x6b ('k') < 0x70 ('p').
-Canonical order is therefore: "k" -> "p" -> "id" -> "kind".
+Canonical order is therefore: "k" -> "p" -> "id" -> "kind", without "k"
+for a collection share.
 
 Layout:
 
-    Map header (4 entries, 0xa4)                          : 1 byte
-    "k" key (0x61 0x6b)                                   : 2 bytes
-    "k" value: bstr(32) header (0x58 0x20) + 32 data      : 2 + 32 = 34 bytes
+    Map header (4 entries, 0xa4, file share)              : 1 byte
+    Map header (3 entries, 0xa3, collection share)        : 1 byte
+    "k" key (0x61 0x6b), file share only                  : 2 bytes
+    "k" value: bstr(32) header (0x58 0x20) + 32 data      : 2 + 32 = 34 bytes, file share only
     "p" key (0x61 0x70)                                   : 2 bytes
     "p" value: uint(1) (0x01)                             : 1 byte
     "id" key (0x62 0x69 0x64)                             : 3 bytes
@@ -489,16 +492,22 @@ Layout:
     "kind" value: tstr "file"        (0x64 + 4 bytes)     : 1 +  4 =  5 bytes
 
 CBOR plaintext (collection share):
-    1 + 2 + 34 + 2 + 1 + 3 + 17 + 5 + 11 = 76 bytes
+    1 +          2 + 1 + 3 + 17 + 5 + 11 = 40 bytes
 CBOR plaintext (file share):
     1 + 2 + 34 + 2 + 1 + 3 + 17 + 5 +  5 = 70 bytes
 
 Encrypted blob total:
-    Collection share: 6 (header) + 24 (nonce) + 76 (plaintext) + 16 (tag) = 122 bytes
+    Collection share: 6 (header) + 24 (nonce) + 40 (plaintext) + 16 (tag) =  86 bytes
     File share:       6 (header) + 24 (nonce) + 70 (plaintext) + 16 (tag) = 116 bytes
 ```
 
-**Collection share:** `"k"` is 32 zero bytes, the layout and the size stay the same. The collection keys reach the recipient only as share copies ([§11](#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)), served once the share is accepted, so a refused invitation leaves no key behind. The recipient **MUST** reject a collection share whose `"k"` is not 32 zero bytes.
+**Collection share:** no `"k"`. The collection keys reach the recipient only as share copies ([§11](#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)), served once the share is accepted, so a refused invitation leaves no key behind. The `VXSH` still binds `"p"`, `"id"` and `"kind"` under `shareWrapKey`, and unwrapping it proves the recipient derived that key correctly.
+
+**Checks:** the server cannot read the plaintext. It checks the header and that the size matches the kind of the share, 86 bytes for a collection share and 116 for a file share, on every route that takes a `VXSH` (HTTP 400 otherwise). The recipient checks the rest after the signature ([§11](#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)) and **MUST** reject the share unless:
+
+- the map has exactly `"p"`, `"id"` and `"kind"` with `"kind": "collection"` for a collection share, or exactly `"k"`, `"p"`, `"id"` and `"kind"` with `"kind": "file"` for a file share;
+- `"id"` is the `collection_id` or `file_id` of the share record and `"kind"` its kind;
+- `"p"` matches the `permission` column ([§11.6](#116-share-permissions)).
 
 The order in which the encoder _receives_ the fields does not matter; what matters is that the **canonical-CBOR** encoder emits them in length-then-lexicographic order. Any encoder that implements [RFC 8949 §4.2.1][cbor_rfc] deterministic encoding produces this ordering; implementations **MUST NOT** rely on a library default that is not deterministic. Test vectors in [§14](#14-test-vectors) **MUST** verify byte-identical output across implementations.
 
@@ -1944,7 +1953,7 @@ Send flow:
    ).
    ```
 
-4. Sender wraps the `fileKey` of a file share with `shareWrapKey` using **XChaCha20-Poly1305** -> `VXSH` blob. A collection share puts 32 zero bytes in its place ([§5.10](#510-vxsh---wrapped-sharing-key)).
+4. Sender encrypts the `VXSH` plaintext under `shareWrapKey` using **XChaCha20-Poly1305** -> `VXSH` blob: the `fileKey` with the permission and the target for a file share, the permission and the target only for a collection share ([§5.10](#510-vxsh---wrapped-sharing-key)).
 5. Sender builds the **signed payload**: a canonical CBOR map of exactly 9 keys, in canonical order:
 
    ```rs
@@ -1973,7 +1982,7 @@ Receive flow:
 2. Recipient fetches sender's **ML-DSA-65** verification key **independently** from the server (Not from the share record! Prevents server substitution of both payload and key).
 3. Recipient verifies `signature` against sender's verification key with context `"vexahub:v1:share"`. **Reject on failure. Do not proceed to decryption.**
 4. Recipient decapsulates: `sharedSecret = X-Wing.Decaps(privXwing, ctXwing)`.
-5. Recipient derives `shareWrapKey` and unwraps `VXSH`.
+5. Recipient derives `shareWrapKey`, unwraps `VXSH` and checks its fields against the share record ([§5.10](#510-vxsh---wrapped-sharing-key)). **Reject on mismatch.**
 6. Recipient stores the `fileKey` of a file share in their own scope. A collection share reads its keys from the share copies once accepted.
 7. Recipient wraps `shareWrapKey` under its own `masterKey` -> `recipientVxsw` ([§5.15](#515-vxsw---share-wrap-key-copy)), sent with the acceptance.
 
@@ -2666,6 +2675,8 @@ Vector categories:
 > Test vectors for `VXSH` **MUST** be updated to include `"p": 0x01` in the
 > CBOR plaintext. Existing vectors without `"p"` are invalid at **protocol version 1**
 > and **MUST** be rejected by conformant parsers.
+>
+> They **MUST** cover both variants: a file share with `"k"` (116 bytes) and a collection share without it (86 bytes), and the rejection of a collection share with a `"k"` and of a file share without one.
 
 A vector **mismatch** is a release **blocker**.
 
@@ -3080,6 +3091,7 @@ The value is capped by the plan's maximum. A scheduled job deletes versions whos
 
 ## Changelog
 
+- **21:** the `VXSH` of a collection share has no `"k"`: 86 bytes instead of 122, checked by size against the kind of the share on the server, field by field by the recipient (§5.10, §11, §14). The previous collection layout, with a `"k"` of 32 zero bytes, is no longer accepted. No change to the file share layout, AAD or derivations.
 - **20:** lazy key rotation (§11.1). The revocation carries the rotations only the owner can do, read from a revocation plan: the shared collection, the share roots below it and the path between them, top-down, in one transaction with an exact coverage. The rest of the revoked tree waits for its rotation (`collections.key_rotation_pending`, §10.2): no new file, version, sub-collection, rename, move into it or share on it until its key rotates, by the owner or by an editor. A rotation no longer gives new file keys nor re-wraps the `VXCC` below (§5.14, §11, §11.1, §11.1.1). Every `vxfk` comes with its `collectionKeyGeneration`, checked as the latest, and a new version of a stale file takes a fresh `fileKey` (§6.5, §6.5.6.1, §11.4, §11.5.2). The `VXSH` of a collection share carries no key, a refusal deletes the share copies (§5.10, §11). `file_keys.vxfm` removed (§10.3). No change to blob layouts, AAD or derivations.
 - **19:** every sub-collection has a `VXCC` under its parent, a share holds copies of its shared collection only (§5.8, §5.14, §10.3, §11). Share access follows the tree, key chain route, grants for the shared collection only (§11). `VXCC` required on creation, re-wrapped under the new parent on a move, owner `VXCK` sent with a move to the root, nothing on a restore (§11). Rotation plan with the `parent`, new `VXCC` under it (§11.1 steps 1, 7b, 8, 10). No change to blob formats, AAD or derivations.
 - **18:** collection rotation without a new KEM: the remaining shares get one more generation under their unchanged `shareWrapKey`, rotation plan, exact coverage of the shares and `VXCC`, rotation of every collection the revoked share reached (§11.1). `VXCC` in their own table `child_collection_keys`, re-wrapped in place, never in a `vxck` column (§5.14, §10.3). Collection access of a share, grants with every generation (§11). Fixed the recipient copy of a shared collection key (§11) and the rows deleted at revocation (§11.1.1). No change to blob formats, AAD or derivations.

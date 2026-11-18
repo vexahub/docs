@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique
 
-> **Version du document :** 20
+> **Version du document :** 21
 >
 > **Version du protocole :** 1
 >
@@ -437,9 +437,10 @@ Décalage  Taille   Champ
 4         1        Version de format (0x01)
 5         1        Identifiant d'algorithme KEM (0x02 = X-Wing)
 6         24       Nonce (aléatoire)
-30        N+16     Texte chiffré (CBOR { "k": bstr, "p": uint, "id": bstr, "kind": "collection"|"file" }) + tag
+30        N+16     Texte chiffré (CBOR { "k": bstr, "p": uint, "id": bstr, "kind": "file" }
+                            ou { "p": uint, "id": bstr, "kind": "collection" }) + tag
 --------
-Total : 116 octets (partage de fichier) / 122 octets (partage de collection)
+Total : 116 octets (partage de fichier) / 86 octets (partage de collection)
 ```
 
 ```rs
@@ -450,7 +451,7 @@ AAD : sender_id ‖ recipient_id (32 octets, UUIDs bruts)
 // Objet CBOR interne (canonique, RFC 8949 §4.2.1) :
 
 {
-  "k":    bstr .size 32,    // fileKey, 32 octets nuls pour un partage de collection
+  "k":    bstr .size 32,    // fileKey, partage de fichier seulement
   "p":    uint,             // masque de bits de permission (voir §11.6)
   "id":   bstr .size 16,    // collection_id ou file_id, UUID brut de 16 octets
   "kind": tstr ("collection" | "file"),
@@ -468,13 +469,15 @@ AAD : sender_id ‖ recipient_id (32 octets, UUIDs bruts)
 
 "k" et "p" sont tous deux des encodages de 2 octets ; le départage est
 lexicographique sur le second octet : 0x6b ('k') < 0x70 ('p').
-L'ordre canonique est donc : "k" -> "p" -> "id" -> "kind".
+L'ordre canonique est donc : "k" -> "p" -> "id" -> "kind", sans "k" pour
+un partage de collection.
 
 Disposition :
 
-    En-tête de map (4 entrées, 0xa4)                        : 1 octet
-    Clé "k" (0x61 0x6b)                                     : 2 octets
-    Valeur "k" : en-tête bstr(32) (0x58 0x20) + 32 données  : 2 + 32 = 34 octets
+    En-tête de map (4 entrées, 0xa4, partage de fichier)    : 1 octet
+    En-tête de map (3 entrées, 0xa3, partage de collection) : 1 octet
+    Clé "k" (0x61 0x6b), partage de fichier seulement       : 2 octets
+    Valeur "k" : en-tête bstr(32) (0x58 0x20) + 32 données  : 2 + 32 = 34 octets, partage de fichier seulement
     Clé "p" (0x61 0x70)                                     : 2 octets
     Valeur "p" : uint(1) (0x01)                             : 1 octet
     Clé "id" (0x62 0x69 0x64)                               : 3 octets
@@ -484,16 +487,22 @@ Disposition :
     Valeur "kind" : tstr "file"        (0x64 + 4 octets)    : 1 +  4 =  5 octets
 
 Texte en clair CBOR (partage de collection) :
-    1 + 2 + 34 + 2 + 1 + 3 + 17 + 5 + 11 = 76 octets
+    1 +          2 + 1 + 3 + 17 + 5 + 11 = 40 octets
 Texte en clair CBOR (partage de fichier) :
     1 + 2 + 34 + 2 + 1 + 3 + 17 + 5 +  5 = 70 octets
 
 Total du blob chiffré :
-    Partage de collection : 6 (en-tête) + 24 (nonce) + 76 (texte en clair) + 16 (tag) = 122 octets
+    Partage de collection : 6 (en-tête) + 24 (nonce) + 40 (texte en clair) + 16 (tag) =  86 octets
     Partage de fichier :    6 (en-tête) + 24 (nonce) + 70 (texte en clair) + 16 (tag) = 116 octets
 ```
 
-**Partage de collection :** `"k"` vaut 32 octets nuls, la disposition et la taille restent les mêmes. Les clés de collection n'arrivent au destinataire que sous forme de copies de partage ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)), servies une fois le partage accepté : une invitation refusée ne laisse donc aucune clé. Le destinataire **DOIT** rejeter un partage de collection dont `"k"` ne vaut pas 32 octets nuls.
+**Partage de collection :** pas de `"k"`. Les clés de collection n'arrivent au destinataire que sous forme de copies de partage ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)), servies une fois le partage accepté : une invitation refusée ne laisse donc aucune clé. Le `VXSH` lie quand même `"p"`, `"id"` et `"kind"` sous `shareWrapKey`, et le désencapsuler prouve que le destinataire a bien dérivé cette clé.
+
+**Vérifications :** le serveur ne peut pas lire le texte en clair. Il vérifie l'en-tête et que la taille correspond au type du partage, 86 octets pour un partage de collection et 116 pour un partage de fichier, sur chaque route qui prend un `VXSH` (HTTP 400 sinon). Le destinataire vérifie le reste après la signature ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)) et **DOIT** rejeter le partage sauf si :
+
+- la map a exactement `"p"`, `"id"` et `"kind"` avec `"kind": "collection"` pour un partage de collection, ou exactement `"k"`, `"p"`, `"id"` et `"kind"` avec `"kind": "file"` pour un partage de fichier ;
+- `"id"` est le `collection_id` ou le `file_id` de l'enregistrement de partage et `"kind"` son type ;
+- `"p"` correspond à la colonne `permission` ([§11.6](#116-permissions-de-partage)).
 
 L'ordre dans lequel l'encodeur _reçoit_ les champs n'a pas d'importance ; ce qui compte, c'est que l'encodeur **CBOR canonique** les émette dans l'ordre longueur-puis-lexicographique. Tout encodeur qui implémente l'encodage déterministe du [RFC 8949 §4.2.1][cbor_rfc] produit cet ordonnancement ; une implémentation **NE DOIT PAS** se fier à un comportement par défaut de bibliothèque qui ne serait pas déterministe. Les vecteurs de test au [§14](#14-vecteurs-de-test) **DOIVENT** vérifier une sortie identique octet par octet entre les implémentations.
 
@@ -1835,7 +1844,7 @@ Flux d'envoi :
        ).
    ```
 
-4. L'expéditeur encapsule la `fileKey` d'un partage de fichier avec `shareWrapKey` via **XChaCha20-Poly1305** -> blob `VXSH`. Un partage de collection met 32 octets nuls à sa place ([§5.10](#510-vxsh---clé-de-partage-encapsulée)).
+4. L'expéditeur chiffre le texte en clair du `VXSH` sous `shareWrapKey` via **XChaCha20-Poly1305** -> blob `VXSH` : la `fileKey` avec la permission et la cible pour un partage de fichier, la permission et la cible seulement pour un partage de collection ([§5.10](#510-vxsh---clé-de-partage-encapsulée)).
 5. L'expéditeur construit la **charge utile signée** : une map CBOR canonique d'exactement 9 clés, dans l'ordre canonique :
 
    ```rs
@@ -1864,7 +1873,7 @@ Flux de réception :
 2. Le destinataire récupère la clé de vérification **ML-DSA-65** de l'expéditeur **indépendamment** depuis le serveur (pas depuis l'enregistrement de partage ! Cela empêche le serveur de substituer à la fois la charge utile et la clé).
 3. Le destinataire vérifie `signature` contre la clé de vérification de l'expéditeur avec le contexte `"vexahub:v1:share"`. **Rejet en cas d'échec. Ne pas procéder au déchiffrement.**
 4. Le destinataire désencapsule : `sharedSecret = X-Wing.Decaps(privXwing, ctXwing)`.
-5. Le destinataire dérive `shareWrapKey` et désencapsule `VXSH`.
+5. Le destinataire dérive `shareWrapKey`, désencapsule `VXSH` et vérifie ses champs contre l'enregistrement de partage ([§5.10](#510-vxsh---clé-de-partage-encapsulée)). **Rejet en cas de différence.**
 6. Le destinataire stocke la `fileKey` d'un partage de fichier dans sa propre étendue. Un partage de collection lit ses clés dans les copies du partage une fois accepté.
 7. Le destinataire encapsule `shareWrapKey` sous sa propre `masterKey` -> `recipientVxsw` ([§5.15](#515-vxsw---copie-de-la-clé-dencapsulation-de-partage)), envoyé avec l'acceptation.
 
@@ -2537,6 +2546,8 @@ Catégories de vecteurs :
 10. Vecteurs de signature déterministe **ML-DSA-65** : tuple fixe `(signing_seed, message, chaîne de contexte "vexahub:v1:share")` avec la sortie de signature attendue. Vérifie à la fois le déterminisme et l'utilisation correcte de la chaîne de contexte. Une discordance indique que l'implémentation utilise une **API** de signature aléatoire ou une liaison de contexte incorrecte.
 
 > Les vecteurs de test pour `VXSH` **DOIVENT** être mis à jour pour inclure `"p": 0x01` dans le texte en clair CBOR. Les vecteurs existants sans `"p"` sont invalides à la **version 1 du protocole** et **DOIVENT** être rejetés par les parseurs conformes.
+>
+> Ils **DOIVENT** couvrir les deux variantes : un partage de fichier avec `"k"` (116 octets) et un partage de collection sans (86 octets), ainsi que le rejet d'un partage de collection avec un `"k"` et d'un partage de fichier sans.
 
 Une **discordance** de vecteur est un **bloqueur** de version.
 
@@ -2908,6 +2919,7 @@ La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée suppri
 
 ## Historique des modifications
 
+- **21 :** le `VXSH` d'un partage de collection n'a pas de `"k"` : 86 octets au lieu de 122, vérifié par sa taille contre le type du partage côté serveur, champ par champ par le destinataire (§5.10, §11, §14). L'ancienne disposition de collection, avec un `"k"` de 32 octets nuls, n'est plus acceptée. Aucun changement de la disposition des partages de fichier, d'AAD ni de dérivations.
 - **20 :** rotation de clé paresseuse (§11.1). La révocation porte les rotations que seul le propriétaire peut faire, lues dans un plan de révocation : la collection partagée, les racines de partage en dessous et le chemin entre elles, de haut en bas, en une transaction avec une couverture exacte. Le reste de l'arbre révoqué attend sa rotation (`collections.key_rotation_pending`, §10.2) : aucun nouveau fichier, version, sous-collection, renommage, déplacement dedans ou partage sur elle avant la rotation de sa clé, par le propriétaire ou un éditeur. Une rotation ne donne plus de nouvelles clés de fichier et ne réencapsule plus les `VXCC` en dessous (§5.14, §11, §11.1, §11.1.1). Chaque `vxfk` vient avec sa `collectionKeyGeneration`, vérifiée comme la dernière, et une nouvelle version d'un fichier périmé prend une `fileKey` neuve (§6.5, §6.5.6.1, §11.4, §11.5.2). Le `VXSH` d'un partage de collection ne porte aucune clé, un refus supprime les copies du partage (§5.10, §11). `file_keys.vxfm` supprimé (§10.3). Aucun changement de disposition des blobs, d'AAD ni de dérivations.
 - **19 :** chaque sous-collection a un `VXCC` sous sa parente, un partage n'a de copies que pour sa collection partagée (§5.8, §5.14, §10.3, §11). L'accès d'un partage suit l'arbre, route de chaîne de clés, grants pour la collection partagée seulement (§11). `VXCC` exigé à la création, réencapsulé sous la nouvelle parente au déplacement, `VXCK` du propriétaire envoyé avec un déplacement à la racine, rien à la restauration (§11). Plan de rotation avec la `parent`, nouveau `VXCC` sous elle (§11.1 étapes 1, 7b, 8, 10). Aucun changement des formats de blob, des AAD ni des dérivations.
 - **18 :** rotation de collection sans nouveau KEM : les partages restants reçoivent une génération de plus sous leur `shareWrapKey` inchangée, plan de rotation, couverture exacte des partages et des `VXCC`, rotation de chaque collection que le partage révoqué atteignait (§11.1). `VXCC` dans leur propre table `child_collection_keys`, réencapsulés sur place, jamais dans une colonne `vxck` (§5.14, §10.3). Accès d'un partage aux collections, grants avec chaque génération (§11). Correction de la copie destinataire d'une clé de collection partagée (§11) et des lignes supprimées à la révocation (§11.1.1). Aucun changement des formats de blob, des AAD ni des dérivations.
