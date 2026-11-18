@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification | **Addendum**
 
-> **Document version:** 6
+> **Document version:** 7
 >
 > **Status:** (Draft) Proposed
 
@@ -279,6 +279,7 @@ All UUIDs in `info` strings are encoded as raw 16-byte big-endian binary.
 6. Server **MUST** verify:
    - The share is accepted, not revoked, and has the `edit` bit (`0x02`) set. Reject `HTTP 403` if not.
    - The parent is reachable through the share and belongs to the share owner. Reject `HTTP 404` if not.
+   - The parent is not waiting for its key rotation ([CRYPTO §11.1](CRYPTO.md#111-share-revocation)). Reject `HTTP 409` if it is, with the collections to rotate first.
    - `parentKeyGeneration` is the latest generation of the parent key, owner `VXCK` and `VXCC` generations alike. Reject `HTTP 409` if not: the editor reads the parent keys again and wraps again.
    - The provided `id` does not already exist. Reject `HTTP 409` if duplicate.
 7. Server creates the collection row with `user_id = parent_collection_owner_id`
@@ -323,9 +324,9 @@ The `VXCC` stays: the shares keep opening it with the parent key, and the genera
 
 **Rotation.** When a share on the parent collection is revoked, key rotation proceeds per [§11.1](./CRYPTO.md#111-share-revocation):
 
-1. `parentCollectionKey` rotates.
-2. Every `VXCC` directly below the parent is unwrapped with the **old** `childCollectionKeyWrapKey` and re-wrapped with the one derived from the **new** `parentCollectionKey`, in the same rotation call (CRYPTO §11.1 step 7a). The row is updated in place, for the owner and every share at once, even after the owner added its `VXCK`.
-3. The revoked editor's `share_collection_keys` rows are deleted at revocation. It no longer reaches the parent, so it no longer reaches the sub-collection. It still knows the sub-collection key: the owner's client rotates the sub-collection too (CRYPTO §11.1 step 10).
+1. `parentCollectionKey` rotates with the revocation, or later if the parent only waits for its rotation.
+2. The `VXCC` below the parent stay as they are, under the older parent generation, which the owner and the shares keep.
+3. The revoked editor's `share_collection_keys` rows are deleted at revocation. It no longer reaches the parent, so it no longer reaches the sub-collection. It still knows the sub-collection key, so the sub-collection waits for its rotation: nothing new is written in it until the owner or an editor rotates it, with a new `VXCC` under the latest parent key. An editor's rotation adds no owner `VXCK`, which the owner **SHOULD** add (§21.3).
 
 **Move.** A `VXCC` is bound to its parent by both the wrap key and the AAD, so a move carries the keys for the target ([CRYPTO §11](CRYPTO.md#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)):
 
@@ -350,22 +351,24 @@ existing info strings in [§4](./CRYPTO.md#4-hkdf-domain-separation). No protoco
 
 ### 21.7 Guarantees
 
-| Property                                                  | Status                                                         |
-| --------------------------------------------------------- | -------------------------------------------------------------- |
-| Editor has immediate access after creation                | ✅                                                             |
-| Owner has immediate cryptographic access after creation   | ✅ No pending window                                           |
-| Owner is true owner from creation                         | ✅ `user_id = owner_id` at insert                              |
-| No TTL, no pending state, no handoff                      | ✅                                                             |
-| Server can read sub-collection content                    | ❌ Zero-knowledge preserved                                    |
-| Shares added to the parent later reach the sub-collection | ✅ One `VXCC` row for everyone, no copy per share              |
-| Editor loses access on parent share revocation            | ✅ Server-enforced, and the sub-collection key rotates (§21.4) |
-| Owner retains access after `parentCollectionKey` rotation | ✅ Through the re-wrapped `VXCC`, or its own `VXCK`            |
-| Owner can move the sub-collection                         | ✅ With the keys for the target in the move itself (§21.4)     |
-| Server rejects creation if editor lacks `edit` permission | ✅ HTTP 403 on missing `0x02` bit                              |
-| No protocol version bump required                         | ✅ New HKDF info string only                                   |
+| Property                                                  | Status                                                          |
+| --------------------------------------------------------- | --------------------------------------------------------------- |
+| Editor has immediate access after creation                | ✅                                                              |
+| Owner has immediate cryptographic access after creation   | ✅ No pending window                                            |
+| Owner is true owner from creation                         | ✅ `user_id = owner_id` at insert                               |
+| No TTL, no pending state, no handoff                      | ✅                                                              |
+| Server can read sub-collection content                    | ❌ Zero-knowledge preserved                                     |
+| Shares added to the parent later reach the sub-collection | ✅ One `VXCC` row for everyone, no copy per share               |
+| Editor loses access on parent share revocation            | ✅ Server-enforced, nothing new below until it rotates (§21.4)  |
+| Owner retains access after `parentCollectionKey` rotation | ✅ Through the `VXCC` under the older generation, or its `VXCK` |
+| Editor rotates a sub-collection waiting for its rotation  | ✅ New `VXCC` under the parent, no owner `VXCK` (§21.4)         |
+| Owner can move the sub-collection                         | ✅ With the keys for the target in the move itself (§21.4)      |
+| Server rejects creation if editor lacks `edit` permission | ✅ HTTP 403 on missing `0x02` bit                               |
+| No protocol version bump required                         | ✅ New HKDF info string only                                    |
 
 ## Changelog
 
+- **7:** lazy key rotation, aligned with CRYPTO v20. A rotation of the parent leaves the `VXCC` below as they are, the sub-collection waits for its own rotation, by the owner or an editor (§21.4, §21.7). No sub-collection below a parent waiting for its rotation (§21.2).
 - **6:** every sub-collection key is a `VXCC` under its parent, aligned with CRYPTO v19. Access through the tree (§21.3). The owner `VXCK` becomes a SHOULD (§21.3). A move carries a `VXCC` under the new parent, or the owner `VXCK` at the root (§21.4, §21.7).
 - **5:** `VXCC` in their own table `child_collection_keys`, one row for the owner and the shares, re-wrapped in place (§21.2, §21.4, §21.5). `parentKeyGeneration` on creation (§21.2). Access through the parent (§21.3). The owner adds its `VXCK` next to the `VXCC`, implemented on the server (§21.3). Move refused while a generation is held only as a `VXCC`, `VXCC` rows deleted on a move (§21.4). Guarantees updated (§21.7), aligned with CRYPTO v18.
 - **4:** key generation in the AAD of `VXCC` and of the owner `VXCK` (§21.2, §21.3), aligned with CRYPTO v17.

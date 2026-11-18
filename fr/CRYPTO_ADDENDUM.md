@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique | **Addenda**
 
-> **Version du document :** 6
+> **Version du document :** 7
 >
 > **Statut :** (Brouillon) Proposé
 
@@ -251,6 +251,7 @@ L'IKM est une sortie **CSPRNG** uniformément aléatoire (héritée de `collecti
 6. Le serveur **DOIT** vérifier :
    - Le partage est accepté, non révoqué, et a le bit `edit` (`0x02`). Rejet `HTTP 403` sinon.
    - Le parent est accessible via le partage et appartient au propriétaire du partage. Rejet `HTTP 404` sinon.
+   - Le parent n'attend pas sa rotation de clé ([CRYPTO §11.1](/fr/CRYPTO.md#111-révocation-de-partage)). Rejet `HTTP 409` s'il l'attend, avec les collections à faire tourner d'abord.
    - `parentKeyGeneration` est la dernière génération de la clé parente, générations `VXCK` du propriétaire et `VXCC` comprises. Rejet `HTTP 409` sinon : l'éditeur relit les clés de la parente et encapsule à nouveau.
    - L'`id` fourni n'existe pas déjà. Rejet `HTTP 409` en cas de doublon.
 7. Le serveur crée la ligne de collection avec `user_id = parent_collection_owner_id` immédiatement et stocke le `VXCC` dans `child_collection_keys` ([CRYPTO §10.3](/fr/CRYPTO.md#103-tables-des-clés-de-fichiers-et-collections)) à la `key_generation` 0, avec `parent_id` et `parent_key_generation`. Comme pour toute sous-collection, cette seule ligne sert au propriétaire et à chaque partage qui atteint la parente ([CRYPTO §11](/fr/CRYPTO.md#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)) : aucune copie par partage. Il n'y a pas encore de ligne `VXCK` du propriétaire.
@@ -284,9 +285,9 @@ Le `VXCC` reste : les partages continuent de l'ouvrir avec la clé parente, et l
 
 **Rotation.** Lorsqu'un partage sur la collection parente est révoqué, la rotation des clés se déroule conformément au [§11.1](/fr/CRYPTO.md#111-révocation-de-partage) :
 
-1. La `parentCollectionKey` est renouvelée.
-2. Chaque `VXCC` directement sous la parente est désencapsulé avec l'**ancienne** `childCollectionKeyWrapKey` et réencapsulé avec celle dérivée de la **nouvelle** `parentCollectionKey`, dans le même appel de rotation (CRYPTO §11.1 étape 7a). La ligne est mise à jour sur place, pour le propriétaire et tous les partages à la fois, même après l'ajout du `VXCK` du propriétaire.
-3. Les lignes `share_collection_keys` de l'éditeur révoqué sont supprimées à la révocation. Il n'atteint plus la parente, donc plus la sous-collection. Il connaît encore la clé de la sous-collection : le client du propriétaire fait aussi tourner la sous-collection (CRYPTO §11.1 étape 10).
+1. La `parentCollectionKey` est renouvelée avec la révocation, ou plus tard si la parente ne fait qu'attendre sa rotation.
+2. Les `VXCC` sous la parente restent tels quels, sous l'ancienne génération de la parente, que le propriétaire et les partages gardent.
+3. Les lignes `share_collection_keys` de l'éditeur révoqué sont supprimées à la révocation. Il n'atteint plus la parente, donc plus la sous-collection. Il connaît encore la clé de la sous-collection, donc la sous-collection attend sa rotation : rien de nouveau n'y est écrit avant que le propriétaire ou un éditeur la fasse tourner, avec un nouveau `VXCC` sous la dernière clé de la parente. La rotation par un éditeur n'ajoute pas de `VXCK` du propriétaire, que le propriétaire **DEVRAIT** ajouter (§21.3).
 
 **Déplacement.** Un `VXCC` est lié à sa parente à la fois par la clé d'encapsulation et par l'AAD : un déplacement porte donc les clés pour la destination ([CRYPTO §11](/fr/CRYPTO.md#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)) :
 
@@ -310,22 +311,24 @@ La chaîne d'info `"vexahub:v1:childCollectionKeyWrap:"` est distincte de toutes
 
 ### 21.7 Garanties
 
-| Propriété                                                                     | Statut                                                                     |
-| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| L'éditeur dispose d'un accès immédiat après la création                       | ✅                                                                         |
-| Le propriétaire dispose d'un accès cryptographique immédiat après la création | ✅ Aucune fenêtre d'attente                                                |
-| Le propriétaire est le vrai propriétaire dès la création                      | ✅ `user_id = owner_id` à l'insertion                                      |
-| Aucun TTL, aucun état en attente, aucun transfert                             | ✅                                                                         |
-| Le serveur peut lire le contenu de la sous-collection                         | ❌ Zéro connaissance préservée                                             |
-| Les partages ajoutés plus tard sur la parente atteignent la sous-collection   | ✅ Une ligne `VXCC` pour tous, aucune copie par partage                    |
-| L'éditeur perd l'accès lors de la révocation du partage parent                | ✅ Appliqué par le serveur, et la clé de la sous-collection tourne (§21.4) |
-| Le propriétaire conserve l'accès après la rotation de `parentCollectionKey`   | ✅ Par le `VXCC` réencapsulé, ou son propre `VXCK`                         |
-| Le propriétaire peut déplacer la sous-collection                              | ✅ Avec les clés pour la destination dans le déplacement lui-même (§21.4)  |
-| Le serveur rejette la création si l'éditeur manque la permission `edit`       | ✅ HTTP 403 sur bit `0x02` manquant                                        |
-| Aucun incrément de version de protocole requis                                | ✅ Nouvelle chaîne d'info HKDF uniquement                                  |
+| Propriété                                                                     | Statut                                                                           |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| L'éditeur dispose d'un accès immédiat après la création                       | ✅                                                                               |
+| Le propriétaire dispose d'un accès cryptographique immédiat après la création | ✅ Aucune fenêtre d'attente                                                      |
+| Le propriétaire est le vrai propriétaire dès la création                      | ✅ `user_id = owner_id` à l'insertion                                            |
+| Aucun TTL, aucun état en attente, aucun transfert                             | ✅                                                                               |
+| Le serveur peut lire le contenu de la sous-collection                         | ❌ Zéro connaissance préservée                                                   |
+| Les partages ajoutés plus tard sur la parente atteignent la sous-collection   | ✅ Une ligne `VXCC` pour tous, aucune copie par partage                          |
+| L'éditeur perd l'accès lors de la révocation du partage parent                | ✅ Appliqué par le serveur, rien de nouveau en dessous avant sa rotation (§21.4) |
+| Le propriétaire conserve l'accès après la rotation de `parentCollectionKey`   | ✅ Par le `VXCC` sous l'ancienne génération, ou son `VXCK`                       |
+| L'éditeur fait tourner une sous-collection en attente de rotation             | ✅ Nouveau `VXCC` sous la parente, sans `VXCK` du propriétaire (§21.4)           |
+| Le propriétaire peut déplacer la sous-collection                              | ✅ Avec les clés pour la destination dans le déplacement lui-même (§21.4)        |
+| Le serveur rejette la création si l'éditeur manque la permission `edit`       | ✅ HTTP 403 sur bit `0x02` manquant                                              |
+| Aucun incrément de version de protocole requis                                | ✅ Nouvelle chaîne d'info HKDF uniquement                                        |
 
 ## Historique des modifications
 
+- **7 :** rotation de clé paresseuse, alignée sur CRYPTO v20. Une rotation de la parente laisse les `VXCC` en dessous tels quels, la sous-collection attend sa propre rotation, par le propriétaire ou un éditeur (§21.4, §21.7). Aucune sous-collection sous une parente en attente de rotation (§21.2).
 - **6 :** la clé de chaque sous-collection est un `VXCC` sous sa parente, alignée sur CRYPTO v19. Accès par l'arbre (§21.3). Le `VXCK` du propriétaire devient un DEVRAIT (§21.3). Un déplacement porte un `VXCC` sous la nouvelle parente, ou le `VXCK` du propriétaire à la racine (§21.4, §21.7).
 - **5 :** `VXCC` dans leur propre table `child_collection_keys`, une ligne pour le propriétaire et les partages, réencapsulée sur place (§21.2, §21.4, §21.5). `parentKeyGeneration` à la création (§21.2). Accès par la parente (§21.3). Le propriétaire ajoute son `VXCK` à côté du `VXCC`, implémenté côté serveur (§21.3). Déplacement refusé tant qu'une génération n'existe qu'en `VXCC`, lignes `VXCC` supprimées lors d'un déplacement (§21.4). Garanties mises à jour (§21.7), alignées sur CRYPTO v18.
 - **4 :** génération de clé dans l'AAD de `VXCC` et du `VXCK` du propriétaire (§21.2, §21.3), alignée sur CRYPTO v17.
