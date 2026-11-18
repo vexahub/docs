@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-> **Document version:** 18
+> **Document version:** 19
 >
 > **Protocol version:** 1
 >
@@ -408,7 +408,7 @@ AAD: user_id ‖ collection_id ‖ uint32_be(key_generation) // 36 bytes
 AAD: share_id ‖ collection_id ‖ uint32_be(key_generation) // 36 bytes
 ```
 
-`key_generation` is the generation of the wrapped `collectionKey`. The owner copy lives in `collection_keys` ([§10.3](#103-file-and-collection-keys-table)), the share copy in `share_collection_keys` ([§11](#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)). A share copy at generation `K` wraps the same `collectionKey` as the owner copy, or the `VXCC` ([§5.14](#514-vxcc---child-wrapped-collection-key)), at generation `K`.
+`key_generation` is the generation of the wrapped `collectionKey`. The owner copy lives in `collection_keys` ([§10.3](#103-file-and-collection-keys-table)), the share copy in `share_collection_keys` ([§11](#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)), for the shared collection only. A share copy at generation `K` wraps the same `collectionKey` as the owner copy, or the `VXCC` ([§5.14](#514-vxcc---child-wrapped-collection-key)), at generation `K`.
 
 > **Generation binding:** `VXCK`, `VXFK` ([§5.9](#59-vxfk---wrapped-file-key)) and `VXCC` ([§5.14](#514-vxcc---child-wrapped-collection-key)) bind the key generation in their AAD, so the server cannot serve an older key, known to a revoked recipient, as a newer one: the unwrap fails. It can still withhold a newer generation. Clients **SHOULD** keep the highest generation seen per collection and per file in local storage, and **MUST NOT** encrypt new content or wrap a new key under a lower generation than the one they keep.
 
@@ -701,7 +701,7 @@ Optional fields (`m`, `p`) are omitted when they have no value, never encoded as
 
 ### 5.14 `VXCC` - Child-wrapped Collection Key
 
-Wraps the `collectionKey` of a sub-collection created by an editor ([Addendum §21](CRYPTO_ADDENDUM.md#21-sub-collection-creation-by-an-editor)) under the parent `collectionKey`. The editor cannot produce a `VXCK`, which requires the owner's `masterKey`.
+Wraps the `collectionKey` of a sub-collection under the `collectionKey` of its parent. Every sub-collection has one per `key_generation`, whether the owner created it ([§11](#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)) or an editor did ([Addendum §21](CRYPTO_ADDENDUM.md#21-sub-collection-creation-by-an-editor)); a root collection has none. A share holds copies of its shared collection only and opens everything below it through the chain of `VXCC`.
 
 ```rs
 Offset  Size  Field
@@ -728,7 +728,7 @@ Server-side storage: `child_collection_keys` ([§10.3](#103-file-and-collection-
 
 A `VXCC` is always wrapped under the **latest** `key_generation` of its parent's `collectionKey`. Rotating the parent key **MUST** re-wrap every `VXCC` directly below it in the same operation ([§11.1](#111-share-revocation)). The row is updated in place: it keeps its `key_generation` and takes the new `parent_key_generation`.
 
-**Owner `VXCK`:** the owner's client adds its own `VXCK` for a `VXCC` generation the first time it unwraps it ([Addendum §21.3](CRYPTO_ADDENDUM.md#213-access)). The `VXCC` stays, for the shares that open it with the parent key. A collection with a generation held only as a `VXCC` cannot be moved ([Addendum §21.4](CRYPTO_ADDENDUM.md#214-share-revocation-key-rotation-and-move)).
+**Owner `VXCK`:** the owner keeps a `VXCK` for the collections it creates, so it opens them without the chain. For one created by an editor, its client **SHOULD** add its own `VXCK` for each `VXCC` generation ([Addendum §21.3](CRYPTO_ADDENDUM.md#213-access)), and **MUST** send it with a move to the root, where no parent key can wrap it ([§11](#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)). The `VXCC` stays, for the shares that open it with the parent key.
 
 ### 5.15 `VXSW` - Share Wrap Key Copy
 
@@ -1904,7 +1904,7 @@ CREATE INDEX file_keys_collection_gen
     ON file_keys (collection_key_generation, file_id);
 ```
 
-> **Collection key generations:** `collection_keys` holds only `VXCK` blobs. The generations of a collection are those of its owner `VXCK` rows and of its `VXCC` rows together: a generation is in both once the owner added its `VXCK`. The collection key routes return both, latest first: `keys` (`VXCK`) and `childKeys` (`VXCC`, with `parentKeyGeneration`).
+> **Collection key generations:** `collection_keys` holds only `VXCK` blobs, `child_collection_keys` the `VXCC` of every sub-collection. The generations of a collection are those of its owner `VXCK` rows and of its `VXCC` rows together: a generation is in both once the owner added its `VXCK`. The collection key routes return both, latest first: `keys` (`VXCK`) and `childKeys` (`VXCC`, with `parentKeyGeneration`).
 >
 > **Multiple `file_keys` rows per file:** This introduces a model where multiple `file_keys` rows coexist for the same `file_id` during the window between key rotation and content re-encryption. The `key_generation DESC` index supports the "latest key" lookup. Server-side GC of old rows is described in [§11.1.1](#1111-optional-content-re-encryption-after-revocation).
 >
@@ -1972,7 +1972,7 @@ Receive flow:
 >
 > **Critical design note:** The ML-DSA-65 signature sits **outside** the encrypted `VXSH` blob, at the transport layer. The recipient **MUST** verify the signature before trusting or decrypting the ciphertext. If the signature were inside the encrypted envelope, a malicious server could swap the entire `{ctXwing, vxsh}` package and the forgery would only be discovered after decryption (And that's too late).
 >
-> When sharing a **collection**, the `VXSH` blob wraps the latest `collectionKey`. The recipient's copies of every generation are share copies of `VXCK` ([§5.8](#58-vxck---wrapped-collection-key)) in `share_collection_keys`, written by the sender (grants below). When sharing a **file**, the `VXSH` blob wraps the `fileKey`.
+> When sharing a **collection**, the `VXSH` blob wraps the latest `collectionKey`. The recipient's copies of every generation are share copies of `VXCK` ([§5.8](#58-vxck---wrapped-collection-key)) in `share_collection_keys`, written by the sender (grants below). Every collection below opens through the chain of `VXCC` ([§5.14](#514-vxcc---child-wrapped-collection-key)). When sharing a **file**, the `VXSH` blob wraps the `fileKey`.
 >
 > Parsers **MUST** reject non-canonical **CBOR** input. Any blob or payload that does not conform to [RFC 8949 §4.2.1][cbor_rfc] deterministic encoding **MUST** cause a hard error, **never** silent acceptance or re-canonicalization.
 
@@ -2019,7 +2019,7 @@ CREATE TABLE share_collection_keys (
     id              UUID PRIMARY KEY DEFAULT uuidv7(),
     share_id        UUID NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
     collection_id   UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
-    vxck            BYTEA NOT NULL,         -- VXCK under shareCollectionKeyWrapKey
+    vxck            BYTEA NOT NULL,         -- VXCK under shareCollectionKeyWrapKey, shared collection only
     key_generation  INTEGER NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -2032,9 +2032,17 @@ CREATE UNIQUE INDEX share_collection_keys_active
 
 **Share wrap key copies:** every invitation carries `senderVxsw`, including the ones sent again by a file key rotation ([§11.1](#111-share-revocation)), a sharing keypair rotation ([§11.3](#113-sharing-keypair-rotation)) or a rekey. After a key rotation, the new invitations are pending and accepted as usual. After a sharing keypair rotation or a rekey, a share that was already accepted stays accepted and `recipient_vxsw` is `NULL`: the recipient sends its copy afterwards with `PUT /api/v1/shares/{id}/recipient-copy` and `{ vxsw }`. The server accepts it only once, on an accepted and active share without a recipient copy (HTTP 404 otherwise). The share routes return the copy of the caller's side only (`vxsw`, `NULL` while it is missing).
 
-**Collection access of a share:** a collection share reaches its shared collection, every collection it holds a copy for in `share_collection_keys`, and every sub-collection keyed by a `VXCC` ([§5.14](#514-vxcc---child-wrapped-collection-key)) directly below a collection it reaches, recursively. The server enforces it on every shared read and on sub-collection creation ([Addendum §21](CRYPTO_ADDENDUM.md#21-sub-collection-creation-by-an-editor)). A shared collection read returns the share copies, latest first (`keys`), and the `VXCC` of the collection (`childKeys`).
+**Collection access of a share:** a collection share reaches its shared collection and every collection below it in the tree (`collections.parent_id`), whoever created them. Moving a collection out of the tree cuts the access, for it and everything below. The server enforces it on every shared read and on sub-collection creation ([Addendum §21](CRYPTO_ADDENDUM.md#21-sub-collection-creation-by-an-editor)). The keys only give the means to read: the share copies of the shared collection, then the `VXCC` of each level ([§5.14](#514-vxcc---child-wrapped-collection-key)). A shared collection read returns both, latest first (`keys`, `childKeys`), and `GET /api/v1/shares/{shareId}/collections/{collectionId}/key-chain` returns the whole chain in one read: the share copies, then the `VXCC` of each level down to the collection.
 
-**Grants:** `VXSH` carries only the latest generation of the shared collection. The sender gives the share its copies with `POST /api/v1/shares/{shareId}/collections` and `{ grants: [{ collectionId, keys: [{ keyGeneration, vxck }] }] }`, for the shared collection itself and for any other collection it owns. A grant **MUST** carry exactly one copy per generation of the collection, owner `VXCK` and `VXCC` generations alike, since older file keys stay wrapped under older generations. The server refuses it otherwise (HTTP 400, with the expected generations). Granting again replaces the copies. Grants, rotations and sub-collection creation are serialized per collection on the server, so a grant cannot miss a generation added meanwhile.
+**Grants:** `VXSH` carries only the latest generation of the shared collection. The sender gives the share its copies with `POST /api/v1/shares/{shareId}/collections` and `{ grants: [{ collectionId, keys: [{ keyGeneration, vxck }] }] }`, for the shared collection only (HTTP 403 for any other: below it, the `VXCC` give the keys). A grant **MUST** carry exactly one copy per generation, owner `VXCK` and `VXCC` generations alike, since older file keys stay wrapped under older generations. The server refuses it otherwise (HTTP 400, with the expected generations). Granting again replaces the copies.
+
+**Sub-collections:**
+
+- **Creation:** `POST /api/v1/storage/collections` with a `parentId` **MUST** carry `vxcc` and `parentKeyGeneration`: the new `collectionKey` wrapped under the latest key of the parent ([§5.14](#514-vxcc---child-wrapped-collection-key)). The server checks the generation under the parent lock (HTTP 409 if it changed: the client reads the parent keys again) and stores the `VXCC` at `key_generation` 0 next to the owner `VXCK`. A root collection takes none (HTTP 400). The shares reaching the parent reach the new collection at once, with nothing to grant.
+- **Move:** `POST /api/v1/storage/collections/{id}/move`. Under a parent, `{ targetParentId, parentKeyGeneration, keys: [{ keyGeneration, vxcc }] }`: one `VXCC` per generation of the collection, under the latest key of the new parent. To the root, `{ ownerKeys: [{ keyGeneration, vxck }] }`: one owner `VXCK` per generation held only as a `VXCC`. The server checks both (HTTP 409 otherwise, with the expected generations when one is missing) and replaces the `VXCC` in the same transaction. The shares of the old tree lose the collection, those of the new one reach it. The collections below keep their `VXCC`, bound to it.
+- **Restore:** nothing to send. The `VXCC` of a trashed collection stay bound to its parent, and a rotation of the parent re-wraps them, trashed or not.
+
+The server serializes these operations with grants and rotations per collection. An operation on several collections locks them in one fixed order, so two of them never wait on each other.
 
 ### 11.1 Share Revocation
 
@@ -2044,7 +2052,7 @@ Revocation removes a recipient's access and rotates keys so new content is crypt
 
 The remaining recipients keep their `shareWrapKey`: the revoked recipient never had it, so a rotation gives them one more generation under it, without a new invitation or X-Wing encapsulation.
 
-1. Sender calls `DELETE /api/v1/shares/{share_id}`, then reads `GET /api/v1/shares/collections/{collection_id}/rotation-plan`: the current `key_generation`, the files of the collection, the remaining shares that reach it ([§11](#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)) with the sender's `senderVxsw`, and the `VXCC` directly below it (`collectionId`, `keyGeneration`).
+1. Sender calls `DELETE /api/v1/shares/{share_id}`, then reads `GET /api/v1/shares/collections/{collection_id}/rotation-plan`: the current `key_generation`, the files of the collection, the remaining shares whose shared collection it is ([§11](#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)) with the sender's `senderVxsw`, the `VXCC` directly below it (`collectionId`, `keyGeneration`), and its `parent` (`collectionId`, latest `keyGeneration`), `null` for a root collection.
 
 2. Server sets `revoked_at = now()` and deletes the share's rows in `share_collection_keys`. Revoked recipient **gets 403 immediately**.
 
@@ -2072,7 +2080,9 @@ The remaining recipients keep their `shareWrapKey`: the revoked recipient never 
 
     7a. Sender unwraps every `VXCC` of the plan with the **old** `collectionKey` and re-wraps it with the **new** one ([§5.14](#514-vxcc---child-wrapped-collection-key)).
 
-8. Sender sends it all with `POST /api/v1/shares/collections/{collection_id}/rotate` and `{ vxck, vxcm, fileKeys, fileMetadata, shareKeys: [{ shareId, vxck }], childKeys: [{ collectionId, keyGeneration, vxcc }] }`. The server computes the plan again under the collection lock and **MUST** refuse the rotation (HTTP 409) if `shareKeys` or `childKeys` is not exactly that plan, for example after a share or a sub-collection was added meanwhile: the client reads the plan again.
+    7b. If the plan has a `parent`, the sender wraps the new `collectionKey` under the latest key of the parent -> `VXCC` at the new generation. The shares reaching the parent open it through it, without a copy of their own.
+
+8. Sender sends it all with `POST /api/v1/shares/collections/{collection_id}/rotate` and `{ vxck, vxcm, fileKeys, fileMetadata, shareKeys: [{ shareId, vxck }], childKeys: [{ collectionId, keyGeneration, vxcc }], vxcc, parentKeyGeneration }`, the last two with a `parent` only. The server computes the plan again under the locks of the collection and its parent and **MUST** refuse the rotation (HTTP 409) if `shareKeys`, `childKeys` or the `VXCC` under the parent is not exactly that plan, for example after a share or a sub-collection was added or the parent key rotated meanwhile: the client reads the plan again.
 
 9. File content is **NOT re-encrypted by default**. Files are marked
    `pending_key_rotation = TRUE`. The file `generation` counter is
@@ -2080,7 +2090,7 @@ The remaining recipients keep their `shareWrapKey`: the revoked recipient never 
    The actual `fileKey` used for content remains the old one until
    the **owner explicitly opts into re-encryption** ([§11.1.1](#1111-optional-content-re-encryption-after-revocation)).
 
-10. The revoked recipient also knows the key of every other collection its share reached: the sub-collections below the shared one and the granted collections. The sender's client **MUST** rotate each of them the same way, each with its own plan and rotation call; the order does not matter. Otherwise new content in them would stay under a key the revoked recipient knows.
+10. The revoked recipient also knows the key of every collection below the shared one, through the chain of `VXCC`. The sender's client **MUST** rotate each of them the same way, each with its own plan and rotation call; the order does not matter. Otherwise new content in them would stay under a key the revoked recipient knows.
 
 **File share revocation:**
 
@@ -3051,6 +3061,7 @@ The value is capped by the plan's maximum. A scheduled job deletes versions whos
 
 ## Changelog
 
+- **19:** every sub-collection has a `VXCC` under its parent, a share holds copies of its shared collection only (§5.8, §5.14, §10.3, §11). Share access follows the tree, key chain route, grants for the shared collection only (§11). `VXCC` required on creation, re-wrapped under the new parent on a move, owner `VXCK` sent with a move to the root, nothing on a restore (§11). Rotation plan with the `parent`, new `VXCC` under it (§11.1 steps 1, 7b, 8, 10). No change to blob formats, AAD or derivations.
 - **18:** collection rotation without a new KEM: the remaining shares get one more generation under their unchanged `shareWrapKey`, rotation plan, exact coverage of the shares and `VXCC`, rotation of every collection the revoked share reached (§11.1). `VXCC` in their own table `child_collection_keys`, re-wrapped in place, never in a `vxck` column (§5.14, §10.3). Collection access of a share, grants with every generation (§11). Fixed the recipient copy of a shared collection key (§11) and the rows deleted at revocation (§11.1.1). No change to blob formats, AAD or derivations.
 - **17:** aligned with the share and file key changes in the code. A new version keeps the file key: `vxfk` only for a new file, `content_key_generation` set to the latest key, `vxfk` and `latestVxfk` returned by the file routes, invariant on `files.vxfm` (§6.5, §6.5.6.1, §10.2, §11.5.2). `file_versions.content_key_generation`, non-destructive restore (§10.2, §19.5). Public links served from `files.vxfm`, HTTP 410 once the content changed key (§5.11). `file_keys.vxfm` deprecated (§10.3). Rotations leave `files.vxfm` under the content key (§11.1, §11.1.1, §17). New `VXSW` blob (§5.15). Client-generated share id, `sender_vxsw` and `recipient_vxsw`, `vxsw` on accept, `PUT /api/v1/shares/{id}/recipient-copy` (§11). Server-side checks of every blob format (§5, §5.15, §6.5.6.1). Key generation in the AAD of `VXCK`, `VXFK` and `VXCC`, distinct AAD and wrapping key for the share copies of `VXCK`, AAD and wrapping key of `VXSW`, highest generation kept by clients (§4, §5.8, §5.9, §5.14, §5.15). These AAD changes break existing blobs: the protocol stays at version 1 because no account was created under the previous AAD.
 - **16:** aligned with the current code. API paths under `/api/v1` (same-origin), UUID v7 mostly everywhere, real routes and schemas. Client-generated `session_id` for `VXPS` (§5.6, §9.2). `vxwm` and `vxsk` returned only after `signin/finish`, uniform `signin/start` (§8.2). `ts` informative, no mandatory check (§11.2). New `VXMC` (§5.12) and `VXSI` (§5.13), `localCacheKey`, `sessionToken` and `childCollectionKeyWrap` derivations (§4). Direct upload for small files (§6.5). Rewritten recovery flow (§12.1), CSP (§16.1), account deletion (§19.3). New file versions section (§19.5). Re-encryption after revocation (§11.1.1) and web persistent sessions (§9.2) marked as planned. New `VXCC` blob for editor-created sub-collections, transitional on the owner side (§5.14). Email verified by code before the account is created, uniform `signup/start` (§8.1).

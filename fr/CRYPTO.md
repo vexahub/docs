@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique
 
-> **Version du document :** 18
+> **Version du document :** 19
 >
 > **Version du protocole :** 1
 >
@@ -294,7 +294,7 @@ Schéma CBOR pour les métadonnées en clair (CBOR canonique, [RFC 8949 §4.2.1]
 
 Les clés CBOR inconnues **DOIVENT** être préservées lors du rechiffrement pour permettre des ajouts de champs rétrocompatibles.
 
-> Les parseurs **DOIVENT** rejeter les entrées **CBOR** non canoniques. Tout blob ou charge utile non conforme à l'encodage déterministe du [RFC 8949 §4.2.1][cbor_rfc] **DOIT** provoquer une erreur critique, **jamais** une acceptation silencieuse ou une recanonicali­sation.
+> Les parseurs **DOIVENT** rejeter les entrées **CBOR** non canoniques. Tout blob ou charge utile non conforme à l'encodage déterministe du [RFC 8949 §4.2.1][cbor_rfc] **DOIT** provoquer une erreur critique, **jamais** une acceptation silencieuse ou une recanonicalisation.
 
 ### 5.5 `VXCM` - Métadonnées de collection
 
@@ -379,7 +379,7 @@ Schéma CBOR, clés dans l'ordre canonique (`ds` puis `xw`) :
 
 Clair CBOR : en-tête de map (1) + `"ds"` (3) + bstr(32) (34) + `"xw"` (3) + bstr(32) (34) = 75 octets.
 
-> Les parseurs **DOIVENT** rejeter les entrées **CBOR** non canoniques. Tout blob ou charge utile non conforme à l'encodage déterministe du [RFC 8949 §4.2.1][cbor_rfc] **DOIT** provoquer une erreur critique, **jamais** une acceptation silencieuse ou une recanonicali­sation.
+> Les parseurs **DOIVENT** rejeter les entrées **CBOR** non canoniques. Tout blob ou charge utile non conforme à l'encodage déterministe du [RFC 8949 §4.2.1][cbor_rfc] **DOIT** provoquer une erreur critique, **jamais** une acceptation silencieuse ou une recanonicalisation.
 
 ### 5.8 `VXCK` - Clé de collection encapsulée
 
@@ -403,7 +403,7 @@ AAD : user_id ‖ collection_id ‖ uint32_be(key_generation) // 36 octets
 AAD : share_id ‖ collection_id ‖ uint32_be(key_generation) // 36 octets
 ```
 
-`key_generation` est la génération de la `collectionKey` encapsulée. La copie du propriétaire est dans `collection_keys` ([§10.3](#103-tables-des-clés-de-fichiers-et-collections)), celle d'un partage dans `share_collection_keys` ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)). Une copie de partage à la génération `K` encapsule la même `collectionKey` que la copie du propriétaire, ou que le `VXCC` ([§5.14](#514-vxcc---clé-de-collection-encapsulée-par-la-collection-parente)), à la génération `K`.
+`key_generation` est la génération de la `collectionKey` encapsulée. La copie du propriétaire est dans `collection_keys` ([§10.3](#103-tables-des-clés-de-fichiers-et-collections)), celle d'un partage dans `share_collection_keys` ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)), pour la collection partagée seulement. Une copie de partage à la génération `K` encapsule la même `collectionKey` que la copie du propriétaire, ou que le `VXCC` ([§5.14](#514-vxcc---clé-de-collection-encapsulée-par-la-collection-parente)), à la génération `K`.
 
 > **Liaison de la génération :** `VXCK`, `VXFK` ([§5.9](#59-vxfk---clé-de-fichier-encapsulée)) et `VXCC` ([§5.14](#514-vxcc---clé-de-collection-encapsulée-par-la-collection-parente)) lient la génération de clé dans leur AAD : le serveur ne peut pas servir une clé plus ancienne, connue d'un destinataire révoqué, comme une plus récente, car la désencapsulation échoue. Il peut encore cacher une génération plus récente. Les clients **DEVRAIENT** garder en local la plus haute génération vue par collection et par fichier, et **NE DOIVENT PAS** chiffrer de nouveau contenu ni encapsuler une nouvelle clé sous une génération plus basse que celle qu'ils gardent.
 
@@ -497,7 +497,7 @@ L'ordre dans lequel l'encodeur _reçoit_ les champs n'a pas d'importance ; ce qu
 
 Il s'agit d'une **défense en profondeur** aux côtés de la signature **ML-DSA-65**. Si une vérification de signature est **accidentellement** omise en raison d'un bug, la liaison **AAD** **empêche** quand même le serveur de rediriger des partages entre utilisateurs.
 
-> Les parseurs **DOIVENT** rejeter les entrées **CBOR** non canoniques. Tout blob ou charge utile non conforme à l'encodage déterministe du [RFC 8949 §4.2.1][cbor_rfc] **DOIT** provoquer une erreur critique, **jamais** une acceptation silencieuse ou une recanonicali­sation.
+> Les parseurs **DOIVENT** rejeter les entrées **CBOR** non canoniques. Tout blob ou charge utile non conforme à l'encodage déterministe du [RFC 8949 §4.2.1][cbor_rfc] **DOIT** provoquer une erreur critique, **jamais** une acceptation silencieuse ou une recanonicalisation.
 
 ### 5.11 `VXPL` - Blob de lien public
 
@@ -696,7 +696,7 @@ Les champs optionnels (`m`, `p`) sont omis quand ils n'ont pas de valeur, jamais
 
 ### 5.14 `VXCC` - Clé de collection encapsulée par la collection parente
 
-Encapsule la `collectionKey` d'une sous-collection créée par un éditeur ([Addenda §21](/fr/CRYPTO_ADDENDUM.md#21-création-de-sous-collection-par-un-éditeur)) sous la `collectionKey` parente. L'éditeur ne peut pas produire un `VXCK`, qui demande la `masterKey` du propriétaire.
+Encapsule la `collectionKey` d'une sous-collection sous la `collectionKey` de sa parente. Chaque sous-collection en a un par `key_generation`, qu'elle ait été créée par le propriétaire ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)) ou par un éditeur ([Addenda §21](/fr/CRYPTO_ADDENDUM.md#21-création-de-sous-collection-par-un-éditeur)) ; une collection racine n'en a pas. Un partage n'a de copies que pour sa collection partagée et ouvre tout ce qui est dessous par la chaîne de `VXCC`.
 
 ```rs
 Décalage  Taille  Champ
@@ -723,7 +723,7 @@ Stockage côté serveur : `child_collection_keys` ([§10.3](#103-tables-des-clé
 
 Un `VXCC` est toujours encapsulé sous la **dernière** `key_generation` de la `collectionKey` de sa parente. Une rotation de la clé parente **DOIT** réencapsuler tous les `VXCC` directement en dessous dans la même opération ([§11.1](#111-révocation-de-partage)). La ligne est mise à jour sur place : elle garde sa `key_generation` et prend la nouvelle `parent_key_generation`.
 
-**`VXCK` du propriétaire :** le client du propriétaire ajoute son propre `VXCK` pour une génération en `VXCC` la première fois qu'il la désencapsule ([Addenda §21.3](/fr/CRYPTO_ADDENDUM.md#213-accès)). Le `VXCC` reste, pour les partages qui l'ouvrent avec la clé parente. Une collection dont une génération n'existe qu'en `VXCC` ne peut pas être déplacée ([Addenda §21.4](/fr/CRYPTO_ADDENDUM.md#214-révocation-de-partage-rotation-de-clé-et-déplacement)).
+**`VXCK` du propriétaire :** le propriétaire garde un `VXCK` pour les collections qu'il crée, pour les ouvrir sans la chaîne. Pour une collection créée par un éditeur, son client **DEVRAIT** ajouter son propre `VXCK` pour chaque génération en `VXCC` ([Addenda §21.3](/fr/CRYPTO_ADDENDUM.md#213-accès)), et **DOIT** l'envoyer avec un déplacement à la racine, où aucune clé parente ne peut l'encapsuler ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)). Le `VXCC` reste, pour les partages qui l'ouvrent avec la clé parente.
 
 ### 5.15 `VXSW` - Copie de la clé d'encapsulation de partage
 
@@ -1795,7 +1795,7 @@ CREATE INDEX file_keys_collection_gen
     ON file_keys (collection_key_generation, file_id);
 ```
 
-> **Générations de la clé d'une collection :** `collection_keys` ne contient que des blobs `VXCK`. Les générations d'une collection sont celles de ses lignes `VXCK` du propriétaire et de ses lignes `VXCC` réunies : une génération est dans les deux une fois que le propriétaire a ajouté son `VXCK`. Les routes de clés de collection renvoient les deux, de la plus récente à la plus ancienne : `keys` (`VXCK`) et `childKeys` (`VXCC`, avec `parentKeyGeneration`).
+> **Générations de la clé d'une collection :** `collection_keys` ne contient que des blobs `VXCK`, `child_collection_keys` les `VXCC` de chaque sous-collection. Les générations d'une collection sont celles de ses lignes `VXCK` du propriétaire et de ses lignes `VXCC` réunies : une génération est dans les deux une fois que le propriétaire a ajouté son `VXCK`. Les routes de clés de collection renvoient les deux, de la plus récente à la plus ancienne : `keys` (`VXCK`) et `childKeys` (`VXCC`, avec `parentKeyGeneration`).
 >
 > **Plusieurs lignes `file_keys` par fichier :** ce modèle permet à plusieurs lignes `file_keys` de coexister pour le même `file_id` pendant la fenêtre entre la rotation de clé et le rechiffrement du contenu. L'index `key_generation DESC` permet la recherche de la « clé la plus récente ». Le GC côté serveur des anciennes lignes est décrit au [§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation).
 >
@@ -1863,9 +1863,9 @@ Flux de réception :
 >
 > **Note de conception critique :** la signature ML-DSA-65 se trouve **en dehors** du blob `VXSH` chiffré, au niveau de la couche transport. Le destinataire **DOIT** vérifier la signature avant de faire confiance au texte chiffré ou de le déchiffrer. Si la signature se trouvait à l'intérieur de l'enveloppe chiffrée, un serveur malveillant pourrait substituer l'ensemble du paquet `{ctXwing, vxsh}` et la falsification ne serait découverte qu'après déchiffrement (ce qui serait trop tard).
 >
-> Lors du partage d'une **collection**, le blob `VXSH` encapsule la dernière `collectionKey`. Les copies du destinataire, une par génération, sont des copies de partage de `VXCK` ([§5.8](#58-vxck---clé-de-collection-encapsulée)) dans `share_collection_keys`, écrites par l'expéditeur (grants ci-dessous). Lors du partage d'un **fichier**, le blob `VXSH` encapsule la `fileKey`.
+> Lors du partage d'une **collection**, le blob `VXSH` encapsule la dernière `collectionKey`. Les copies du destinataire, une par génération, sont des copies de partage de `VXCK` ([§5.8](#58-vxck---clé-de-collection-encapsulée)) dans `share_collection_keys`, écrites par l'expéditeur (grants ci-dessous). Chaque collection en dessous s'ouvre par la chaîne de `VXCC` ([§5.14](#514-vxcc---clé-de-collection-encapsulée-par-la-collection-parente)). Lors du partage d'un **fichier**, le blob `VXSH` encapsule la `fileKey`.
 >
-> Les parseurs **DOIVENT** rejeter les entrées **CBOR** non canoniques. Tout blob ou charge utile non conforme à l'encodage déterministe du [RFC 8949 §4.2.1][cbor_rfc] **DOIT** provoquer une erreur critique, **jamais** une acceptation silencieuse ou une recanonicali­sation.
+> Les parseurs **DOIVENT** rejeter les entrées **CBOR** non canoniques. Tout blob ou charge utile non conforme à l'encodage déterministe du [RFC 8949 §4.2.1][cbor_rfc] **DOIT** provoquer une erreur critique, **jamais** une acceptation silencieuse ou une recanonicalisation.
 
 La signature ne fait pas partie du blob `VXSH`. Elle est stockée à ses côtés dans l'enregistrement de partage en base de données :
 
@@ -1910,7 +1910,7 @@ CREATE TABLE share_collection_keys (
     id              UUID PRIMARY KEY DEFAULT uuidv7(),
     share_id        UUID NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
     collection_id   UUID NOT NULL REFERENCES collections(id) ON DELETE RESTRICT,
-    vxck            BYTEA NOT NULL,         -- VXCK sous shareCollectionKeyWrapKey
+    vxck            BYTEA NOT NULL,         -- VXCK sous shareCollectionKeyWrapKey, collection partagée seulement
     key_generation  INTEGER NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -1923,9 +1923,17 @@ CREATE UNIQUE INDEX share_collection_keys_active
 
 **Copies de la clé d'encapsulation de partage :** chaque invitation porte `senderVxsw`, y compris celles renvoyées par une rotation de clé de fichier ([§11.1](#111-révocation-de-partage)), une rotation de la paire de clés de partage ([§11.3](#113-rotation-de-la-paire-de-clés-de-partage)) ou un renouvellement (rekey). Après une rotation de clé, les nouvelles invitations sont en attente et s'acceptent normalement. Après une rotation de la paire de clés de partage ou un renouvellement, un partage déjà accepté reste accepté et `recipient_vxsw` vaut `NULL` : le destinataire envoie sa copie ensuite avec `PUT /api/v1/shares/{id}/recipient-copy` et `{ vxsw }`. Le serveur ne l'accepte qu'une fois, sur un partage accepté et actif sans copie destinataire (HTTP 404 sinon). Les routes de partage ne renvoient que la copie du côté de l'appelant (`vxsw`, `NULL` tant qu'elle manque).
 
-**Accès d'un partage aux collections :** un partage de collection atteint sa collection partagée, chaque collection pour laquelle il a une copie dans `share_collection_keys`, et chaque sous-collection dont la clé est un `VXCC` ([§5.14](#514-vxcc---clé-de-collection-encapsulée-par-la-collection-parente)) directement sous une collection qu'il atteint, récursivement. Le serveur l'applique à chaque lecture partagée et à la création de sous-collection ([Addenda §21](/fr/CRYPTO_ADDENDUM.md#21-création-de-sous-collection-par-un-éditeur)). La lecture d'une collection partagée renvoie les copies du partage, de la plus récente à la plus ancienne (`keys`), et le `VXCC` de la collection (`childKeys`).
+**Accès d'un partage aux collections :** un partage de collection atteint sa collection partagée et chaque collection en dessous dans l'arbre (`collections.parent_id`), quel qu'en soit le créateur. Sortir une collection de l'arbre coupe l'accès, pour elle et tout ce qu'elle contient. Le serveur l'applique à chaque lecture partagée et à la création de sous-collection ([Addenda §21](/fr/CRYPTO_ADDENDUM.md#21-création-de-sous-collection-par-un-éditeur)). Les clés ne donnent que le moyen de lire : les copies du partage pour la collection partagée, puis le `VXCC` de chaque niveau ([§5.14](#514-vxcc---clé-de-collection-encapsulée-par-la-collection-parente)). La lecture d'une collection partagée renvoie les deux, de la plus récente à la plus ancienne (`keys`, `childKeys`), et `GET /api/v1/shares/{shareId}/collections/{collectionId}/key-chain` renvoie toute la chaîne en une lecture : les copies du partage, puis le `VXCC` de chaque niveau jusqu'à la collection.
 
-**Grants :** `VXSH` ne porte que la dernière génération de la collection partagée. L'expéditeur donne ses copies au partage avec `POST /api/v1/shares/{shareId}/collections` et `{ grants: [{ collectionId, keys: [{ keyGeneration, vxck }] }] }`, pour la collection partagée elle-même et pour toute autre collection qu'il possède. Un grant **DOIT** porter exactement une copie par génération de la collection, générations `VXCK` du propriétaire et `VXCC` comprises, car les anciennes clés de fichier restent encapsulées sous les anciennes générations. Le serveur le refuse sinon (HTTP 400, avec les générations attendues). Refaire un grant remplace les copies. Les grants, les rotations et la création de sous-collection sont sérialisés par collection côté serveur : un grant ne peut pas manquer une génération ajoutée entre-temps.
+**Grants :** `VXSH` ne porte que la dernière génération de la collection partagée. L'expéditeur donne ses copies au partage avec `POST /api/v1/shares/{shareId}/collections` et `{ grants: [{ collectionId, keys: [{ keyGeneration, vxck }] }] }`, pour la collection partagée seulement (HTTP 403 pour toute autre : en dessous, les `VXCC` donnent les clés). Un grant **DOIT** porter exactement une copie par génération, générations `VXCK` du propriétaire et `VXCC` comprises, car les anciennes clés de fichier restent encapsulées sous les anciennes générations. Le serveur le refuse sinon (HTTP 400, avec les générations attendues). Refaire un grant remplace les copies.
+
+**Sous-collections :**
+
+- **Création :** `POST /api/v1/storage/collections` avec un `parentId` **DOIT** porter `vxcc` et `parentKeyGeneration` : la nouvelle `collectionKey` encapsulée sous la dernière clé de la parente ([§5.14](#514-vxcc---clé-de-collection-encapsulée-par-la-collection-parente)). Le serveur vérifie la génération sous le verrou de la parente (HTTP 409 si elle a changé : le client relit les clés de la parente) et stocke le `VXCC` à la `key_generation` 0 à côté du `VXCK` du propriétaire. Une collection racine n'en prend pas (HTTP 400). Les partages qui atteignent la parente atteignent aussitôt la nouvelle collection, sans rien à donner.
+- **Déplacement :** `POST /api/v1/storage/collections/{id}/move`. Sous une parente, `{ targetParentId, parentKeyGeneration, keys: [{ keyGeneration, vxcc }] }` : un `VXCC` par génération de la collection, sous la dernière clé de la nouvelle parente. À la racine, `{ ownerKeys: [{ keyGeneration, vxck }] }` : un `VXCK` du propriétaire par génération qui n'existe qu'en `VXCC`. Le serveur vérifie les deux (HTTP 409 sinon, avec les générations attendues quand il en manque une) et remplace les `VXCC` dans la même transaction. Les partages de l'ancien arbre perdent la collection, ceux du nouveau l'atteignent. Les collections en dessous gardent leurs `VXCC`, liés à elle.
+- **Restauration :** rien à envoyer. Les `VXCC` d'une collection dans la corbeille restent liés à sa parente, et une rotation de la parente les réencapsule, dans la corbeille ou non.
+
+Le serveur sérialise ces opérations avec les grants et les rotations, par collection. Une opération sur plusieurs collections les verrouille dans un ordre fixe : deux d'entre elles ne s'attendent jamais l'une l'autre.
 
 ### 11.1 Révocation de partage
 
@@ -1935,7 +1943,7 @@ La révocation supprime l'accès d'un destinataire et effectue une rotation des 
 
 Les destinataires restants gardent leur `shareWrapKey` : le destinataire révoqué ne l'a jamais eue, donc une rotation leur donne une génération de plus sous cette clé, sans nouvelle invitation ni encapsulation X-Wing.
 
-1. L'expéditeur appelle `DELETE /api/v1/shares/{share_id}`, puis lit `GET /api/v1/shares/collections/{collection_id}/rotation-plan` : la `key_generation` actuelle, les fichiers de la collection, les partages restants qui l'atteignent ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)) avec le `senderVxsw` de l'expéditeur, et les `VXCC` directement en dessous (`collectionId`, `keyGeneration`).
+1. L'expéditeur appelle `DELETE /api/v1/shares/{share_id}`, puis lit `GET /api/v1/shares/collections/{collection_id}/rotation-plan` : la `key_generation` actuelle, les fichiers de la collection, les partages restants dont c'est la collection partagée ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)) avec le `senderVxsw` de l'expéditeur, les `VXCC` directement en dessous (`collectionId`, `keyGeneration`), et sa `parent` (`collectionId`, dernière `keyGeneration`), `null` pour une collection racine.
 
 2. Le serveur définit `revoked_at = now()` et supprime les lignes du partage dans `share_collection_keys`. Le destinataire révoqué **obtient immédiatement un 403**.
 
@@ -1951,11 +1959,13 @@ Les destinataires restants gardent leur `shareWrapKey` : le destinataire révoqu
 
     7a. L'expéditeur désencapsule chaque `VXCC` du plan avec l'**ancienne** `collectionKey` et le réencapsule avec la **nouvelle** ([§5.14](#514-vxcc---clé-de-collection-encapsulée-par-la-collection-parente)).
 
-8. L'expéditeur envoie le tout avec `POST /api/v1/shares/collections/{collection_id}/rotate` et `{ vxck, vxcm, fileKeys, fileMetadata, shareKeys: [{ shareId, vxck }], childKeys: [{ collectionId, keyGeneration, vxcc }] }`. Le serveur recalcule le plan sous le verrou de la collection et **DOIT** refuser la rotation (HTTP 409) si `shareKeys` ou `childKeys` ne correspond pas exactement à ce plan, par exemple après l'ajout d'un partage ou d'une sous-collection entre-temps : le client relit le plan.
+    7b. Si le plan a une `parent`, l'expéditeur encapsule la nouvelle `collectionKey` sous la dernière clé de la parente -> `VXCC` à la nouvelle génération. Les partages qui atteignent la parente l'ouvrent par lui, sans copie à eux.
+
+8. L'expéditeur envoie le tout avec `POST /api/v1/shares/collections/{collection_id}/rotate` et `{ vxck, vxcm, fileKeys, fileMetadata, shareKeys: [{ shareId, vxck }], childKeys: [{ collectionId, keyGeneration, vxcc }], vxcc, parentKeyGeneration }`, les deux derniers seulement avec une `parent`. Le serveur recalcule le plan sous les verrous de la collection et de sa parente et **DOIT** refuser la rotation (HTTP 409) si `shareKeys`, `childKeys` ou le `VXCC` sous la parente ne correspond pas exactement à ce plan, par exemple après l'ajout d'un partage ou d'une sous-collection, ou une rotation de la parente entre-temps : le client relit le plan.
 
 9. Le contenu des fichiers **n'est PAS rechiffré par défaut**. Les fichiers sont marqués `pending_key_rotation = TRUE`. Le compteur de `generation` du fichier **n'est PAS** incrémenté (il suit les modifications utilisateur, **pas les rotations de clés**). La `fileKey` réelle utilisée pour le contenu reste l'ancienne jusqu'à ce que le **propriétaire opte explicitement pour le rechiffrement** ([§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation)).
 
-10. Le destinataire révoqué connaît aussi la clé de chaque autre collection que son partage atteignait : les sous-collections sous la collection partagée et les collections reçues par grant. Le client de l'expéditeur **DOIT** faire tourner chacune d'elles de la même façon, chacune avec son plan et son appel de rotation ; l'ordre n'a pas d'importance. Sinon le nouveau contenu y resterait sous une clé que le destinataire révoqué connaît.
+10. Le destinataire révoqué connaît aussi la clé de chaque collection sous la collection partagée, par la chaîne de `VXCC`. Le client de l'expéditeur **DOIT** faire tourner chacune d'elles de la même façon, chacune avec son plan et son appel de rotation ; l'ordre n'a pas d'importance. Sinon le nouveau contenu y resterait sous une clé que le destinataire révoqué connaît.
 
 **Révocation de partage de fichier :**
 
@@ -2863,6 +2873,7 @@ La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée suppri
 
 ## Historique des modifications
 
+- **19 :** chaque sous-collection a un `VXCC` sous sa parente, un partage n'a de copies que pour sa collection partagée (§5.8, §5.14, §10.3, §11). L'accès d'un partage suit l'arbre, route de chaîne de clés, grants pour la collection partagée seulement (§11). `VXCC` exigé à la création, réencapsulé sous la nouvelle parente au déplacement, `VXCK` du propriétaire envoyé avec un déplacement à la racine, rien à la restauration (§11). Plan de rotation avec la `parent`, nouveau `VXCC` sous elle (§11.1 étapes 1, 7b, 8, 10). Aucun changement des formats de blob, des AAD ni des dérivations.
 - **18 :** rotation de collection sans nouveau KEM : les partages restants reçoivent une génération de plus sous leur `shareWrapKey` inchangée, plan de rotation, couverture exacte des partages et des `VXCC`, rotation de chaque collection que le partage révoqué atteignait (§11.1). `VXCC` dans leur propre table `child_collection_keys`, réencapsulés sur place, jamais dans une colonne `vxck` (§5.14, §10.3). Accès d'un partage aux collections, grants avec chaque génération (§11). Correction de la copie destinataire d'une clé de collection partagée (§11) et des lignes supprimées à la révocation (§11.1.1). Aucun changement des formats de blob, des AAD ni des dérivations.
 - **17 :** alignement sur les changements de clés de fichier et de partage du code. Une nouvelle version garde la clé du fichier : `vxfk` seulement pour un nouveau fichier, `content_key_generation` posée à la dernière clé, `vxfk` et `latestVxfk` renvoyés par les routes de fichier, invariant sur `files.vxfm` (§6.5, §6.5.6.1, §10.2, §11.5.2). `file_versions.content_key_generation`, restauration non destructive (§10.2, §19.5). Liens publics servis depuis `files.vxfm`, HTTP 410 quand le contenu a changé de clé (§5.11). `file_keys.vxfm` obsolète (§10.3). Les rotations laissent `files.vxfm` sous la clé du contenu (§11.1, §11.1.1, §17). Nouveau blob `VXSW` (§5.15). Id de partage généré par le client, `sender_vxsw` et `recipient_vxsw`, `vxsw` à l'acceptation, `PUT /api/v1/shares/{id}/recipient-copy` (§11). Vérification côté serveur du format de chaque blob (§5, §5.15, §6.5.6.1). Génération de clé dans l'AAD de `VXCK`, `VXFK` et `VXCC`, AAD et clé d'encapsulation distinctes pour les copies de `VXCK` des partages, AAD et clé d'encapsulation de `VXSW`, plus haute génération gardée par les clients (§4, §5.8, §5.9, §5.14, §5.15). Ces changements d'AAD cassent les blobs existants : le protocole reste en version 1 car aucun compte n'a été créé sous les anciennes AAD.
 - **16 :** alignement sur le code actuel. Chemins d'API sous `/api/v1` (same-origin), UUID v7 presque partout, routes et schémas réels. `session_id` de `VXPS` généré par le client (§5.6, §9.2). `vxwm` et `vxsk` renvoyés seulement après `signin/finish`, `signin/start` uniforme (§8.2). `ts` informatif, sans contrôle obligatoire (§11.2). Nouveaux `VXMC` (§5.12) et `VXSI` (§5.13), dérivations `localCacheKey`, `sessionToken` et `childCollectionKeyWrap` (§4). Envoi direct pour les petits fichiers (§6.5). Flux de récupération (§12.1), CSP (§16.1) et suppression de compte (§19.3) réécrits. Nouvelle section sur les versions de fichiers (§19.5). Rechiffrement après révocation (§11.1.1) et sessions persistantes web (§9.2) marqués comme prévus. Nouveau blob `VXCC` pour les sous-collections créées par un éditeur, transitoire côté propriétaire (§5.14). Email vérifié par code avant la création du compte, `signup/start` uniforme (§8.1).
