@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique | **Addenda**
 
-> **Version du document :** 4
+> **Version du document :** 5
 >
 > **Statut :** (Brouillon) Proposé
 
@@ -242,15 +242,17 @@ L'IKM est une sortie **CSPRNG** uniformément aléatoire (héritée de `collecti
 
 5. Éditeur -> Serveur : `POST /api/v1/shares/{shareId}/subcollections` avec :
    - `id` (`child_uuid` généré côté client)
-   - `parentId` : la collection partagée, ou une collection accordée à ce partage
+   - `parentId` : une collection que le partage atteint ([CRYPTO §11](/fr/CRYPTO.md#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65))
    - `vxcm` (métadonnées de collection chiffrées)
    - `vxcc` (`collectionKey` encapsulée)
+   - `parentKeyGeneration` : la génération de la clé parente sous laquelle le `VXCC` est encapsulé
 6. Le serveur **DOIT** vérifier :
    - Le partage est accepté, non révoqué, et a le bit `edit` (`0x02`). Rejet `HTTP 403` sinon.
    - Le parent est accessible via le partage et appartient au propriétaire du partage. Rejet `HTTP 404` sinon.
+   - `parentKeyGeneration` est la dernière génération de la clé parente, générations `VXCK` du propriétaire et `VXCC` comprises. Rejet `HTTP 409` sinon : l'éditeur relit les clés de la parente et encapsule à nouveau.
    - L'`id` fourni n'existe pas déjà. Rejet `HTTP 409` en cas de doublon.
-7. Le serveur crée la ligne de collection avec `user_id = parent_collection_owner_id` immédiatement, stocke `VXCC` dans `collection_keys` pour le propriétaire, et copie le même `VXCC` dans `share_collection_keys` pour **chaque partage non révoqué** qui atteint la parente (la parente est la collection partagée ou lui est accordée). Un `VXCC` n'est lié à aucun utilisateur : les mêmes octets servent à tous les destinataires, et l'accès reste contrôlé côté serveur.
-8. Le serveur répond `201` avec la collection.
+7. Le serveur crée la ligne de collection avec `user_id = parent_collection_owner_id` immédiatement et stocke le `VXCC` dans `child_collection_keys` ([CRYPTO §10.3](/fr/CRYPTO.md#103-tables-des-clés-de-fichiers-et-collections)) à la `key_generation` 0, avec `parent_id` et `parent_key_generation`. Cette seule ligne sert au propriétaire et à chaque partage qui atteint la parente ([CRYPTO §11](/fr/CRYPTO.md#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)) : aucune copie par partage, aucune ligne `VXCK`.
+8. Le serveur répond `201` avec la collection : `keys` est vide et le `VXCC` est dans `childKeys`.
 
 ### 21.3 Accès
 
@@ -259,18 +261,20 @@ L'éditeur et le propriétaire dérivent tous deux `childCollectionKeyWrapKey` d
 - **Propriétaire** : dispose de `parentCollectionKey` via son propre `VXCK` -> dérive `childCollectionKeyWrapKey` -> désencapsule la `collectionKey` de la sous-collection. L'accès est immédiat, aucune interaction requise.
 - **Éditeur** : dispose de `parentCollectionKey` via son partage -> dérive `childCollectionKeyWrapKey` -> désencapsule la `collectionKey` de la sous-collection. L'accès persiste tant que son partage `edit` sur la collection parente reste valide.
 
-**Réencapsulation par le propriétaire (`VXCC` transitoire) :**
+**Accès côté serveur :** un partage atteint la sous-collection tant qu'il atteint sa parente ([CRYPTO §11](/fr/CRYPTO.md#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)). Un partage ajouté plus tard sur la parente l'atteint aussi, sans grant.
 
-> Prévu, non implémenté dans la version 1 du protocole
+**`VXCK` du propriétaire :**
 
-La première fois que le client du propriétaire désencapsule un `VXCC` de ses propres `collection_keys`, il **DOIT** :
+> Implémenté côté serveur. Pas encore utilisé par la webapp.
+
+La première fois que le client du propriétaire désencapsule un `VXCC` d'une de ses collections (`childKeys`) pour une génération dont il n'a pas de `VXCK`, il **DOIT** :
 
 1. Réencapsuler la même `collectionKey` avec `collectionKeyWrapKey` dérivée de `masterKey` -> `VXCK` classique (AAD `user_id ‖ collection_id ‖ uint32_be(key_generation)`, [CRYPTO §5.8](/fr/CRYPTO.md#58-vxck---clé-de-collection-encapsulée)).
-2. Envoyer `PUT /api/v1/storage/collections/{id}/key { vxck, keyGeneration }`, où `keyGeneration` est celle du `VXCC` désencapsulé.
+2. Envoyer `PUT /api/v1/storage/collections/{id}/key { keyGeneration, vxck }`, où `keyGeneration` est celle du `VXCC` désencapsulé.
 
-Le serveur **DOIT** l'accepter uniquement du propriétaire de la collection, uniquement si le blob stocké est encore un `VXCC` à cette `keyGeneration`, et **DOIT** le remplacer sur place. Sinon il répond `HTTP 409` (blob changé, par exemple après une rotation) ou `HTTP 403` (compte en lecture seule) : le client continue avec le `VXCC` et réessaie lors d'un prochain déchiffrement.
+Le serveur **DOIT** l'accepter uniquement du propriétaire de la collection, pour une génération qui a un `VXCC` et pas encore de `VXCK` du propriétaire, et ajoute le `VXCK` à côté du `VXCC`. Sinon il répond `HTTP 409` (aucun `VXCC` à cette génération, ou le `VXCK` existe déjà) ou `HTTP 403` (compte en lecture seule) : le client continue avec le `VXCC` et réessaie lors d'un prochain déchiffrement.
 
-Les copies `VXCC` dans `share_collection_keys` ne sont pas touchées.
+Le `VXCC` reste : les partages continuent de l'ouvrir avec la clé parente, et la génération ne compte qu'une fois.
 
 > La vérification de la permission `edit` (bit `0x02`) est appliquée uniquement côté serveur. Un éditeur avec la permission `view` (`0x01`) détient techniquement `parentCollectionKey` et pourrait dériver `childCollectionKeyWrapKey` côté client, mais le serveur rejette toute tentative de création avec `HTTP 403`. Cela est cohérent avec [§11.6](/fr/CRYPTO.md#116-permissions-de-partage) : les permissions sont appliquées au niveau de la couche serveur, pas au niveau cryptographique.
 
@@ -279,20 +283,20 @@ Les copies `VXCC` dans `share_collection_keys` ne sont pas touchées.
 **Rotation.** Lorsqu'un partage sur la collection parente est révoqué, la rotation des clés se déroule conformément au [§11.1](/fr/CRYPTO.md#111-révocation-de-partage) :
 
 1. La `parentCollectionKey` est renouvelée.
-2. Chaque `VXCC` sous la parente (copie du propriétaire pas encore remplacée, et copies des partages) est désencapsulé avec l'**ancienne** `childCollectionKeyWrapKey` et réencapsulé avec celle dérivée de la **nouvelle** `parentCollectionKey`, dans le même appel de rotation (CRYPTO §11.1 étape 7a). Le propriétaire peut à la place remplacer sa propre copie par un `VXCK` classique.
-3. Les lignes `share_collection_keys` de l'éditeur révoqué sont supprimées avec le partage. Il n'a pas accès à la nouvelle `parentCollectionKey`.
+2. Chaque `VXCC` directement sous la parente est désencapsulé avec l'**ancienne** `childCollectionKeyWrapKey` et réencapsulé avec celle dérivée de la **nouvelle** `parentCollectionKey`, dans le même appel de rotation (CRYPTO §11.1 étape 7a). La ligne est mise à jour sur place, pour le propriétaire et tous les partages à la fois, même après l'ajout du `VXCK` du propriétaire.
+3. Les lignes `share_collection_keys` de l'éditeur révoqué sont supprimées à la révocation. Il n'atteint plus la parente, donc plus la sous-collection. Il connaît encore la clé de la sous-collection : le client du propriétaire fait aussi tourner la sous-collection (CRYPTO §11.1 étape 10).
 
 **Déplacement.** Un `VXCC` est lié à sa parente à la fois par la clé d'encapsulation et par l'AAD :
 
-1. Le serveur **DOIT** refuser de déplacer une collection dont la copie du propriétaire est encore un `VXCC` (`HTTP 409`). Le client du propriétaire la remplace d'abord par un `VXCK` (§21.3).
-2. Lors d'un déplacement, le serveur supprime les copies `VXCC` de cette collection dans `share_collection_keys`. Le propriétaire redonne l'accès par le flux d'accord classique, avec des clés encapsulées par partage.
+1. Le serveur **DOIT** refuser de déplacer une collection dont une génération n'existe qu'en `VXCC` (`HTTP 409`). Le client du propriétaire ajoute d'abord son `VXCK` (§21.3).
+2. Lors d'un déplacement, le serveur supprime les lignes de la collection dans `child_collection_keys`. Un partage qui ne l'atteignait que par son ancienne parente perd l'accès, sauf s'il a ses propres copies (un grant, ou une rotation de la collection, CRYPTO §11.1 étape 7) : ces copies restent, sans les générations qui n'existaient qu'en `VXCC`. Le propriétaire refait un grant avec chaque génération, ou révoque.
 
 ### 21.5 Schéma
 
-Aucune nouvelle table ni colonne. Les sous-collections créées par les éditeurs utilisent les tables `collections`, `collection_keys` et `share_collection_keys` existantes. Le type de blob est porté par son magique (`VXCC` ou `VXCK`). Le serveur accepte un `id` fourni par le client (UUID v7) lors de la création de collection et applique l'unicité.
+Une nouvelle table, `child_collection_keys` ([CRYPTO §10.3](/fr/CRYPTO.md#103-tables-des-clés-de-fichiers-et-collections)) : un `VXCC` par génération de la sous-collection, avec son `parent_id` et sa `parent_key_generation`. `collection_keys` et `share_collection_keys` ne contiennent que des blobs `VXCK`. Le serveur accepte un `id` fourni par le client (UUID v7) lors de la création de collection et applique l'unicité.
 
 ```sql
--- Aucun changement de schéma au-delà de ce que §11.1 requiert déjà.
+-- child_collection_keys : voir CRYPTO §10.3.
 -- collections.user_id = parent_collection_owner_id à la création.
 ```
 
@@ -302,21 +306,23 @@ La chaîne d'info `"vexahub:v1:childCollectionKeyWrap:"` est distincte de toutes
 
 ### 21.7 Garanties
 
-| Propriété                                                                     | Statut                                                              |
-| ----------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| L'éditeur dispose d'un accès immédiat après la création                       | ✅                                                                  |
-| Le propriétaire dispose d'un accès cryptographique immédiat après la création | ✅ Aucune fenêtre d'attente                                         |
-| Le propriétaire est le vrai propriétaire dès la création                      | ✅ `user_id = owner_id` à l'insertion                               |
-| Aucun TTL, aucun état en attente, aucun transfert                             | ✅                                                                  |
-| Le serveur peut lire le contenu de la sous-collection                         | ❌ Zéro connaissance préservée                                      |
-| L'éditeur perd l'accès lors de la révocation du partage parent                | ✅ La rotation de `parentCollectionKey` invalide l'accès            |
-| Le propriétaire conserve l'accès après la rotation de `parentCollectionKey`   | ✅ Réencapsulée en `VXCK` classique, indépendante de la clé parente |
-| `VXCC` est transitoire côté propriétaire                                      | ✅ Remplacé par un `VXCK` au premier déchiffrement (§21.3)          |
-| Le serveur rejette la création si l'éditeur manque la permission `edit`       | ✅ HTTP 403 sur bit `0x02` manquant                                 |
-| Aucun incrément de version de protocole requis                                | ✅ Nouvelle chaîne d'info HKDF uniquement                           |
+| Propriété                                                                     | Statut                                                                     |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| L'éditeur dispose d'un accès immédiat après la création                       | ✅                                                                         |
+| Le propriétaire dispose d'un accès cryptographique immédiat après la création | ✅ Aucune fenêtre d'attente                                                |
+| Le propriétaire est le vrai propriétaire dès la création                      | ✅ `user_id = owner_id` à l'insertion                                      |
+| Aucun TTL, aucun état en attente, aucun transfert                             | ✅                                                                         |
+| Le serveur peut lire le contenu de la sous-collection                         | ❌ Zéro connaissance préservée                                             |
+| Les partages ajoutés plus tard sur la parente atteignent la sous-collection   | ✅ Une ligne `VXCC` pour tous, aucune copie par partage                    |
+| L'éditeur perd l'accès lors de la révocation du partage parent                | ✅ Appliqué par le serveur, et la clé de la sous-collection tourne (§21.4) |
+| Le propriétaire conserve l'accès après la rotation de `parentCollectionKey`   | ✅ Par le `VXCC` réencapsulé, ou son propre `VXCK`                         |
+| Le propriétaire peut déplacer la sous-collection                              | ✅ Une fois son `VXCK` ajouté pour chaque génération (§21.3)               |
+| Le serveur rejette la création si l'éditeur manque la permission `edit`       | ✅ HTTP 403 sur bit `0x02` manquant                                        |
+| Aucun incrément de version de protocole requis                                | ✅ Nouvelle chaîne d'info HKDF uniquement                                  |
 
 ## Historique des modifications
 
+- **5 :** `VXCC` dans leur propre table `child_collection_keys`, une ligne pour le propriétaire et les partages, réencapsulée sur place (§21.2, §21.4, §21.5). `parentKeyGeneration` à la création (§21.2). Accès par la parente (§21.3). Le propriétaire ajoute son `VXCK` à côté du `VXCC`, implémenté côté serveur (§21.3). Déplacement refusé tant qu'une génération n'existe qu'en `VXCC`, lignes `VXCC` supprimées lors d'un déplacement (§21.4). Garanties mises à jour (§21.7), alignées sur CRYPTO v18.
 - **4 :** génération de clé dans l'AAD de `VXCC` et du `VXCK` du propriétaire (§21.2, §21.3), alignée sur CRYPTO v17.
 - **3 :** journal d'audit activé par défaut, scellé avec la clé publique X-Wing de l'utilisateur, rétention de 6 mois (§20.1, §20.3, §20.4, nouveau §20.9). Liste des événements alignée sur le code (§20.2). Seul `UPDATE` est retiré au rôle applicatif (§20.3). Masquage d'IP décrit pour le backend TypeScript (§20.6). §21 renommé en `childCollectionKeyWrap`, UUID v7, route réelle, marqué comme prévu. Blob `VXCC` pour la clé de sous-collection, réencapsulé en `VXCK` par le propriétaire (§21.2 à §21.5, §21.7).
 
