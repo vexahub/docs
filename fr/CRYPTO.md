@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique
 
-> **Version du document :** 21
+> **Version du document :** 22
 >
 > **Version du protocole :** 1
 >
@@ -113,6 +113,7 @@ Pour `shareWrapKey`, l'**IKM** est le secret partagé **X-Wing** (sortie d'**un 
 | childCollectionKeyWrap depuis la collectionKey parente | `vexahub:v1:childCollectionKeyWrap:{child_uuid}` (voir [Addenda §21](/fr/CRYPTO_ADDENDUM.md#21-création-de-sous-collection-par-un-éditeur)) | 32                           |
 | shareWrapCopy depuis la masterKey                      | `vexahub:v1:shareWrapCopy:{share_uuid}`                                                                                                     | 32                           |
 | shareCollectionKeyWrap depuis shareWrapKey             | `vexahub:v1:shareCollectionKeyWrap:{collection_uuid}`                                                                                       | 32                           |
+| shareFileKeyWrap depuis shareWrapKey                   | `vexahub:v1:shareFileKeyWrap:{file_uuid}`                                                                                                   | 32                           |
 
 > Les sels HKDF ne sont pas des secrets ; l'unicité est assurée exclusivement par le champ `info`.
 >
@@ -151,7 +152,7 @@ fileKeyWrapKey = HKDF-SHA-512(
 )
 ```
 
-Chaque côté d'un partage encapsule sa copie de `shareWrapKey` ([§5.15](#515-vxsw---copie-de-la-clé-dencapsulation-de-partage)) sous une clé dérivée de sa propre `masterKey`. Les clés de collection d'un partage ([§5.8](#58-vxck---clé-de-collection-encapsulée)) sont encapsulées sous une clé dérivée de `shareWrapKey`, jamais sous `shareWrapKey` elle-même, qui encapsule déjà le `VXSH` :
+Chaque côté d'un partage encapsule sa copie de `shareWrapKey` ([§5.15](#515-vxsw---copie-de-la-clé-dencapsulation-de-partage)) sous une clé dérivée de sa propre `masterKey`. Les clés de collection ([§5.8](#58-vxck---clé-de-collection-encapsulée)) et les clés de fichier ([§5.9](#59-vxfk---clé-de-fichier-encapsulée)) d'un partage sont encapsulées sous une clé dérivée de `shareWrapKey`, jamais sous `shareWrapKey` elle-même, qui encapsule déjà le `VXSH` :
 
 ```rs
 shareWrapCopyKey = HKDF-SHA-512(
@@ -165,6 +166,13 @@ shareCollectionKeyWrapKey = HKDF-SHA-512(
     ikm  = shareWrapKey,
     salt = 32 octets zéro,
     info = "vexahub:v1:shareCollectionKeyWrap:" || collection_uuid,
+    L    = 32
+)
+
+shareFileKeyWrapKey = HKDF-SHA-512(
+    ikm  = shareWrapKey,
+    salt = 32 octets zéro,
+    info = "vexahub:v1:shareFileKeyWrap:" || file_uuid,
     L    = 32
 )
 ```
@@ -422,11 +430,14 @@ Total : 78 octets
 ```
 
 ```rs
+// Copie du propriétaire, clé : fileKeyWrapKey (§4)
 AAD : collection_id ‖ file_id ‖ uint32_be(key_generation) // 36 octets
-Clé : fileKeyWrapKey (§4)
+
+// Copie d'un partage, clé : shareFileKeyWrapKey (§4)
+AAD : share_id ‖ file_id ‖ uint32_be(key_generation) // 36 octets
 ```
 
-`key_generation` est la génération de la `fileKey` encapsulée dans `file_keys` ([§10.3](#103-tables-des-clés-de-fichiers-et-collections)).
+`key_generation` est la génération de la `fileKey` encapsulée dans `file_keys` ([§10.3](#103-tables-des-clés-de-fichiers-et-collections)). La copie du propriétaire est dans `file_keys`, celle d'un partage dans `share_file_keys` ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)), pour un partage de fichier seulement. Une copie de partage à la génération `K` encapsule la même `fileKey` que la copie du propriétaire à la génération `K`.
 
 ### 5.10 `VXSH` - Clé de partage encapsulée
 
@@ -437,10 +448,9 @@ Décalage  Taille   Champ
 4         1        Version de format (0x01)
 5         1        Identifiant d'algorithme KEM (0x02 = X-Wing)
 6         24       Nonce (aléatoire)
-30        N+16     Texte chiffré (CBOR { "k": bstr, "p": uint, "id": bstr, "kind": "file" }
-                            ou { "p": uint, "id": bstr, "kind": "collection" }) + tag
+30        N+16     Texte chiffré (CBOR { "p": uint, "id": bstr, "kind": "file" | "collection" }) + tag
 --------
-Total : 116 octets (partage de fichier) / 86 octets (partage de collection)
+Total : 80 octets (partage de fichier) / 86 octets (partage de collection)
 ```
 
 ```rs
@@ -451,7 +461,6 @@ AAD : sender_id ‖ recipient_id (32 octets, UUIDs bruts)
 // Objet CBOR interne (canonique, RFC 8949 §4.2.1) :
 
 {
-  "k":    bstr .size 32,    // fileKey, partage de fichier seulement
   "p":    uint,             // masque de bits de permission (voir §11.6)
   "id":   bstr .size 16,    // collection_id ou file_id, UUID brut de 16 octets
   "kind": tstr ("collection" | "file"),
@@ -462,22 +471,15 @@ AAD : sender_id ‖ recipient_id (32 octets, UUIDs bruts)
 // pour les clés de type texte se réduit à longueur-puis-lexicographique.
 // Les clés s'encodent comme suit :
 
-    "k"    -> 0x61 0x6b              (2 octets)
     "p"    -> 0x61 0x70              (2 octets)
     "id"   -> 0x62 0x69 0x64         (3 octets)
     "kind" -> 0x64 0x6b 0x69 0x6e 0x64 (5 octets)
 
-"k" et "p" sont tous deux des encodages de 2 octets ; le départage est
-lexicographique sur le second octet : 0x6b ('k') < 0x70 ('p').
-L'ordre canonique est donc : "k" -> "p" -> "id" -> "kind", sans "k" pour
-un partage de collection.
+L'ordre canonique est donc : "p" -> "id" -> "kind", pour les deux types.
 
 Disposition :
 
-    En-tête de map (4 entrées, 0xa4, partage de fichier)    : 1 octet
-    En-tête de map (3 entrées, 0xa3, partage de collection) : 1 octet
-    Clé "k" (0x61 0x6b), partage de fichier seulement       : 2 octets
-    Valeur "k" : en-tête bstr(32) (0x58 0x20) + 32 données  : 2 + 32 = 34 octets, partage de fichier seulement
+    En-tête de map (3 entrées, 0xa3)                        : 1 octet
     Clé "p" (0x61 0x70)                                     : 2 octets
     Valeur "p" : uint(1) (0x01)                             : 1 octet
     Clé "id" (0x62 0x69 0x64)                               : 3 octets
@@ -487,20 +489,20 @@ Disposition :
     Valeur "kind" : tstr "file"        (0x64 + 4 octets)    : 1 +  4 =  5 octets
 
 Texte en clair CBOR (partage de collection) :
-    1 +          2 + 1 + 3 + 17 + 5 + 11 = 40 octets
+    1 + 2 + 1 + 3 + 17 + 5 + 11 = 40 octets
 Texte en clair CBOR (partage de fichier) :
-    1 + 2 + 34 + 2 + 1 + 3 + 17 + 5 +  5 = 70 octets
+    1 + 2 + 1 + 3 + 17 + 5 +  5 = 34 octets
 
 Total du blob chiffré :
-    Partage de collection : 6 (en-tête) + 24 (nonce) + 40 (texte en clair) + 16 (tag) =  86 octets
-    Partage de fichier :    6 (en-tête) + 24 (nonce) + 70 (texte en clair) + 16 (tag) = 116 octets
+    Partage de collection : 6 (en-tête) + 24 (nonce) + 40 (texte en clair) + 16 (tag) = 86 octets
+    Partage de fichier :    6 (en-tête) + 24 (nonce) + 34 (texte en clair) + 16 (tag) = 80 octets
 ```
 
-**Partage de collection :** pas de `"k"`. Les clés de collection n'arrivent au destinataire que sous forme de copies de partage ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)), servies une fois le partage accepté : une invitation refusée ne laisse donc aucune clé. Le `VXSH` lie quand même `"p"`, `"id"` et `"kind"` sous `shareWrapKey`, et le désencapsuler prouve que le destinataire a bien dérivé cette clé.
+**Aucune clé :** le `VXSH` ne porte aucune clé, quel que soit le type. Les clés de collection et les clés de fichier n'arrivent au destinataire que sous forme de copies de partage ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)), servies une fois le partage accepté : une invitation refusée ne laisse donc aucune clé. Le `VXSH` lie quand même `"p"`, `"id"` et `"kind"` sous `shareWrapKey`, et le désencapsuler prouve que le destinataire a bien dérivé cette clé.
 
-**Vérifications :** le serveur ne peut pas lire le texte en clair. Il vérifie l'en-tête et que la taille correspond au type du partage, 86 octets pour un partage de collection et 116 pour un partage de fichier, sur chaque route qui prend un `VXSH` (HTTP 400 sinon). Le destinataire vérifie le reste après la signature ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)) et **DOIT** rejeter le partage sauf si :
+**Vérifications :** le serveur ne peut pas lire le texte en clair. Il vérifie l'en-tête et que la taille correspond au type du partage, 86 octets pour un partage de collection et 80 pour un partage de fichier, sur chaque route qui prend un `VXSH` (HTTP 400 sinon). Le destinataire vérifie le reste après la signature ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)) et **DOIT** rejeter le partage sauf si :
 
-- la map a exactement `"p"`, `"id"` et `"kind"` avec `"kind": "collection"` pour un partage de collection, ou exactement `"k"`, `"p"`, `"id"` et `"kind"` avec `"kind": "file"` pour un partage de fichier ;
+- la map a exactement `"p"`, `"id"` et `"kind"`, avec `"kind": "collection"` pour un partage de collection ou `"kind": "file"` pour un partage de fichier ;
 - `"id"` est le `collection_id` ou le `file_id` de l'enregistrement de partage et `"kind"` son type ;
 - `"p"` correspond à la colonne `permission` ([§11.6](#116-permissions-de-partage)).
 
@@ -920,31 +922,38 @@ Content-Type: application/json
 {
     "vxfk": "<base64url>",            // blob VXFK (78 octets), nouveau fichier ou fichier périmé seulement
     "collectionKeyGeneration": <int>, // avec vxfk : la génération de clé de collection sous laquelle il est encapsulé
+    "shareKeys": [                    // avec le vxfk d'un fichier périmé : un par partage de fichier actif
+        { "shareId": "<uuid>", "vxfk": "<base64url>" }
+    ],
     "vxfm": "<base64url>"             // blob VXFM (>=66 octets)
 }
 ```
 
-Un fichier est **périmé** quand son dernier `VXFK` est encapsulé sous une génération de la clé de sa collection plus ancienne que la dernière, générations `VXCK` du propriétaire et `VXCC` comprises : sa collection a tourné depuis ([§11.1](#111-révocation-de-partage)).
+Un fichier est **périmé** quand un de ses partages de fichier a été révoqué depuis sa dernière clé (`files.key_rotation_pending`, [§11.1](#111-révocation-de-partage)), ou quand son dernier `VXFK` est encapsulé sous une génération de la clé de sa collection plus ancienne que la dernière, générations `VXCK` du propriétaire et `VXCC` comprises : sa collection a tourné depuis.
 
 - **Nouveau fichier :** `vxfk` est **obligatoire** (HTTP 400 sinon).
-- **Nouvelle version d'un fichier périmé :** `vxfk` est **obligatoire**, une `fileKey` neuve sous la dernière clé de collection (HTTP 409 sinon, avec la dernière génération). L'ancienne clé reste connue de ceux avec qui la collection était partagée, donc le nouveau contenu ne passe jamais sous elle.
-- **Nouvelle version de tout autre fichier :** `vxfk` est **refusé** (HTTP 400) : une nouvelle version garde la clé du fichier. Une clé neuve couperait les partages de fichier et les liens publics qui détiennent la clé actuelle.
+- **Nouvelle version d'un fichier périmé :** `vxfk` est **obligatoire**, une `fileKey` neuve sous la dernière clé de collection (HTTP 409 sinon, avec la dernière génération). L'ancienne clé reste connue de ceux avec qui la collection ou le fichier était partagé, donc le nouveau contenu ne passe jamais sous elle.
+- **Nouvelle version de tout autre fichier :** `vxfk` est **refusé** (HTTP 400) : une nouvelle version garde la clé du fichier. Une clé neuve couperait les liens publics qui détiennent la clé actuelle. Une version qui garde la clé est refusée (HTTP 409, avec la dernière génération) si un partage de fichier du fichier a été révoqué entre-temps : le client la renvoie avec une clé neuve.
 
-`collectionKeyGeneration` accompagne chaque `vxfk`. Le serveur la vérifie sous le verrou de la collection : elle **DOIT** être la dernière génération (HTTP 409 sinon, avec la dernière génération : le client relit les clés de la collection et réencapsule). Une collection en attente de rotation de clé ne prend ni nouveau fichier ni nouvelle version (HTTP 409, [§11.1](#111-révocation-de-partage)). La création tus applique les mêmes règles en amont : `vxfk` dans ses métadonnées seulement pour un nouveau fichier ou un fichier périmé (HTTP 400 sinon), aucun envoi dans une collection en attente de rotation (HTTP 409).
+`shareKeys` accompagne le `vxfk` d'un fichier périmé : la `fileKey` neuve encapsulée sous la `shareFileKeyWrapKey` de chaque partage actif du fichier, en attente ou accepté, depuis son `senderVxsw` ([§5.15](#515-vxsw---copie-de-la-clé-dencapsulation-de-partage)). Le serveur le vérifie sous le verrou du fichier : il **DOIT** couvrir chaque partage actif du fichier exactement une fois et rien d'autre (HTTP 409 sinon, avec les partages attendus : le client relit le plan de rotation du fichier, [§11.1](#111-révocation-de-partage)). Les partages de fichier gardent leur accès à travers la version. Les ids de partage viennent de `GET /api/v1/shares/files/{file_id}/rotation-plan`, vide pour un fichier sans partage de fichier.
+
+`collectionKeyGeneration` accompagne chaque `vxfk`. Le serveur la vérifie sous le verrou de la collection : elle **DOIT** être la dernière génération (HTTP 409 sinon, avec la dernière génération : le client relit les clés de la collection et réencapsule). Une collection en attente de rotation de clé ne prend ni nouveau fichier ni nouvelle version (HTTP 409, [§11.1](#111-révocation-de-partage)). La création tus applique les mêmes règles en amont : `vxfk` dans ses métadonnées seulement pour un nouveau fichier ou un fichier périmé (HTTP 400 sinon), aucun envoi dans une collection en attente de rotation (HTTP 409). `shareKeys` n'est envoyé qu'au commit.
+
+Le verrou pris est celui de la collection où se trouve le fichier, avant la lecture du fichier : ni déplacement ni rotation de clé du fichier ne peut passer entre les deux. Une version **DOIT** être refusée (HTTP 409) si le fichier a quitté la collection indiquée par l'envoi avant le verrou : le client relit le fichier.
 
 Le endpoint de commit effectue les opérations suivantes de manière atomique au sein d'une seule transaction :
 
 1. Vérifie que le transfert est complet.
 2. Vérifie le quota de stockage.
 3. **Nouveau fichier :** crée la ligne `files`, incluant `vxfm`, avec `content_key_generation = 0`, et la ligne `file_keys` avec `vxfk`, `key_generation = 0` et `collection_key_generation` posée à la dernière génération de clé de collection.
-4. **Nouvelle version :** conserve la génération précédente comme version ([§19.5](#195-versions-de-fichiers)), puis met à jour la ligne `files` (incrémentation de génération, `vxfm`), pose `content_key_generation` à la dernière `key_generation` de `file_keys` et `pending_key_rotation` à `FALSE`. Pour un fichier périmé, la ligne `file_keys` avec le nouveau `vxfk` vient d'abord, à la `key_generation` suivante et avec la dernière `collection_key_generation`, et le contenu est sous elle. Sinon aucune ligne `file_keys` n'est créée.
+4. **Nouvelle version :** conserve la génération précédente comme version ([§19.5](#195-versions-de-fichiers)), puis met à jour la ligne `files` (incrémentation de génération, `vxfm`), pose `content_key_generation` à la dernière `key_generation` de `file_keys`, et `pending_key_rotation` et `key_rotation_pending` à `FALSE`. Pour un fichier périmé, la ligne `file_keys` avec le nouveau `vxfk` vient d'abord, à la `key_generation` suivante et avec la dernière `collection_key_generation`, avec les lignes `share_file_keys` de `shareKeys` à la même génération, et le contenu est sous elle. Sinon aucune ligne `file_keys` n'est créée.
 5. Marque la ligne `tus_uploads` comme terminée.
 
 **Invariant :** `files.vxfm` et le contenu courant sont toujours chiffrés sous la `fileKey` à `files.content_key_generation`. Les routes de fichier renvoient deux clés : `vxfk`, le `VXFK` à `content_key_generation`, pour lire le contenu et `files.vxfm`, et `latestVxfk`, le `VXFK` à la dernière `key_generation`, pour chiffrer une nouvelle version. Elles ne diffèrent qu'après une rotation de clé ([§11.1](#111-révocation-de-partage)).
 
 Le paramètre de route est l'id d'envoi tus (`tusId`), et non l'id de la ligne `tus_uploads`. Le minimum de `VXFM` est de 66 octets : 50 octets d'en-tête et de nonce, plus le tag de 16 octets.
 
-Pour un **nouveau fichier**, le client **DOIT** générer `fileKey` via CSPRNG, dériver `fileKeyWrapKey` depuis la `collectionKey` parente, envelopper `fileKey` dans le blob `VXFK`, dériver `fileMetadataKey` depuis `fileKey`, et chiffrer les métadonnées du fichier dans le blob `VXFM` **avant** d'appeler le commit. Pour une **nouvelle version**, le client désencapsule `latestVxfk`, chiffre le contenu et le `VXFM` sous cette `fileKey`, et n'envoie pas de `vxfk`. Pour un fichier périmé, il génère à la place une nouvelle `fileKey`, l'encapsule sous la dernière `collectionKey` et chiffre le contenu et le `VXFM` sous elle. Le serveur valide le format des blobs ([§5](#5-formats-de-blob-binaires)) mais ne peut pas vérifier l'exactitude cryptographique (zero-knowledge).
+Pour un **nouveau fichier**, le client **DOIT** générer `fileKey` via CSPRNG, dériver `fileKeyWrapKey` depuis la `collectionKey` parente, envelopper `fileKey` dans le blob `VXFK`, dériver `fileMetadataKey` depuis `fileKey`, et chiffrer les métadonnées du fichier dans le blob `VXFM` **avant** d'appeler le commit. Pour une **nouvelle version**, le client désencapsule `latestVxfk`, chiffre le contenu et le `VXFM` sous cette `fileKey`, et n'envoie pas de `vxfk`. Pour un fichier périmé, il génère à la place une nouvelle `fileKey`, l'encapsule sous la dernière `collectionKey` et sous la clé de chaque partage de fichier, et chiffre le contenu et le `VXFM` sous elle. Le serveur valide le format des blobs ([§5](#5-formats-de-blob-binaires)) mais ne peut pas vérifier l'exactitude cryptographique (zero-knowledge).
 
 Si l'upload cible un fichier existant (`file_id` défini dans les métadonnées tus ou dans celles de l'envoi direct), le serveur applique :
 
@@ -1717,6 +1726,7 @@ CREATE TABLE files (
     crypto_version          SMALLINT NOT NULL DEFAULT 1,
     content_key_generation  INTEGER NOT NULL DEFAULT 0,
     pending_key_rotation    BOOLEAN NOT NULL DEFAULT FALSE,
+    key_rotation_pending    BOOLEAN NOT NULL DEFAULT FALSE, -- un partage de fichier révoqué depuis sa dernière clé (§11.1)
     trashed_at              TIMESTAMPTZ,
     trash_root_id           UUID,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1729,6 +1739,8 @@ CREATE INDEX ON files (user_id) WHERE trashed_at IS NOT NULL;
 ```
 
 `content_key_generation` est la `file_keys.key_generation` sous laquelle le contenu courant et `files.vxfm` sont chiffrés ([§6.5.6.1](#6561-commit)). Une rotation de clé ne la modifie pas.
+
+`key_rotation_pending` rend le fichier périmé ([§6.5.6.1](#6561-commit)) : sa prochaine version prend une `fileKey` neuve. Une révocation de partage de fichier le pose, une rotation de clé de fichier ou une version avec une clé neuve l'efface. `pending_key_rotation` est le marqueur de rechiffrement du [§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation).
 
 `trashed_at` existe sur `files` et `collections` pour une expérience de corbeille symétrique. Voir [§19.1](#191-suppression-de-fichier) (**corbeille de fichiers**) et [§19.2](#192-suppression-de-collection) (**corbeille de collections**).
 
@@ -1844,7 +1856,7 @@ Flux d'envoi :
        ).
    ```
 
-4. L'expéditeur chiffre le texte en clair du `VXSH` sous `shareWrapKey` via **XChaCha20-Poly1305** -> blob `VXSH` : la `fileKey` avec la permission et la cible pour un partage de fichier, la permission et la cible seulement pour un partage de collection ([§5.10](#510-vxsh---clé-de-partage-encapsulée)).
+4. L'expéditeur chiffre le texte en clair du `VXSH` sous `shareWrapKey` via **XChaCha20-Poly1305** -> blob `VXSH` : la permission et la cible, aucune clé ([§5.10](#510-vxsh---clé-de-partage-encapsulée)).
 5. L'expéditeur construit la **charge utile signée** : une map CBOR canonique d'exactement 9 clés, dans l'ordre canonique :
 
    ```rs
@@ -1874,14 +1886,14 @@ Flux de réception :
 3. Le destinataire vérifie `signature` contre la clé de vérification de l'expéditeur avec le contexte `"vexahub:v1:share"`. **Rejet en cas d'échec. Ne pas procéder au déchiffrement.**
 4. Le destinataire désencapsule : `sharedSecret = X-Wing.Decaps(privXwing, ctXwing)`.
 5. Le destinataire dérive `shareWrapKey`, désencapsule `VXSH` et vérifie ses champs contre l'enregistrement de partage ([§5.10](#510-vxsh---clé-de-partage-encapsulée)). **Rejet en cas de différence.**
-6. Le destinataire stocke la `fileKey` d'un partage de fichier dans sa propre étendue. Un partage de collection lit ses clés dans les copies du partage une fois accepté.
+6. Le destinataire lit les clés du partage dans ses copies une fois accepté, pour un partage de collection comme pour un partage de fichier.
 7. Le destinataire encapsule `shareWrapKey` sous sa propre `masterKey` -> `recipientVxsw` ([§5.15](#515-vxsw---copie-de-la-clé-dencapsulation-de-partage)), envoyé avec l'acceptation.
 
 > La sécurité se dégrade uniquement si **X25519 et ML-KEM-768 sont tous deux** compromis (garantie hybride X-Wing). L'authenticité du partage se dégrade uniquement si ML-DSA-65 est compromis. La signature couvre l'intégralité de la charge utile de l'invitation, y compris `recipient_id` et `ctXwing`, empêchant le serveur de rediriger des partages vers d'autres utilisateurs ou de substituer le matériel de clé encapsulé.
 >
 > **Note de conception critique :** la signature ML-DSA-65 se trouve **en dehors** du blob `VXSH` chiffré, au niveau de la couche transport. Le destinataire **DOIT** vérifier la signature avant de faire confiance au texte chiffré ou de le déchiffrer. Si la signature se trouvait à l'intérieur de l'enveloppe chiffrée, un serveur malveillant pourrait substituer l'ensemble du paquet `{ctXwing, vxsh}` et la falsification ne serait découverte qu'après déchiffrement (ce qui serait trop tard).
 >
-> Lors du partage d'une **collection**, le blob `VXSH` ne porte aucune clé. Les copies du destinataire, une par génération, sont des copies de partage de `VXCK` ([§5.8](#58-vxck---clé-de-collection-encapsulée)) dans `share_collection_keys`, écrites par l'expéditeur (grants ci-dessous). Chaque collection en dessous s'ouvre par la chaîne de `VXCC` ([§5.14](#514-vxcc---clé-de-collection-encapsulée-par-la-collection-parente)). Lors du partage d'un **fichier**, le blob `VXSH` encapsule la `fileKey`.
+> Le blob `VXSH` ne porte aucune clé. Lors du partage d'une **collection**, les copies du destinataire, une par génération, sont des copies de partage de `VXCK` ([§5.8](#58-vxck---clé-de-collection-encapsulée)) dans `share_collection_keys`, écrites par l'expéditeur (grants ci-dessous). Chaque collection en dessous s'ouvre par la chaîne de `VXCC` ([§5.14](#514-vxcc---clé-de-collection-encapsulée-par-la-collection-parente)). Lors du partage d'un **fichier**, ce sont des copies de partage de `VXFK` ([§5.9](#59-vxfk---clé-de-fichier-encapsulée)) dans `share_file_keys`, une par génération de la `fileKey`.
 >
 > Les parseurs **DOIVENT** rejeter les entrées **CBOR** non canoniques. Tout blob ou charge utile non conforme à l'encodage déterministe du [RFC 8949 §4.2.1][cbor_rfc] **DOIT** provoquer une erreur critique, **jamais** une acceptation silencieuse ou une recanonicalisation.
 
@@ -1935,15 +1947,30 @@ CREATE TABLE share_collection_keys (
 
 CREATE UNIQUE INDEX share_collection_keys_active
     ON share_collection_keys (share_id, collection_id, key_generation);
+
+-- Clés de fichier mises à disposition du destinataire d'un partage de fichier, par génération
+CREATE TABLE share_file_keys (
+    id              UUID PRIMARY KEY DEFAULT uuidv7(),
+    share_id        UUID NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
+    file_id         UUID NOT NULL REFERENCES files(id) ON DELETE RESTRICT,
+    vxfk            BYTEA NOT NULL,         -- VXFK sous shareFileKeyWrapKey
+    key_generation  INTEGER NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX share_file_keys_active
+    ON share_file_keys (share_id, key_generation);
 ```
 
-**Acceptation et refus :** un partage commence comme invitation en attente (`accepted_at IS NULL`). Le destinataire le vérifie et le désencapsule (flux de réception ci-dessus), puis appelle `POST /api/v1/shares/{id}/accept` avec `{ vxsw }`, qui pose `accepted_at` et `recipient_vxsw` en une seule étape. Refuser appelle `POST /api/v1/shares/{id}/deny`, qui révoque le partage et supprime ses copies. Rien ne tourne : un partage de collection ne se lit qu'une fois accepté, et son `VXSH` ne porte aucune clé. Les invitations en attente sont listées par `GET /api/v1/shares/incoming`.
+**Acceptation et refus :** un partage commence comme invitation en attente (`accepted_at IS NULL`). Le destinataire le vérifie et le désencapsule (flux de réception ci-dessus), puis appelle `POST /api/v1/shares/{id}/accept` avec `{ vxsw }`, qui pose `accepted_at` et `recipient_vxsw` en une seule étape. Refuser appelle `POST /api/v1/shares/{id}/deny`, qui révoque le partage et supprime ses copies, sous le verrou du fichier pour un partage de fichier. Rien ne tourne : un partage ne se lit qu'une fois accepté, et son `VXSH` ne porte aucune clé. Les invitations en attente sont listées par `GET /api/v1/shares/incoming`.
 
-**Copies de la clé d'encapsulation de partage :** chaque invitation porte `senderVxsw`, y compris celles renvoyées par une rotation de clé de fichier ([§11.1](#111-révocation-de-partage)), une rotation de la paire de clés de partage ([§11.3](#113-rotation-de-la-paire-de-clés-de-partage)) ou un renouvellement (rekey). Après une rotation de clé, les nouvelles invitations sont en attente et s'acceptent normalement. Après une rotation de la paire de clés de partage ou un renouvellement, un partage déjà accepté reste accepté et `recipient_vxsw` vaut `NULL` : le destinataire envoie sa copie ensuite avec `PUT /api/v1/shares/{id}/recipient-copy` et `{ vxsw }`. Le serveur ne l'accepte qu'une fois, sur un partage accepté et actif sans copie destinataire (HTTP 404 sinon). Les routes de partage ne renvoient que la copie du côté de l'appelant (`vxsw`, `NULL` tant qu'elle manque).
+**Copies de la clé d'encapsulation de partage :** chaque invitation porte `senderVxsw`, y compris celles renvoyées par une rotation de la paire de clés de partage ([§11.3](#113-rotation-de-la-paire-de-clés-de-partage)) ou un renouvellement (rekey). Après une rotation de la paire de clés de partage ou un renouvellement, un partage déjà accepté reste accepté et `recipient_vxsw` vaut `NULL` : le destinataire envoie sa copie ensuite avec `PUT /api/v1/shares/{id}/recipient-copy` et `{ vxsw }`. Le serveur ne l'accepte qu'une fois, sur un partage accepté et actif sans copie destinataire (HTTP 404 sinon). Les routes de partage ne renvoient que la copie du côté de l'appelant (`vxsw`, `NULL` tant qu'elle manque).
 
 **Accès d'un partage aux collections :** un partage de collection atteint sa collection partagée et chaque collection en dessous dans l'arbre (`collections.parent_id`), quel qu'en soit le créateur. Sortir une collection de l'arbre coupe l'accès, pour elle et tout ce qu'elle contient. Le serveur l'applique à chaque lecture partagée et à la création de sous-collection ([Addenda §21](/fr/CRYPTO_ADDENDUM.md#21-création-de-sous-collection-par-un-éditeur)). Les clés ne donnent que le moyen de lire : les copies du partage pour la collection partagée, puis le `VXCC` de chaque niveau ([§5.14](#514-vxcc---clé-de-collection-encapsulée-par-la-collection-parente)). La lecture d'une collection partagée renvoie les deux, de la plus récente à la plus ancienne (`keys`, `childKeys`), et `GET /api/v1/shares/{shareId}/collections/{collectionId}/key-chain` renvoie toute la chaîne en une lecture : les copies du partage, puis le `VXCC` de chaque niveau jusqu'à la collection.
 
 **Grants :** `VXSH` ne porte aucune clé de collection. L'expéditeur donne ses copies au partage avec `POST /api/v1/shares/{shareId}/collections` et `{ grants: [{ collectionId, keys: [{ keyGeneration, vxck }] }] }`, pour la collection partagée seulement (HTTP 403 pour toute autre : en dessous, les `VXCC` donnent les clés). Un grant **DOIT** porter exactement une copie par génération, générations `VXCK` du propriétaire et `VXCC` comprises, car les anciennes clés de fichier restent encapsulées sous les anciennes générations. Le serveur le refuse sinon (HTTP 400, avec les générations attendues). Refaire un grant remplace les copies.
+
+**Grants de fichier :** l'expéditeur donne ses copies à un partage de fichier avec `POST /api/v1/shares/{shareId}/files` et `{ keys: [{ keyGeneration, vxfk }] }` : la `fileKey` de chaque génération encapsulée sous `shareFileKeyWrapKey` ([§5.9](#59-vxfk---clé-de-fichier-encapsulée)). Le partage **DOIT** être un partage de fichier actif de l'expéditeur (HTTP 404 sinon, HTTP 400 pour un partage de collection). Un grant **DOIT** porter exactement une copie par génération de `file_keys`, car les anciennes versions restent sous les anciennes clés. Le serveur le vérifie sous le verrou du fichier, pour qu'aucune rotation n'ajoute de génération entre-temps, et le refuse sinon (HTTP 400, avec les générations attendues). Refaire un grant remplace les copies. La lecture d'un fichier partagé renvoie les copies du partage à `content_key_generation` et à la dernière génération, comme `vxfk` et `latestVxfk` (HTTP 404 s'il en manque une).
 
 **Sous-collections :**
 
@@ -1998,36 +2025,52 @@ Le serveur le vérifie sous le verrou de la collection, avec un verrou sur sa li
 - **Propriétaire :** `GET /api/v1/shares/collections/{collection_id}/rotation-plan` (`keyGeneration`, `shares`, `parent`), puis `POST /api/v1/shares/collections/{collection_id}/rotate` avec `{ vxck, vxcm, shareKeys, vxcc, parentKeyGeneration }`, vérifié comme une rotation de la révocation. Le propriétaire peut faire tourner n'importe laquelle de ses collections, en attente ou non.
 - **Éditeur :** `POST /api/v1/shares/{shareId}/collections/{collectionId}/rotate` avec `{ vxcm, vxcc, parentKeyGeneration }`, pour une collection sous la collection partagée qui attend sa rotation (HTTP 404 pour la collection partagée elle-même, HTTP 409 pour une collection qui n'attend pas). Il n'y a aucune copie de partage à écrire, ni `VXCK` du propriétaire : le propriétaire ouvre la nouvelle génération par le `VXCC` et **DEVRAIT** ajouter son `VXCK` ([Addenda §21.3](/fr/CRYPTO_ADDENDUM.md#213-accès)).
 
-**Clés de fichier après une rotation :** les fichiers d'une collection qui a tourné deviennent périmés ([§6.5.6.1](#6561-commit)). Leur contenu et leur `fileKey` restent tels quels, et leur prochaine version vient avec une `fileKey` neuve sous la dernière clé de collection. Cette clé neuve coupe les partages de fichier et les liens publics du fichier, qui détiennent l'ancienne.
+**Clés de fichier après une rotation :** les fichiers d'une collection qui a tourné deviennent périmés ([§6.5.6.1](#6561-commit)). Leur contenu et leur `fileKey` restent tels quels, et leur prochaine version vient avec une `fileKey` neuve sous la dernière clé de collection, avec une copie pour chaque partage de fichier du fichier, qui garde son accès. Cette clé neuve coupe les liens publics du fichier, qui détiennent l'ancienne.
 
-**Révocation de partage de fichier :**
+**Révocation de partage de fichier :** paresseuse, comme les collections sous un partage de collection. Rien ne tourne tout de suite, et les partages de fichier restants du fichier gardent leur `shareWrapKey`.
 
-1. L'expéditeur appelle `POST /api/v1/shares/{share_id}/revoke` avec `{ rotations: [] }`, puis renouvelle les clés avec `POST /api/v1/shares/files/{file_id}/rotate`.
-2. Le serveur définit `revoked_at = now()`. Le **destinataire révoqué obtient immédiatement un 403**.
-3. L'expéditeur génère une nouvelle `fileKey` via **CSPRNG**, incrémente `key_generation`.
-4. L'expéditeur encapsule la nouvelle `fileKey` avec `fileKeyWrapKey` issue de la dernière `collectionKey` -> nouveau blob `VXFK`, envoyé avec `collectionKeyGeneration`. Le serveur le vérifie sous le verrou de la collection (HTTP 409 si ce n'est pas la dernière, ou si la collection attend sa rotation). `files.vxfm` reste sous la clé du contenu jusqu'à la prochaine version ([§6.5.6.1](#6561-commit)).
-5. L'expéditeur repartage avec les destinataires restants via de nouvelles invitations, chacune avec un id de partage généré par le client et un `senderVxsw`.
-6. Le contenu du fichier **n'est PAS rechiffré par défaut**. Le fichier est marqué `pending_key_rotation = TRUE` ; les anciennes lignes `VXFK` à `key_generation` <= `M` sont conservées aux côtés du nouveau `VXFK` à `key_generation` = `M+1`. Le compteur de `generation` du fichier **n'est PAS** incrémenté. Le rechiffrement n'a lieu que si le propriétaire **opte pour cette option** ([§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation)).
+1. L'expéditeur appelle `POST /api/v1/shares/{share_id}/revoke` avec `{ rotations: [] }` (HTTP 409 avec une rotation). Dans une transaction, sous le verrou du fichier, le serveur :
+   - définit `revoked_at = now()`. Le **destinataire révoqué obtient immédiatement un 403** ;
+   - supprime les lignes du partage dans `share_file_keys` ;
+   - marque le fichier `key_rotation_pending = TRUE`.
+2. Le fichier est alors périmé ([§6.5.6.1](#6561-commit)) : sa prochaine version **DOIT** venir avec une `fileKey` neuve et une copie pour chaque partage de fichier restant (`shareKeys`). Une version qui garde la clé est refusée (HTTP 409), y compris une version déjà en cours quand la révocation est validée. D'ici là, le contenu et `files.vxfm` restent sous la clé que connaît le destinataire révoqué.
+3. Le propriétaire **PEUT** faire tourner la clé du fichier plus tôt, sans nouvelle version (rotation d'une clé de fichier, ci-dessous).
+4. Le contenu du fichier **n'est PAS rechiffré par défaut** ([§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation)) et le compteur de `generation` du fichier **n'est PAS** incrémenté.
+
+**Rotation d'une clé de fichier :** une génération de plus de la `fileKey`, sans nouvelle version et sans nouvelle invitation. Le propriétaire peut faire tourner n'importe lequel de ses fichiers, périmé ou non.
+
+1. Le propriétaire lit `GET /api/v1/shares/files/{file_id}/rotation-plan` : la dernière `keyGeneration` du fichier, la dernière `collectionKeyGeneration` de sa collection, et `shares`, chaque partage de fichier actif du fichier, en attente ou accepté, avec son `shareId`, son `recipientId` et le `senderVxsw` de l'expéditeur.
+2. Le propriétaire génère une nouvelle `fileKey` via **CSPRNG**. Sa `key_generation` vaut `keyGeneration` plus un.
+3. Le propriétaire l'encapsule avec `fileKeyWrapKey` issue de la dernière `collectionKey` -> nouveau blob `VXFK`, et, pour chaque partage du plan, désencapsule son `senderVxsw`, dérive `shareFileKeyWrapKey` et l'encapsule -> copie de partage de `VXFK` à la nouvelle génération.
+4. Le propriétaire envoie `POST /api/v1/shares/files/{file_id}/rotate` avec `{ vxfk, collectionKeyGeneration, shareKeys: [{ shareId, vxfk }] }`. Dans une transaction, sous le verrou de la collection où se trouve le fichier, puis celui du fichier, le serveur :
+   - **DOIT** refuser un fichier déplacé pendant que la requête attendait le verrou (HTTP 409), une collection en attente de rotation (HTTP 409) et une `collectionKeyGeneration` qui n'est pas la dernière (HTTP 409, avec la dernière génération) ;
+   - **DOIT** refuser `shareKeys` s'il ne couvre pas chaque partage actif du fichier exactement une fois (HTTP 409, avec les partages attendus) : le client relit le plan ;
+   - ajoute la ligne `file_keys` à la nouvelle `key_generation`, avec la dernière `collection_key_generation`, et les lignes `share_file_keys` à la même génération ;
+   - pose `pending_key_rotation = TRUE` et `key_rotation_pending = FALSE`.
+5. `files.vxfm` et le contenu restent sous la clé du contenu jusqu'à la prochaine version ([§6.5.6.1](#6561-commit)). Les anciennes lignes `VXFK` à `key_generation` <= `M` sont conservées aux côtés de la nouvelle à `M+1`, pour le propriétaire comme pour les partages de fichier. Le compteur de `generation` du fichier **n'est PAS** incrémenté. Le rechiffrement n'a lieu que si le propriétaire **opte pour cette option** ([§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation)).
+
+**Verrous d'un fichier :** chaque écriture qui ajoute une génération de `fileKey` prend le verrou de la collection où se trouve le fichier, puis celui du fichier : une version, une rotation, un déplacement (les deux collections, dans l'ordre trié, [§11.4](#114-déplacement-de-fichier-entre-collections)). Une révocation, un refus, un grant et un nouveau partage d'un fichier ne prennent que le verrou du fichier. Ainsi aucune copie n'est écrite pour un partage révoqué ou refusé, aucun partage n'est ajouté pendant qu'une nouvelle clé est vérifiée contre les partages, et ni version ni rotation ne passe contre un fichier qui s'en va.
 
 **Garanties et limitations :**
 
-| Propriété                                                                                                        | Statut                                                                                                                      |
-| ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| L'utilisateur révoqué ne peut pas accéder au contenu via l'API                                                   | ✅ Immédiat, appliqué par le serveur                                                                                        |
-| Aucun nouveau contenu sous une clé que l'utilisateur révoqué connaît                                             | ✅ Les écritures attendent la rotation de la collection, une nouvelle version d'un fichier périmé prend une `fileKey` neuve |
-| Les destinataires restants gardent l'accès sans nouvelle invitation                                              | ✅ Une génération de plus sous leur `shareWrapKey` inchangée, anciennes générations conservées                              |
-| Le coût de la révocation ne grandit pas avec les fichiers ou les sous-collections                                | ✅ Seules la collection partagée, les racines de partage en dessous et le chemin entre elles tournent tout de suite         |
-| Les métadonnées sont rechiffrées immédiatement                                                                   | ❌ `files.vxfm` reste sous la clé du contenu jusqu'à la prochaine version                                                   |
-| Renommage d'un fichier dans une collection en attente de rotation                                                | ⚠️ Permis : le nom reste sous la clé du contenu, connue de l'utilisateur révoqué, jusqu'au rechiffrement                    |
-| Les partages de fichier et liens publics survivent à la prochaine version d'un fichier périmé                    | ❌ La `fileKey` neuve les coupe, jusqu'à la refonte des clés de partage de fichier                                          |
-| Le contenu des fichiers est rechiffré par défaut                                                                 | ❌ Désactivé par défaut, opt-in via ([§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation))                  |
-| Le contenu des fichiers est rechiffré lors de l'opt-in                                                           | ✅ Progressif, pausable par l'utilisateur, avec interface de progression                                                    |
-| Révocation au niveau fichier sans affecter les autres fichiers de la collection                                  | ✅ Rotation indépendante de fileKey                                                                                         |
-| Un partage de collection refusé ne laisse aucune clé à son destinataire                                          | ✅ `VXSH` ne porte aucune clé de collection, les copies ne sont servies qu'une fois accepté et sont supprimées au refus     |
-| Un partage de fichier refusé ne laisse aucune clé à son destinataire                                             | ⚠️ `VXSH` porte la `fileKey` : la faire tourner comme pour une révocation de partage de fichier                             |
-| L'utilisateur révoqué ne peut pas déchiffrer le contenu déjà téléchargé                                          | ❌ Limitation inhérente à l'E2EE                                                                                            |
-| L'utilisateur révoqué ne peut pas déchiffrer une exfiltration en stockage froid s'il a conservé d'anciennes clés | ⚠️ Uniquement si le rechiffrement est activé et terminé                                                                     |
-| Le compteur de `generation` du fichier est préservé lors de la rotation de clé                                   | ✅ La génération est un compteur de mutation, pas un compteur de rotation                                                   |
+| Propriété                                                                                                        | Statut                                                                                                                                        |
+| ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| L'utilisateur révoqué ne peut pas accéder au contenu via l'API                                                   | ✅ Immédiat, appliqué par le serveur                                                                                                          |
+| Aucun nouveau contenu sous une clé que l'utilisateur révoqué connaît                                             | ✅ Les écritures attendent la rotation de la collection, une nouvelle version d'un fichier périmé prend une `fileKey` neuve                   |
+| Les destinataires restants gardent l'accès sans nouvelle invitation                                              | ✅ Une génération de plus sous leur `shareWrapKey` inchangée, pour les partages de collection et de fichier, anciennes générations conservées |
+| Le coût de la révocation ne grandit pas avec les fichiers ou les sous-collections                                | ✅ Seules la collection partagée, les racines de partage en dessous et le chemin entre elles tournent tout de suite                           |
+| Les métadonnées sont rechiffrées immédiatement                                                                   | ❌ `files.vxfm` reste sous la clé du contenu jusqu'à la prochaine version                                                                     |
+| Renommage d'un fichier dans une collection en attente de rotation                                                | ⚠️ Permis : le nom reste sous la clé du contenu, connue de l'utilisateur révoqué, jusqu'au rechiffrement                                      |
+| Les partages de fichier survivent à la prochaine version d'un fichier périmé                                     | ✅ La version porte une copie de la `fileKey` neuve pour chaque partage de fichier                                                            |
+| Les liens publics survivent à la prochaine version d'un fichier périmé                                           | ❌ La `fileKey` neuve les coupe, jusqu'à ce que les liens publics aient leurs propres copies de clé                                           |
+| Le contenu des fichiers est rechiffré par défaut                                                                 | ❌ Désactivé par défaut, opt-in via ([§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation))                                    |
+| Le contenu des fichiers est rechiffré lors de l'opt-in                                                           | ✅ Progressif, pausable par l'utilisateur, avec interface de progression                                                                      |
+| Révocation au niveau fichier sans affecter les autres fichiers de la collection                                  | ✅ Seul le fichier est marqué, sa clé tourne avec sa prochaine version ou sa propre rotation                                                  |
+| Un partage de collection refusé ne laisse aucune clé à son destinataire                                          | ✅ `VXSH` ne porte aucune clé de collection, les copies ne sont servies qu'une fois accepté et sont supprimées au refus                       |
+| Un partage de fichier refusé ne laisse aucune clé à son destinataire                                             | ✅ `VXSH` ne porte aucune clé de fichier, les copies ne sont servies qu'une fois accepté et sont supprimées au refus                          |
+| L'utilisateur révoqué ne peut pas déchiffrer le contenu déjà téléchargé                                          | ❌ Limitation inhérente à l'E2EE                                                                                                              |
+| L'utilisateur révoqué ne peut pas déchiffrer une exfiltration en stockage froid s'il a conservé d'anciennes clés | ⚠️ Uniquement si le rechiffrement est activé et terminé                                                                                       |
+| Le compteur de `generation` du fichier est préservé lors de la rotation de clé                                   | ✅ La génération est un compteur de mutation, pas un compteur de rotation                                                                     |
 
 **Mesures de protection obligatoires :**
 
@@ -2119,7 +2162,7 @@ Les anciennes lignes de génération du propriétaire dans `collection_keys` et 
 
 Ce GC s'exécute côté serveur et est déclenché par les validations de rechiffrement. Il ne nécessite pas de coordination avec le client.
 
-Les lignes des destinataires révoqués dans `share_collection_keys` sont supprimées au moment de la révocation. Cela est indépendant de la conservation du propriétaire.
+Les lignes des destinataires révoqués dans `share_collection_keys` et `share_file_keys` sont supprimées au moment de la révocation. Cela est indépendant de la conservation du propriétaire.
 
 #### Pourquoi le booléen est suffisant
 
@@ -2149,6 +2192,8 @@ Un utilisateur authentifié **PEUT** effectuer une rotation de ses paires de cl�
 4. Le serveur remplace atomiquement `vxsk`, `sharing_public_xwing`, `sharing_public_signature`, et définit `revoked_at = now()` sur **tous les partages** sortants en attente pour cet utilisateur.
 5. Le client **repartage** toutes les collections ou fichiers avec les destinataires concernés en utilisant la nouvelle clé de signature.
 
+> Les copies de partage des anciens partages sont supprimées avec eux, pour les partages de collection comme de fichier. Les nouveaux partages reçoivent les leurs de l'expéditeur par un grant ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)), lues seulement une fois acceptés.
+
 > Les partages entrants déjà acceptés et stockés par les destinataires ne sont pas affectés. Le destinataire a désencapsulé et stocké la clé localement au moment de l'acceptation.
 >
 > **Journal d'audit :** les entrées du journal d'audit scellé sont chiffrées pour la clé publique X-Wing ([Addenda §20.9](/fr/CRYPTO_ADDENDUM.md#209-entrées-scellées)). Après une rotation, les entrées écrites avant elle deviennent indéchiffrables. Avant de lancer une rotation, le client **DOIT** déchiffrer les entrées existantes et proposer un export à l'utilisateur.
@@ -2177,24 +2222,27 @@ Le blob `VXFK` reste encapsulé sous la `collectionKey` source et serait inacces
    )
    ```
 
-3. Le client encapsule la même `fileKey` sous le nouveau `fileKeyWrapKey` -> nouveau blob `VXFK`.
+3. Le client encapsule la même `fileKey` sous le nouveau `fileKeyWrapKey` -> nouveau blob `VXFK`, et sous la `shareFileKeyWrapKey` de chaque partage de fichier actif du fichier -> `shareKeys` ([§11.1](#111-révocation-de-partage), plan de rotation du fichier).
 4. Client -> Serveur : `POST /api/v1/storage/files/{file_id}/move` :
 
    ```json
    {
      "targetCollectionId": "...",
      "vxfk": "<nouveau blob VXFK>",
-     "collectionKeyGeneration": 0
+     "collectionKeyGeneration": 0,
+     "shareKeys": [{ "shareId": "...", "vxfk": "<copie de partage>" }]
    }
    ```
 
-   `vxfk` est encapsulé sous la **dernière** `collectionKey` de destination, et `collectionKeyGeneration` est sa génération.
+   `vxfk` est encapsulé sous la **dernière** `collectionKey` de destination, et `collectionKeyGeneration` est sa génération. `shareKeys` est vide pour un fichier sans partage de fichier.
 
-5. Le serveur procède atomiquement, sous le verrou de la collection de destination :
+5. Le serveur procède atomiquement, sous les verrous des collections source et destination, pris dans l'ordre trié, puis celui du fichier :
+   - Relit le fichier et refuse le déplacement s'il a quitté la collection source entre-temps (HTTP 409) : le client le relit.
    - Vérifie `collectionKeyGeneration` contre la dernière génération de la clé de destination (HTTP 409 sinon, avec la dernière génération).
    - Refuse une destination en attente de rotation de clé (HTTP 409, [§11.1](#111-révocation-de-partage)).
    - Met à jour `files.collection_id` vers `targetCollectionId`.
    - Ajoute une ligne `file_keys` avec le nouveau blob `VXFK` à la `key_generation` suivante, avec la dernière `collection_key_generation`, et y pose `content_key_generation`.
+   - Ajoute les lignes `share_file_keys` de `shareKeys` à la même génération. Il **DOIT** refuser `shareKeys` s'il ne couvre pas chaque partage actif du fichier exactement une fois (HTTP 409, avec les partages attendus).
    - Définit `files.updated_at = now()`.
 
 **Le serveur DOIT vérifier avant de valider :**
@@ -2205,9 +2253,11 @@ Le blob `VXFK` reste encapsulé sous la `collectionKey` source et serait inacces
 
 **Implications pour le partage :**
 
+Les partages de fichier du fichier le suivent : le déplacement donne à chacun une copie de la même `fileKey` à la nouvelle génération. La marque `key_rotation_pending` du fichier reste : la clé est la même.
+
 Déplacer un fichier ne le repartage pas automatiquement avec les destinataires de la collection de destination. Le fichier existe dans la collection de destination mais seul le propriétaire peut le déchiffrer jusqu'à un partage explicite. C'est le comportement correct. Hériter automatiquement des partages de la collection de destination serait une surprise pour le propriétaire comme pour les destinataires existants.
 
-Si le fichier était précédemment partagé avec des destinataires de la collection source, ces partages restent dans la table `shares` mais la `fileKey` qu'ils ont désencapsulée au moment de l'acceptation reste valide.
+Si le fichier était précédemment partagé avec des destinataires de la collection source, ces partages restent dans la table `shares` mais la `fileKey` qu'ils ont pu garder reste valide.
 
 La `fileKey` elle-même n'a pas changé, seulement son encapsulation. Les destinataires ayant déjà accepté le partage conservent l'accès au contenu qu'ils ont déjà. C'est cohérent avec la limitation E2EE reconnue au [§11.1](#111-révocation-de-partage).
 
@@ -2538,7 +2588,8 @@ Catégories de vecteurs :
    - `VXCK` copie d'un partage - `share_id ‖ collection_id ‖ key_generation` (36 octets)
    - `VXCC` - `parent_id ‖ collection_id ‖ parent_key_generation` (36 octets)
    - `VXSI` - en-tête ‖ `user_id` (22 octets)
-   - `VXFK` - `collection_id ‖ file_id ‖ key_generation` (36 octets)
+   - `VXFK` copie du propriétaire - `collection_id ‖ file_id ‖ key_generation` (36 octets)
+   - `VXFK` copie d'un partage - `share_id ‖ file_id ‖ key_generation` (36 octets)
    - `VXSW` - `share_id ‖ user_id ‖ role` (33 octets)
 
 8. Vecteurs de dérivation de `content_id` avec `collection_uuid` lié dans l'info **HKDF**
@@ -2547,7 +2598,7 @@ Catégories de vecteurs :
 
 > Les vecteurs de test pour `VXSH` **DOIVENT** être mis à jour pour inclure `"p": 0x01` dans le texte en clair CBOR. Les vecteurs existants sans `"p"` sont invalides à la **version 1 du protocole** et **DOIVENT** être rejetés par les parseurs conformes.
 >
-> Ils **DOIVENT** couvrir les deux variantes : un partage de fichier avec `"k"` (116 octets) et un partage de collection sans (86 octets), ainsi que le rejet d'un partage de collection avec un `"k"` et d'un partage de fichier sans.
+> Ils **DOIVENT** couvrir les deux variantes, un partage de fichier (80 octets) et un partage de collection (86 octets), tous deux sans `"k"`, ainsi que le rejet de l'un ou l'autre avec un `"k"`.
 
 Une **discordance** de vecteur est un **bloqueur** de version.
 
@@ -2919,6 +2970,7 @@ La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée suppri
 
 ## Historique des modifications
 
+- **22 :** les partages de fichier reçoivent des copies de partage de la clé du fichier, comme les partages de collection (§4, §5.9, §11) : `shareFileKeyWrapKey`, la copie de partage de `VXFK` avec l'AAD `share_id ‖ file_id ‖ key_generation`, `share_file_keys`, accordées par génération avec `POST /api/v1/shares/{shareId}/files`. Le `VXSH` d'un partage de fichier n'a pas de `"k"` : 80 octets au lieu de 116 (§5.10, §14). Une révocation de partage de fichier ne fait rien tourner tout de suite : elle marque le fichier (`files.key_rotation_pending`, §10.2), ce qui le rend périmé, et les partages de fichier restants gardent leur `shareWrapKey`. Une rotation de clé de fichier lit un plan et donne une copie à chaque partage de fichier actif, plus de nouvelles invitations (§11.1). Une nouvelle version d'un fichier périmé et un déplacement portent `shareKeys`, une copie pour chaque partage de fichier actif, donc les partages de fichier y survivent (§6.5.6.1, §11.4). Une version ou une rotation verrouille la collection où se trouve le fichier avant de le lire, et un déplacement verrouille les deux collections (§6.5.6.1, §11.1, §11.4).
 - **21 :** le `VXSH` d'un partage de collection n'a pas de `"k"` : 86 octets au lieu de 122, vérifié par sa taille contre le type du partage côté serveur, champ par champ par le destinataire (§5.10, §11, §14). L'ancienne disposition de collection, avec un `"k"` de 32 octets nuls, n'est plus acceptée. Aucun changement de la disposition des partages de fichier, d'AAD ni de dérivations.
 - **20 :** rotation de clé paresseuse (§11.1). La révocation porte les rotations que seul le propriétaire peut faire, lues dans un plan de révocation : la collection partagée, les racines de partage en dessous et le chemin entre elles, de haut en bas, en une transaction avec une couverture exacte. Le reste de l'arbre révoqué attend sa rotation (`collections.key_rotation_pending`, §10.2) : aucun nouveau fichier, version, sous-collection, renommage, déplacement dedans ou partage sur elle avant la rotation de sa clé, par le propriétaire ou un éditeur. Une rotation ne donne plus de nouvelles clés de fichier et ne réencapsule plus les `VXCC` en dessous (§5.14, §11, §11.1, §11.1.1). Chaque `vxfk` vient avec sa `collectionKeyGeneration`, vérifiée comme la dernière, et une nouvelle version d'un fichier périmé prend une `fileKey` neuve (§6.5, §6.5.6.1, §11.4, §11.5.2). Le `VXSH` d'un partage de collection ne porte aucune clé, un refus supprime les copies du partage (§5.10, §11). `file_keys.vxfm` supprimé (§10.3). Aucun changement de disposition des blobs, d'AAD ni de dérivations.
 - **19 :** chaque sous-collection a un `VXCC` sous sa parente, un partage n'a de copies que pour sa collection partagée (§5.8, §5.14, §10.3, §11). L'accès d'un partage suit l'arbre, route de chaîne de clés, grants pour la collection partagée seulement (§11). `VXCC` exigé à la création, réencapsulé sous la nouvelle parente au déplacement, `VXCK` du propriétaire envoyé avec un déplacement à la racine, rien à la restauration (§11). Plan de rotation avec la `parent`, nouveau `VXCC` sous elle (§11.1 étapes 1, 7b, 8, 10). Aucun changement des formats de blob, des AAD ni des dérivations.
