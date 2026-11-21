@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-> **Document version:** 24
+> **Document version:** 25
 >
 > **Protocol version:** 1
 >
@@ -592,7 +592,7 @@ Password-protected links are limited to **5 attempts per 15 minutes**. Beyond th
 **Key copies:** a link holds one `VXPL` for each generation of its target key, in `public_link_keys`. Older versions and older files stay under older keys, so every generation counts.
 
 - **Creation:** `POST /api/v1/storage/files/{id}/link` or `POST /api/v1/storage/collections/{id}/link` with `{ linkId, keys: [{ keyGeneration, vxpl }], vxlw, passwordSalt, maxDownloads, expiresAt }`, the owner only. `vxlw` is the owner copy of `publicLinkWrapKey` ([§5.16](#516-vxlw---link-wrap-key-copy)). Under the lock of the target, the lock every write adding a generation takes, the server **MUST** refuse `keys` unless it holds exactly one copy for each generation of the target key (HTTP 400, with the expected generations). A collection waiting for its rotation takes no link (HTTP 409, with the collections to rotate first, [§11.1](#111-share-revocation)): its owner rotates it first.
-- **New generations:** every write adding a generation of the target key gives each **active** link a copy at it, with `linkKeys: [{ linkId, vxpl }]`: a version of a stale file ([§6.5.6.1](#6561-commit)), a rotation of a file key or of a collection key ([§11.1](#111-share-revocation)), a file move ([§11.4](#114-file-move-between-collections)). The server **MUST** refuse `linkKeys` unless it covers every active link of the target exactly once (HTTP 409, with the expected links). A link is active while it is not revoked, not expired and below its download limit: the others never serve again, so they get no copy. The plans of these writes list the active links with their `ownerVxlw`.
+- **New generations:** every write adding a generation of the target key gives each **active** link a copy at it, with `linkKeys: [{ linkId, vxpl }]`: a version of a stale file ([§6.5.6.1](#6561-commit)), a rotation of a file key or of a collection key ([§11.1](#111-share-revocation)), a file move ([§11.4](#114-file-move-between-collections)). The server **MUST** refuse `linkKeys` unless it covers every active link of the target exactly once (HTTP 409, with the expected links). A link is active while it is not revoked, not expired and below its download limit, or suspended by moderation and not ended meanwhile (below): the others never serve again, so they get no copy. The plans of these writes list the active links with their `ownerVxlw`.
 - **File link:** served while the link holds a copy at `files.content_key_generation`, returned as `vxpl` with its `keyGeneration`. The content and `files.vxfm` are under the content key, so the server serves `files.vxfm` directly. Without that copy the server answers HTTP 410.
 - **Collection link:** the server returns every copy of the link, latest first (`keys`), and the `VXCM` under the latest key (`vxcmKeyGeneration`). It lists the files whose content key (the `file_keys` row at `files.content_key_generation`) is wrapped under a generation the link holds a copy of, each with that `VXFK` and its `collectionKeyGeneration`. The visitor picks the copy of that generation. Every rotation of the collection gives the link its copy, so the latest copy is on the latest key: without it the server answers HTTP 410.
 
@@ -616,6 +616,8 @@ CREATE TABLE public_links (
     revoked_at      TIMESTAMPTZ,
     moderated_at    TIMESTAMPTZ,              -- disabled by moderation (revoked_at is set too)
     moderation_case_id UUID,
+    owner_revoked_at TIMESTAMPTZ,             -- revoked by its owner, for good
+    marked_at       TIMESTAMPTZ,              -- ended, its target marked for a fresh key
     CONSTRAINT public_links_target_check CHECK (
         (file_id IS NOT NULL AND collection_id IS NULL)
         OR (file_id IS NULL AND collection_id IS NOT NULL)
@@ -624,6 +626,8 @@ CREATE TABLE public_links (
 
 CREATE INDEX ON public_links (token) WHERE revoked_at IS NULL;
 CREATE INDEX ON public_links (user_id) WHERE revoked_at IS NULL;
+CREATE INDEX ON public_links (expires_at)
+    WHERE marked_at IS NULL AND expires_at IS NOT NULL;
 
 -- One VXPL for each generation of the target key
 CREATE TABLE public_link_keys (
@@ -638,9 +642,23 @@ CREATE UNIQUE INDEX public_link_keys_active
     ON public_link_keys (link_id, key_generation);
 ```
 
-**Revocation:** setting `revoked_at` revokes API access immediately. The wrapped key inside `VXPL` is the **real** `fileKey` or `collectionKey`. An attacker who captured the `VXPL` blob and `linkKey` before revocation retains the ability to decrypt previously downloaded content. This is the same inherent E2EE limitation as share revocation ([§11.1](#111-share-revocation)). The planned re-encryption mechanism in [§11.1.1](#1111-optional-content-re-encryption-after-revocation) would apply identically to public link revocation.
+**End of a link:** a link stops serving for good when its owner revokes it, when it expires, and with the last download it allows. Its visitors may keep the key, so its target takes a fresh one, as after a share revocation ([§11.1](#111-share-revocation)). Nothing rotates at once, and the owner need not be online. The server marks the target once, and sets `marked_at`:
 
-**Moderation:** the server can disable a reported link. It sets `moderated_at` and `revoked_at` and records the `moderation_case_id`, so every access check refuses the link. Clearing the decision restores it. The server never sees the content behind the link, unless the report itself hands it the link's key (for example a full keyless URL with its `#key=` fragment). Moderation acts on access, not on encryption.
+- **File link:** the file is marked `key_rotation_pending = TRUE`. It is stale ([§6.5.6.1](#6561-commit)): its next version takes a fresh `fileKey`, and a version that keeps the key is refused (HTTP 409), including one in progress when the mark commits. The owner **MAY** rotate the file key earlier ([§11.1](#111-share-revocation)).
+- **Collection link:** the collection and every collection below it, trash included, are marked `key_rotation_pending = TRUE`. They wait for their rotation like after a share revocation ([§11.1](#111-share-revocation)).
+
+When the server marks:
+
+- **Owner revocation:** `DELETE /api/v1/storage/files/{id}/links/{linkId}` or `DELETE /api/v1/storage/collections/{id}/links/{linkId}`. In one transaction, under the lock of the target, the server sets `revoked_at` and `owner_revoked_at` and marks the target, unless it is marked already. Its **visitors are refused immediately**. The owner can revoke any link it has not revoked yet: active, expired, used up or suspended. A link its owner revoked already answers HTTP 404.
+- **Last download:** the download that reaches `max_downloads` marks the target in the transaction that counts it.
+- **Expiry:** a server job marks the targets of the expired links every minute. The link refuses its visitors from its `expires_at`, but until the job a version can still keep the key.
+- **Refused download:** a refused or interrupted download gives its count back, under the lock of the target. A marked link loses its mark, unless the target key took a new generation meanwhile: the link has no copy of it, so the download counts as used and the mark stays. A used up link serves again, an expired one is marked again by the next job. The mark of the target stays: at worst one more rotation.
+
+Every mark takes the lock of the target before the row of the link, the lock every write adding a generation takes. A write in progress finishes first, the next one sees the mark.
+
+The wrapped key inside `VXPL` is the **real** `fileKey` or `collectionKey`. A visitor who kept the `VXPL` and the `linkKey` can still decrypt the content written under that key before the link ended. This is the same inherent E2EE limitation as share revocation ([§11.1](#111-share-revocation)). The planned re-encryption mechanism in [§11.1.1](#1111-optional-content-re-encryption-after-revocation) would apply identically to public links.
+
+**Moderation:** the server can disable a reported link. It sets `moderated_at` and `revoked_at` and records the `moderation_case_id`, so every access check refuses the link. A suspension marks nothing, since it can be lifted: the link keeps getting a copy of every new generation of its target key, so a lifted suspension finds it whole. Clearing the decision restores it, unless its owner revoked it or its target was marked meanwhile (`owner_revoked_at` or `marked_at` set). The server never sees the content behind the link, unless the report itself hands it the link's key (for example a full keyless URL with its `#key=` fragment). Moderation acts on access, not on encryption.
 
 > **`link_id` vs `token`:** `link_id` (UUID) is generated client-side and used in the HKDF `info` string and AAD. `token` (32 random bytes) is generated server-side as an opaque lookup value for the URL path. The separation prevents the server from manipulating the cryptographic binding: even if the server swaps `token` values between links, the AAD mismatch on `link_id` causes decryption to fail.
 
@@ -983,11 +1001,11 @@ Content-Type: application/json
 }
 ```
 
-A file is **stale** when one of its file shares was revoked since its latest key (`files.key_rotation_pending`, [§11.1](#111-share-revocation)), or when its latest `VXFK` is wrapped under an older generation of its collection key than the latest one, owner `VXCK` and `VXCC` generations alike: its collection rotated since.
+A file is **stale** when one of its file shares was revoked or one of its public links ended since its latest key (`files.key_rotation_pending`, [§11.1](#111-share-revocation), [§5.11](#511-vxpl---public-link-blob)), or when its latest `VXFK` is wrapped under an older generation of its collection key than the latest one, owner `VXCK` and `VXCC` generations alike: its collection rotated since.
 
 - **New file:** `vxfk` is **required** (HTTP 400 otherwise).
 - **New version of a stale file:** `vxfk` is **required**, a fresh `fileKey` under the latest collection key (HTTP 409 otherwise, with the latest generation). The old key stays known to whoever the collection or the file was shared with, so new content never goes under it.
-- **New version of any other file:** `vxfk` is **refused** (HTTP 400): a new version keeps the file key, which its shares and links already hold. A version that keeps the key is refused (HTTP 409, with the latest generation) if a file share of the file was revoked meanwhile: the client sends it again with a fresh key.
+- **New version of any other file:** `vxfk` is **refused** (HTTP 400): a new version keeps the file key, which its shares and links already hold. A version that keeps the key is refused (HTTP 409, with the latest generation) if a file share of the file was revoked or a public link of the file ended meanwhile: the client sends it again with a fresh key.
 
 `shareKeys` comes with the `vxfk` of a stale file: the fresh `fileKey` wrapped under the `shareFileKeyWrapKey` of each active share of the file, pending or accepted, from its `senderVxsw` ([§5.15](#515-vxsw---share-wrap-key-copy)). The server checks it under the lock of the file: it **MUST** cover every active share of the file exactly once and nothing else (HTTP 409 otherwise, with the expected shares: the client reads the rotation plan of the file again, [§11.1](#111-share-revocation)). The file shares keep their access across the version. The share ids come from `GET /api/v1/shares/files/{file_id}/rotation-plan`, empty for a file without a file share.
 
@@ -1900,7 +1918,7 @@ CREATE INDEX ON files (user_id) WHERE trashed_at IS NOT NULL;
 
 `content_key_generation` is the `file_keys.key_generation` under which the current content and `files.vxfm` are encrypted ([§6.5.6.1](#6561-commit)). A key rotation leaves it untouched.
 
-`key_rotation_pending` makes the file stale ([§6.5.6.1](#6561-commit)): its next version takes a fresh `fileKey`. A file share revocation sets it, a file key rotation or a version with a fresh key clears it. `pending_key_rotation` is the re-encryption marker of [§11.1.1](#1111-optional-content-re-encryption-after-revocation).
+`key_rotation_pending` makes the file stale ([§6.5.6.1](#6561-commit)): its next version takes a fresh `fileKey`. A file share revocation and the end of a public link of the file ([§5.11](#511-vxpl---public-link-blob)) set it, a file key rotation or a version with a fresh key clears it. `pending_key_rotation` is the re-encryption marker of [§11.1.1](#1111-optional-content-re-encryption-after-revocation).
 
 `trashed_at` exists on both `files` and `collections` for symmetric trash UX. See [§19.1](#191-file-deletion) (**file trash**) and [§19.2](#192-collection-deletion) (**collection trash**).
 
@@ -2172,7 +2190,7 @@ The remaining recipients keep their `shareWrapKey`: the revoked recipient never 
 
 8. Nothing else is written: the `VXFK` of the files stay under the older generations, and the `VXCC` below a rotated collection stay under the older parent generation. File content is **NOT re-encrypted by default** ([§11.1.1](#1111-optional-content-re-encryption-after-revocation)) and the file `generation` counter is **NOT** incremented (it tracks user modifications, **not key rotations**).
 
-**Collections waiting for their rotation:** a collection with `key_rotation_pending = TRUE` keeps a key the revoked recipient may know, so the server **MUST** refuse in it (HTTP 409, with the collections to rotate first, top-down):
+**Collections waiting for their rotation:** a collection with `key_rotation_pending = TRUE` keeps a key a revoked recipient, or the visitors of an ended collection link ([§5.11](#511-vxpl---public-link-blob)), may know, so the server **MUST** refuse in it (HTTP 409, with the collections to rotate first, top-down):
 
 - a new file or a new version ([§6.5.6.1](#6561-commit));
 - a new sub-collection, by the owner or an editor;
@@ -2188,7 +2206,7 @@ The server checks it under the lock of the collection, with a lock on its row, s
 - **Owner:** `GET /api/v1/shares/collections/{collection_id}/rotation-plan` (`keyGeneration`, `shares`, `parent`, `links`), then `POST /api/v1/shares/collections/{collection_id}/rotate` with `{ vxck, vxcm, shareKeys, linkKeys, vxcc, parentKeyGeneration }`, checked like a rotation of the revocation. The owner can rotate any of its collections, waiting or not.
 - **Editor:** `POST /api/v1/shares/{shareId}/collections/{collectionId}/rotate` with `{ vxcm, vxcc, parentKeyGeneration }`, for a collection below the shared one that waits for its rotation (HTTP 404 for the shared collection itself, HTTP 409 for a collection that does not wait). There is no share copy to write, and no owner `VXCK`: the owner opens the new generation through the `VXCC` and **SHOULD** add its `VXCK` ([Addendum §21.3](CRYPTO_ADDENDUM.md#213-access)). The rotation **MUST** be refused (HTTP 409) if the collection has an active public link: an editor has no copy of its wrap key, and the link would miss the new key. Its owner rotates it.
 
-**Collections with a link after a revocation:** right after a revocation, the owner's client **SHOULD** rotate the waiting collections that have an active public link, top-down, one request each. An editor writing in one of them meanwhile is refused (HTTP 409) until then. A client interrupted resumes on its next start. A collection waiting for its rotation takes no new link, so an editor never meets a link created after the mark.
+**Collections with a link after a revocation:** right after a revocation, of a share or of a public link of a collection, the owner's client **SHOULD** rotate the waiting collections that have an active public link, top-down, one request each. For a mark it did not make itself, the end of another link of the collection for example, it does so on its next start. An editor writing in one of them meanwhile is refused (HTTP 409) until then. A client interrupted resumes on its next start. A collection waiting for its rotation takes no new link, so an editor never meets a link created after the mark.
 
 **File keys after a rotation:** the files of a rotated collection become stale ([§6.5.6.1](#6561-commit)). Their content and their `fileKey` stay as they are, and their next version comes with a fresh `fileKey` under the latest collection key, with a copy of it for each file share and each public link of the file, which keep their access.
 
@@ -2220,25 +2238,28 @@ The server checks it under the lock of the collection, with a lock on its row, s
 
 **Guarantees and limitations:**
 
-| Property                                                                    | Status                                                                                                              |
-| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| Revoked user cannot access content via the API                              | ✅ Immediate, server-enforced                                                                                       |
-| No new content under a key the revoked user knows                           | ✅ Writes wait for the rotation of the collection, a new version of a stale file takes a fresh `fileKey`            |
-| Remaining recipients keep access without a new invitation                   | ✅ One more generation under their unchanged `shareWrapKey`, for collection and file shares, older generations kept |
-| Revocation cost does not grow with files or sub-collections                 | ✅ Only the shared collection, the share roots below it and the path between them rotate at once                    |
-| Metadata re-encrypted immediately                                           | ❌ `files.vxfm` stays under the content key until the next version                                                  |
-| File rename in a collection waiting for its rotation                        | ⚠️ Allowed: the name stays under the content key, known to the revoked user, until re-encryption                    |
-| File shares survive the next version of a stale file                        | ✅ The version carries a copy of the fresh `fileKey` for each file share                                            |
-| Public links survive the next version of a stale file                       | ✅ The version carries a copy of the fresh `fileKey` for each active link                                           |
-| Public links survive a collection rotation                                  | ✅ The owner gives each active link a copy, a collection with a link rotates with its owner                         |
-| File content re-encrypted by default                                        | ❌ Off by default, opt-in per ([§11.1.1](#1111-optional-content-re-encryption-after-revocation))                    |
-| File content re-encrypted when opted in                                     | ✅ Progressive, user-pausable, with progress UI                                                                     |
-| File-level revocation without affecting other files in collection           | ✅ Only the file is marked, its key rotates with its next version or its own rotation                               |
-| A refused collection share leaves no key to its recipient                   | ✅ `VXSH` carries no collection key, the share copies are served only once accepted and deleted on refusal          |
-| A refused file share leaves no key to its recipient                         | ✅ `VXSH` carries no file key, the share copies are served only once accepted and deleted on refusal                |
-| Revoked user cannot decrypt already-downloaded content                      | ❌ Inherent E2EE limitation                                                                                         |
-| Revoked user cannot decrypt cold-storage exfiltration if they kept old keys | ⚠️ Only when re-encryption setting is enabled and completed. The same holds for a deleted or expired public link    |
-| File `generation` counter is preserved across key rotation                  | ✅ Generation is a mutation counter, not a rotation counter                                                         |
+| Property                                                                     | Status                                                                                                              |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Revoked user cannot access content via the API                               | ✅ Immediate, server-enforced                                                                                       |
+| No new content under a key the revoked user knows                            | ✅ Writes wait for the rotation of the collection, a new version of a stale file takes a fresh `fileKey`            |
+| Remaining recipients keep access without a new invitation                    | ✅ One more generation under their unchanged `shareWrapKey`, for collection and file shares, older generations kept |
+| Revocation cost does not grow with files or sub-collections                  | ✅ Only the shared collection, the share roots below it and the path between them rotate at once                    |
+| Metadata re-encrypted immediately                                            | ❌ `files.vxfm` stays under the content key until the next version                                                  |
+| File rename in a collection waiting for its rotation                         | ⚠️ Allowed: the name stays under the content key, known to the revoked user, until re-encryption                    |
+| File shares survive the next version of a stale file                         | ✅ The version carries a copy of the fresh `fileKey` for each file share                                            |
+| Public links survive the next version of a stale file                        | ✅ The version carries a copy of the fresh `fileKey` for each active link                                           |
+| Public links survive a collection rotation                                   | ✅ The owner gives each active link a copy, a collection with a link rotates with its owner                         |
+| No new content under a key the visitors of an ended public link know         | ✅ Its target is marked like after a share revocation, within a minute for an expiry                                |
+| A suspended public link survives new keys                                    | ✅ It keeps getting copies, a suspension marks nothing                                                              |
+| A lifted suspension never brings back a link its owner revoked or that ended | ✅ Restored only without `owner_revoked_at` and `marked_at`                                                         |
+| File content re-encrypted by default                                         | ❌ Off by default, opt-in per ([§11.1.1](#1111-optional-content-re-encryption-after-revocation))                    |
+| File content re-encrypted when opted in                                      | ✅ Progressive, user-pausable, with progress UI                                                                     |
+| File-level revocation without affecting other files in collection            | ✅ Only the file is marked, its key rotates with its next version or its own rotation                               |
+| A refused collection share leaves no key to its recipient                    | ✅ `VXSH` carries no collection key, the share copies are served only once accepted and deleted on refusal          |
+| A refused file share leaves no key to its recipient                          | ✅ `VXSH` carries no file key, the share copies are served only once accepted and deleted on refusal                |
+| Revoked user cannot decrypt already-downloaded content                       | ❌ Inherent E2EE limitation                                                                                         |
+| Revoked user cannot decrypt cold-storage exfiltration if they kept old keys  | ⚠️ Only when re-encryption setting is enabled and completed. The same holds for a deleted or expired public link    |
+| File `generation` counter is preserved across key rotation                   | ✅ Generation is a mutation counter, not a rotation counter                                                         |
 
 **Mandatory safeguards:**
 
@@ -2969,7 +2990,8 @@ Logs, breadcrumbs and error reports, on the client and on the server, **MUST** c
 | Server serves stale VXFM from previous generation      | Detected by client verifying VXFM generation matches file row generation                                                                                                                                                                                                                                                           |
 | Server truncates download (drops trailing segments)    | Detected by segment count in VXFM before full download                                                                                                                                                                                                                                                                             |
 | Email enumeration                                      | Uniform response on signup and on recovery start, and on login start (`signin/start` returns the same response shape whether the account exists or not; `vxwm` and `vxsk` only after the password is proven)                                                                                                                       |
-| Share revocation by collection/file owner              | New content protected by rotated keys; existing content and metadata stay under the old key until the next version; old ciphertext unreachable via API; already-downloaded content not recoverable (E2EE limitation)                                                                                                                                                         |
+| Share revocation by collection/file owner              | New content protected by rotated keys; existing content and metadata stay under the old key until the next version; old ciphertext unreachable via API; already-downloaded content not recoverable (E2EE limitation)                                                                                                               |
+| End of a public link (revoked, expired, used up)       | New content under a fresh key once the server marks the target, at once or within a minute for an expiry; already-downloaded content not recoverable (E2EE limitation). A server that skips the mark is not defended, like the lazy rotations of [§11.1](#111-share-revocation)                                                    |
 | ML-DSA-65 signing key observed by attacker             | Mitigated by explicit sharing keypair rotation ([§11.3](#113-sharing-keypair-rotation)), which invalidates all pending outgoing shares and replaces public keys server-side                                                                                                                                                        |
 
 ## 18. Open Questions and Future Work
@@ -3205,6 +3227,7 @@ The value is capped by the plan's maximum. A scheduled job deletes versions whos
 
 ## Changelog
 
+- **25:** the end of a public link marks its target for a fresh key (§5.11), like a share revocation: the owner revocation, the last download it allows and its expiry, marked by a server job every minute. A file link makes the file stale, a collection link marks the collection and everything below it, trash included (§6.5.6.1, §10.2, §11.1). `public_links.owner_revoked_at` and `marked_at`. The owner can revoke an expired, used up or suspended link. A download given back lifts the mark of the link, unless the target key took a new generation meanwhile. A suspended link keeps getting copies, and a lifted suspension never brings back a link its owner revoked or that ended.
 - **24:** public links survive new keys (§5.11): one `VXPL` per generation of the target key, in `public_link_keys`, with the AAD `link_id ‖ key_generation`, and a copy for each active link on every write adding a generation (`linkKeys`: a version of a stale file, a rotation of a file or collection key, a move). The owner keeps `VXLW`, a copy of `publicLinkWrapKey` under `publicLinkWrapCopyKey` (§4, §5.16). A collection waiting for its rotation takes no link, an editor does not rotate a collection with a link, and the owner's client rotates those right after a revocation (§11.1). The rotation plans list the links. §16.8: logs and error reports carry identifiers only.
 - **23:** §18 requires isolated parsing for any future preview or thumbnail: an iframe with an opaque origin, no cookies, no storage and no network.
 - **22:** file shares get share copies of the file key, like collection shares (§4, §5.9, §11): `shareFileKeyWrapKey`, the `VXFK` share copy with AAD `share_id ‖ file_id ‖ key_generation`, `share_file_keys`, granted per generation with `POST /api/v1/shares/{shareId}/files`. The `VXSH` of a file share has no `"k"`: 80 bytes instead of 116 (§5.10, §14). A file share revocation rotates nothing at once: it marks the file (`files.key_rotation_pending`, §10.2), which makes it stale, and the remaining file shares keep their `shareWrapKey`. A file key rotation reads a plan and gives every active file share a copy, no more fresh invitations (§11.1). A new version of a stale file and a move carry `shareKeys`, a copy for each active file share, so file shares survive them (§6.5.6.1, §11.4). A version or a rotation locks the collection the file is in before reading it, and a move locks both collections (§6.5.6.1, §11.1, §11.4).
