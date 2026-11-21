@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-> **Document version:** 22
+> **Document version:** 23
 >
 > **Protocol version:** 1
 >
@@ -2928,6 +2928,7 @@ isolation model of the **Crypto Worker**.
   returning custom ones), mitigable by always returning parameters regardless
   of account existence. No protocol version bump required, no blob format change.
 - `serverSetup` compromise incident response runbook.
+- **Isolated parsing of untrusted files:** no client parses file content today. Any future preview or thumbnail (images, PDF, video, documents) **MUST** run its parser in an isolated iframe with an opaque origin, no cookies, no storage and no network (`sandbox` without `allow-same-origin`, and a CSP with `connect-src 'none'`), and receive only the bytes to parse. A malicious file that exploits the parser then reaches neither the session, nor the crypto Worker ([§9.4](#94-client-side-key-caching-in-the-crypto-worker)), nor other decrypted files.
 - Possible independent **third-party** audit of the protocol implementation once funding allows.
 - `X-Wing` RFC finalization tracking ([draft-connolly-cfrg-xwing-kem][xwing_draft]). If wire format changes **before** RFC, bump `VXSH` format version and KEM algorithm ID.
 - Hybrid signatures (`Ed25519` + `ML-DSA-65`) evaluation for **ANSSI/BSI** compliance if regulatory requirements harden **before 2030**.
@@ -3138,6 +3139,7 @@ The value is capped by the plan's maximum. A scheduled job deletes versions whos
 
 ## Changelog
 
+- **23:** §18 requires isolated parsing for any future preview or thumbnail: an iframe with an opaque origin, no cookies, no storage and no network.
 - **22:** file shares get share copies of the file key, like collection shares (§4, §5.9, §11): `shareFileKeyWrapKey`, the `VXFK` share copy with AAD `share_id ‖ file_id ‖ key_generation`, `share_file_keys`, granted per generation with `POST /api/v1/shares/{shareId}/files`. The `VXSH` of a file share has no `"k"`: 80 bytes instead of 116 (§5.10, §14). A file share revocation rotates nothing at once: it marks the file (`files.key_rotation_pending`, §10.2), which makes it stale, and the remaining file shares keep their `shareWrapKey`. A file key rotation reads a plan and gives every active file share a copy, no more fresh invitations (§11.1). A new version of a stale file and a move carry `shareKeys`, a copy for each active file share, so file shares survive them (§6.5.6.1, §11.4). A version or a rotation locks the collection the file is in before reading it, and a move locks both collections (§6.5.6.1, §11.1, §11.4).
 - **21:** the `VXSH` of a collection share has no `"k"`: 86 bytes instead of 122, checked by size against the kind of the share on the server, field by field by the recipient (§5.10, §11, §14). The previous collection layout, with a `"k"` of 32 zero bytes, is no longer accepted. No change to the file share layout, AAD or derivations.
 - **20:** lazy key rotation (§11.1). The revocation carries the rotations only the owner can do, read from a revocation plan: the shared collection, the share roots below it and the path between them, top-down, in one transaction with an exact coverage. The rest of the revoked tree waits for its rotation (`collections.key_rotation_pending`, §10.2): no new file, version, sub-collection, rename, move into it or share on it until its key rotates, by the owner or by an editor. A rotation no longer gives new file keys nor re-wraps the `VXCC` below (§5.14, §11, §11.1, §11.1.1). Every `vxfk` comes with its `collectionKeyGeneration`, checked as the latest, and a new version of a stale file takes a fresh `fileKey` (§6.5, §6.5.6.1, §11.4, §11.5.2). The `VXSH` of a collection share carries no key, a refusal deletes the share copies (§5.10, §11). `file_keys.vxfm` removed (§10.3). No change to blob layouts, AAD or derivations.
