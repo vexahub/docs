@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-> **Document version:** 23
+> **Document version:** 24
 >
 > **Protocol version:** 1
 >
@@ -80,7 +80,7 @@ The intermediate `masterKeyWrapper` exists for uniformity with all other derivat
 | ML-DSA-65 signing seed     | 32   | CSPRNG at registration                  | Permanent                  | Wrapped only                       |
 | ML-DSA-65 verify key (pub) | 1952 | Derived from signing seed               | Permanent                  | Plaintext                          |
 | linkKey                    | 32   | CSPRNG (keyless) or Argon2id (password) | Link access                | Never (fragment or client-derived) |
-| publicLinkWrapKey          | 32   | HKDF(linkKey)                           | Link access                | Never                              |
+| publicLinkWrapKey          | 32   | HKDF(linkKey)                           | Link access                | Owner copy only (`VXLW`)           |
 | localCacheKey              | 32   | HKDF(masterKey)                         | Session                    | Never                              |
 | searchIndexKey             | 32   | HKDF(masterKey)                         | Session                    | Never                              |
 
@@ -112,6 +112,7 @@ For `shareWrapKey`, the **IKM** is the **X-Wing** shared secret (output of **a K
 | searchIndexKey from masterKey                    | `vexahub:v1:searchIndexKey`                                                                                                                         | 32                    |
 | childCollectionKeyWrap from parent collectionKey | `vexahub:v1:childCollectionKeyWrap:{child_uuid}` (see [Addendum §21](CRYPTO_ADDENDUM.md#21-sub-collection-creation-by-an-editor)) | 32                    |
 | shareWrapCopy from masterKey                     | `vexahub:v1:shareWrapCopy:{share_uuid}`                                                                                                             | 32                    |
+| publicLinkWrapCopy from masterKey                | `vexahub:v1:publicLinkWrapCopy:{link_id}`                                                                                                           | 32                    |
 | shareCollectionKeyWrap from shareWrapKey         | `vexahub:v1:shareCollectionKeyWrap:{collection_uuid}`                                                                                               | 32                    |
 | shareFileKeyWrap from shareWrapKey               | `vexahub:v1:shareFileKeyWrap:{file_uuid}`                                                                                                           | 32                    |
 
@@ -152,13 +153,20 @@ fileKeyWrapKey = HKDF-SHA-512(
 )
 ```
 
-Each side of a share wraps its copy of `shareWrapKey` ([§5.15](#515-vxsw---share-wrap-key-copy)) under a key derived from its own `masterKey`. The collection keys ([§5.8](#58-vxck---wrapped-collection-key)) and file keys ([§5.9](#59-vxfk---wrapped-file-key)) of a share are wrapped under a key derived from `shareWrapKey`, never under `shareWrapKey` itself, which already wraps the `VXSH`:
+Each side of a share wraps its copy of `shareWrapKey` ([§5.15](#515-vxsw---share-wrap-key-copy)) under a key derived from its own `masterKey`, and the owner of a public link its copy of `publicLinkWrapKey` ([§5.16](#516-vxlw---link-wrap-key-copy)). The collection keys ([§5.8](#58-vxck---wrapped-collection-key)) and file keys ([§5.9](#59-vxfk---wrapped-file-key)) of a share are wrapped under a key derived from `shareWrapKey`, never under `shareWrapKey` itself, which already wraps the `VXSH`:
 
 ```rs
 shareWrapCopyKey = HKDF-SHA-512(
     ikm  = masterKey,
     salt = 32 zero bytes,
     info = "vexahub:v1:shareWrapCopy:" || share_uuid,
+    L    = 32
+)
+
+publicLinkWrapCopyKey = HKDF-SHA-512(
+    ikm  = masterKey,
+    salt = 32 zero bytes,
+    info = "vexahub:v1:publicLinkWrapCopy:" || link_id,
     L    = 32
 )
 
@@ -519,7 +527,7 @@ This is **defense-in-depth** alongside the **ML-DSA-65** signature. If a signatu
 
 ### 5.11 `VXPL` - Public Link Blob
 
-Wraps a `collectionKey` or `fileKey` for anonymous access via a public link. The blob is type-agnostic (both are 32 bytes); the server's `public_links` record indicates whether the target is a file or collection.
+Wraps a `collectionKey` or `fileKey` for anonymous access via a public link, one blob for each generation of that key. The blob is type-agnostic (both are 32 bytes); the server's `public_links` record indicates whether the target is a file or collection.
 
 ```rs
 Offset  Size  Field
@@ -534,8 +542,10 @@ Total: 78 bytes
 ```
 
 ```rs
-AAD: link_id (16 bytes, raw UUID)
+AAD: link_id ‖ uint32_be(key_generation) // 20 bytes
 ```
+
+`key_generation` is the generation of the wrapped key: of the `fileKey` for a file link, of the `collectionKey` for a collection link. The AAD stops the server from serving a copy for another link or another generation.
 
 **Wrapping key derivation:**
 
@@ -579,10 +589,12 @@ No fragment in the URL. The visitor requests the link via `token`, the server re
 
 Password-protected links are limited to **5 attempts per 15 minutes**. Beyond that the server refuses access until the window expires.
 
-The link pins the key generation it was created with (`key_generation`): the `fileKey` generation for a file link, the `collectionKey` generation for a collection link. A key rotation does not touch the content nor `files.vxfm`, which both stay under the content key (`files.content_key_generation`, [§10.2](#102-file-and-collection-table)), so the server serves `files.vxfm` directly:
+**Key copies:** a link holds one `VXPL` for each generation of its target key, in `public_link_keys`. Older versions and older files stay under older keys, so every generation counts.
 
-- **File link:** served while `files.content_key_generation` equals the pinned generation. Once the content is under another key (a new version after a rotation, or a re-encryption), the visitor's key can no longer decrypt it and the server answers HTTP 410.
-- **Collection link:** the server lists the files whose content key (the `file_keys` row at `files.content_key_generation`) is wrapped under the pinned `collectionKey` generation, with that `VXFK`. The other files cannot be decrypted by the visitor and are left out.
+- **Creation:** `POST /api/v1/storage/files/{id}/link` or `POST /api/v1/storage/collections/{id}/link` with `{ linkId, keys: [{ keyGeneration, vxpl }], vxlw, passwordSalt, maxDownloads, expiresAt }`, the owner only. `vxlw` is the owner copy of `publicLinkWrapKey` ([§5.16](#516-vxlw---link-wrap-key-copy)). Under the lock of the target, the lock every write adding a generation takes, the server **MUST** refuse `keys` unless it holds exactly one copy for each generation of the target key (HTTP 400, with the expected generations). A collection waiting for its rotation takes no link (HTTP 409, with the collections to rotate first, [§11.1](#111-share-revocation)): its owner rotates it first.
+- **New generations:** every write adding a generation of the target key gives each **active** link a copy at it, with `linkKeys: [{ linkId, vxpl }]`: a version of a stale file ([§6.5.6.1](#6561-commit)), a rotation of a file key or of a collection key ([§11.1](#111-share-revocation)), a file move ([§11.4](#114-file-move-between-collections)). The server **MUST** refuse `linkKeys` unless it covers every active link of the target exactly once (HTTP 409, with the expected links). A link is active while it is not revoked, not expired and below its download limit: the others never serve again, so they get no copy. The plans of these writes list the active links with their `ownerVxlw`.
+- **File link:** served while the link holds a copy at `files.content_key_generation`, returned as `vxpl` with its `keyGeneration`. The content and `files.vxfm` are under the content key, so the server serves `files.vxfm` directly. Without that copy the server answers HTTP 410.
+- **Collection link:** the server returns every copy of the link, latest first (`keys`), and the `VXCM` under the latest key (`vxcmKeyGeneration`). It lists the files whose content key (the `file_keys` row at `files.content_key_generation`) is wrapped under a generation the link holds a copy of, each with that `VXFK` and its `collectionKeyGeneration`. The visitor picks the copy of that generation. Every rotation of the collection gives the link its copy, so the latest copy is on the latest key: without it the server answers HTTP 410.
 
 > **Argon2id parameters** are identical to the OPAQUE registration parameters in [§2](#2-primitives). This is intentional: the same WASM/native implementation is reused, and the cost is appropriate for a one-time unlock operation.
 
@@ -595,11 +607,10 @@ CREATE TABLE public_links (
     file_id         UUID REFERENCES files(id) ON DELETE CASCADE,
     collection_id   UUID REFERENCES collections(id) ON DELETE CASCADE,
     token           TEXT NOT NULL UNIQUE,     -- 32 random bytes, base64url
-    vxpl            BYTEA NOT NULL,           -- 78 bytes
+    owner_vxlw      BYTEA NOT NULL,           -- VXLW, 78 bytes (§5.16)
     password_salt   BYTEA,                    -- 32 bytes or NULL (keyless)
     max_downloads   INTEGER,                  -- NULL = unlimited
     download_count  INTEGER NOT NULL DEFAULT 0,
-    key_generation  INTEGER NOT NULL DEFAULT 0, -- key generation pinned at link creation
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at      TIMESTAMPTZ,              -- NULL = no expiry
     revoked_at      TIMESTAMPTZ,
@@ -613,6 +624,18 @@ CREATE TABLE public_links (
 
 CREATE INDEX ON public_links (token) WHERE revoked_at IS NULL;
 CREATE INDEX ON public_links (user_id) WHERE revoked_at IS NULL;
+
+-- One VXPL for each generation of the target key
+CREATE TABLE public_link_keys (
+    id              UUID PRIMARY KEY DEFAULT uuidv7(),
+    link_id         UUID NOT NULL REFERENCES public_links(id) ON DELETE CASCADE,
+    vxpl            BYTEA NOT NULL,           -- 78 bytes, under publicLinkWrapKey
+    key_generation  INTEGER NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX public_link_keys_active
+    ON public_link_keys (link_id, key_generation);
 ```
 
 **Revocation:** setting `revoked_at` revokes API access immediately. The wrapped key inside `VXPL` is the **real** `fileKey` or `collectionKey`. An attacker who captured the `VXPL` blob and `linkKey` before revocation retains the ability to decrypt previously downloaded content. This is the same inherent E2EE limitation as share revocation ([§11.1](#111-share-revocation)). The planned re-encryption mechanism in [§11.1.1](#1111-optional-content-re-encryption-after-revocation) would apply identically to public link revocation.
@@ -767,6 +790,29 @@ Key: shareWrapCopyKey (§4)
 `user_id` is the side holding the copy. The AAD stops the server from serving a copy to the other side or for another share. The server checks the format like any other blob ([§5](#5-binary-blob-formats)).
 
 Server-side storage: `shares.sender_vxsw` (set at creation) and `shares.recipient_vxsw` (set at acceptance or later, see [§11](#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)). Each side only ever receives its own copy.
+
+### 5.16 `VXLW` - Link Wrap Key Copy
+
+The owner of a public link keeps a copy of `publicLinkWrapKey` ([§5.11](#511-vxpl---public-link-blob)), wrapped under a key derived from its `masterKey`. The `linkKey` lives only in the URL fragment or in the password, so this copy is how the owner wraps a new generation of the target key for the link ([§5.11](#511-vxpl---public-link-blob)), from any device, without the URL or the password.
+
+```rs
+Offset  Size  Field
+------  ----  ---------------------------------------
+0       4     Magic "VXLW" (0x56 0x58 0x4C 0x57)
+4       1     Format version (0x01)
+5       1     Algorithm ID (0x01)
+6       24    Nonce (random)
+30      48    Ciphertext (32 B publicLinkWrapKey + 16 B tag)
+------
+Total: 78 bytes
+```
+
+```rs
+AAD: link_id ‖ user_id // 32 bytes
+Key: publicLinkWrapCopyKey (§4)
+```
+
+`user_id` is the owner of the link. The copy is sent at creation and required (HTTP 400 otherwise). The server stores it in `public_links.owner_vxlw`, checks its format like any other blob ([§5](#5-binary-blob-formats)), and returns it only to the owner, in the rotation plans. It is never wrapped under a collection key: a revoked member of a share would keep it and read every later copy of the link.
 
 ## 6. File Encryption
 
@@ -930,6 +976,9 @@ Content-Type: application/json
     "shareKeys": [                    // with vxfk of a stale file: one per active file share
         { "shareId": "<uuid>", "vxfk": "<base64url>" }
     ],
+    "linkKeys": [                     // with vxfk of a stale file: one per active public link
+        { "linkId": "<uuid>", "vxpl": "<base64url>" }
+    ],
     "vxfm": "<base64url>"             // VXFM blob (>=66 bytes)
 }
 ```
@@ -938,9 +987,11 @@ A file is **stale** when one of its file shares was revoked since its latest key
 
 - **New file:** `vxfk` is **required** (HTTP 400 otherwise).
 - **New version of a stale file:** `vxfk` is **required**, a fresh `fileKey` under the latest collection key (HTTP 409 otherwise, with the latest generation). The old key stays known to whoever the collection or the file was shared with, so new content never goes under it.
-- **New version of any other file:** `vxfk` is **refused** (HTTP 400): a new version keeps the file key. A fresh key would cut off the public links that hold the current one. A version that keeps the key is refused (HTTP 409, with the latest generation) if a file share of the file was revoked meanwhile: the client sends it again with a fresh key.
+- **New version of any other file:** `vxfk` is **refused** (HTTP 400): a new version keeps the file key, which its shares and links already hold. A version that keeps the key is refused (HTTP 409, with the latest generation) if a file share of the file was revoked meanwhile: the client sends it again with a fresh key.
 
 `shareKeys` comes with the `vxfk` of a stale file: the fresh `fileKey` wrapped under the `shareFileKeyWrapKey` of each active share of the file, pending or accepted, from its `senderVxsw` ([§5.15](#515-vxsw---share-wrap-key-copy)). The server checks it under the lock of the file: it **MUST** cover every active share of the file exactly once and nothing else (HTTP 409 otherwise, with the expected shares: the client reads the rotation plan of the file again, [§11.1](#111-share-revocation)). The file shares keep their access across the version. The share ids come from `GET /api/v1/shares/files/{file_id}/rotation-plan`, empty for a file without a file share.
+
+`linkKeys` comes with it too: the fresh `fileKey` wrapped under the `publicLinkWrapKey` of each active public link of the file, from its `ownerVxlw` ([§5.16](#516-vxlw---link-wrap-key-copy)), at the new generation. The server checks it under the same lock: it **MUST** cover every active link of the file exactly once (HTTP 409 otherwise, with the expected links). The links keep serving across the version ([§5.11](#511-vxpl---public-link-blob)). The rotation plan of the file lists them.
 
 `collectionKeyGeneration` comes with every `vxfk`. The server checks it under the lock of the collection: it **MUST** be the latest generation (HTTP 409 otherwise, with the latest generation: the client reads the collection keys again and wraps again). A collection waiting for its key rotation takes no new file and no new version (HTTP 409, [§11.1](#111-share-revocation)). The tus creation applies the same rules early: `vxfk` in its metadata only for a new file or a stale file (HTTP 400 otherwise), no upload into a collection waiting for its rotation (HTTP 409). `shareKeys` is sent at commit only.
 
@@ -951,14 +1002,14 @@ The commit endpoint performs the following atomically within a single transactio
 1. Verifies the upload is fully transferred.
 2. Checks storage quota.
 3. **New file:** creates the `files` row, including `vxfm`, with `content_key_generation = 0`, and the `file_keys` row with `vxfk`, `key_generation = 0` and `collection_key_generation` set to the latest collection key generation.
-4. **New version:** keeps the previous generation as a version ([§19.5](#195-file-versions)), then updates the `files` row (generation bump, `vxfm`) and sets `content_key_generation` to the latest `key_generation` in `file_keys`, and `pending_key_rotation` and `key_rotation_pending` to `FALSE`. For a stale file, the `file_keys` row with the new `vxfk` comes first, at the next `key_generation` and with the latest `collection_key_generation`, with the `share_file_keys` rows of `shareKeys` at the same generation, and the content is under it. Otherwise no `file_keys` row is created.
+4. **New version:** keeps the previous generation as a version ([§19.5](#195-file-versions)), then updates the `files` row (generation bump, `vxfm`) and sets `content_key_generation` to the latest `key_generation` in `file_keys`, and `pending_key_rotation` and `key_rotation_pending` to `FALSE`. For a stale file, the `file_keys` row with the new `vxfk` comes first, at the next `key_generation` and with the latest `collection_key_generation`, with the `share_file_keys` rows of `shareKeys` and the `public_link_keys` rows of `linkKeys` at the same generation, and the content is under it. Otherwise no `file_keys` row is created.
 5. Marks the `tus_uploads` row as completed.
 
 **Invariant:** `files.vxfm` and the current content are always encrypted under the `fileKey` at `files.content_key_generation`. The file routes return two keys: `vxfk`, the `VXFK` at `content_key_generation`, to read the content and `files.vxfm`, and `latestVxfk`, the `VXFK` at the latest `key_generation`, to encrypt a new version. They differ only after a key rotation ([§11.1](#111-share-revocation)).
 
 The route parameter is the tus upload id (`tusId`), not the `tus_uploads` row id. The `VXFM` minimum is 66 bytes: 50-byte header and nonce, plus the 16-byte tag.
 
-For a **new file**, the client **MUST** generate `fileKey` via CSPRNG, derive `fileKeyWrapKey` from the parent `collectionKey`, wrap `fileKey` into the `VXFK` blob, derive `fileMetadataKey` from `fileKey`, and encrypt the file metadata into the `VXFM` blob **before** calling commit. For a **new version**, the client unwraps `latestVxfk`, encrypts the content and the `VXFM` under that `fileKey`, and sends no `vxfk`. For a stale file, it generates a new `fileKey` instead, wraps it under the latest `collectionKey` and under the key of each file share, and encrypts the content and the `VXFM` under it. The server validates the blob formats ([§5](#5-binary-blob-formats)) but cannot verify cryptographic correctness (zero-knowledge).
+For a **new file**, the client **MUST** generate `fileKey` via CSPRNG, derive `fileKeyWrapKey` from the parent `collectionKey`, wrap `fileKey` into the `VXFK` blob, derive `fileMetadataKey` from `fileKey`, and encrypt the file metadata into the `VXFM` blob **before** calling commit. For a **new version**, the client unwraps `latestVxfk`, encrypts the content and the `VXFM` under that `fileKey`, and sends no `vxfk`. For a stale file, it generates a new `fileKey` instead, wraps it under the latest `collectionKey`, under the key of each file share and under the key of each public link, and encrypts the content and the `VXFM` under it. The server validates the blob formats ([§5](#5-binary-blob-formats)) but cannot verify cryptographic correctness (zero-knowledge).
 
 If the upload targets an existing file (`file_id` set in tus metadata, or in the direct upload metadata), the server enforces:
 
@@ -1172,7 +1223,7 @@ A scheduled job **MUST** periodically (recommended: hourly) remove rows from `tu
 | Server tries to correlate files across collections for the same user         | Blocked: `contentIdKey` is per-collection, same plaintext produces different `content_id` in different collections                                             |
 | Server observes unchanged `content_id` values after `collectionKey` rotation | Accepted: minor metadata leak (file set unchanged), negligible over what server already knows (file count, ciphertext sizes). Content remains fully protected. |
 | Server upgrades `permission` on a share record to grant elevated access      | Detected: recipient **MUST** verify decrypted `"p"` matches server-visible `permission` column; mismatch -> share rejected                                     |
-| Server swaps VXPL blobs between public links                                 | Blocked by AAD binding on `link_id`                                                                                                                            |
+| Server swaps VXPL blobs between links or generations                         | Blocked by AAD binding on `link_id` and `key_generation`                                                                                                       |
 | Server tries to brute-force password-protected link                          | Blocked: Argon2id 128 MiB; server never sees password or `linkKey`                                                                                             |
 | Server captures URL fragment from keyless link                               | Not possible: URL fragments are never sent to the server per HTTP spec                                                                                         |
 | Attacker captures full URL before link revocation                            | Accepted E2EE limitation: same as share revocation ([§11.1](#111-share-revocation))                                                                            |
@@ -2099,7 +2150,7 @@ The revocation rotates at once only what the owner alone can rotate: the shared 
 
 The remaining recipients keep their `shareWrapKey`: the revoked recipient never had it, so a rotation gives them one more generation under it, without a new invitation or X-Wing encapsulation.
 
-1. Sender reads `GET /api/v1/shares/{share_id}/revocation-plan`: the rotations, top-down, each with its `collectionId`, its current `keyGeneration`, the remaining shares whose shared collection it is ([§11](#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)) with the sender's `senderVxsw`, the revoked one left out, and its `parent` (`collectionId`, `keyGeneration`, `keyRotationPending`), `null` for a root collection. When the parent rotates in the same revocation, `parent.keyGeneration` is the generation it gets from it. A file share has no rotation.
+1. Sender reads `GET /api/v1/shares/{share_id}/revocation-plan`: the rotations, top-down, each with its `collectionId`, its current `keyGeneration`, the remaining shares whose shared collection it is ([§11](#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)) with the sender's `senderVxsw`, the revoked one left out, its `parent` (`collectionId`, `keyGeneration`, `keyRotationPending`), `null` for a root collection, and its active public `links` with their `ownerVxlw` ([§5.11](#511-vxpl---public-link-blob)). When the parent rotates in the same revocation, `parent.keyGeneration` is the generation it gets from it. A file share has no rotation.
 
 2. For each rotation, the sender generates a new `collectionKey` via **CSPRNG**. Its `key_generation` is `keyGeneration` plus one, the current one being the highest among the owner `VXCK` and the `VXCC` of the collection.
 
@@ -2107,17 +2158,19 @@ The remaining recipients keep their `shareWrapKey`: the revoked recipient never 
 
 4. For every share of the rotation, the sender unwraps its `senderVxsw` ([§5.15](#515-vxsw---share-wrap-key-copy)), derives `shareCollectionKeyWrapKey` and wraps the new `collectionKey` -> share copy of `VXCK` at the new generation. The older copies stay, to read the content written under them.
 
-5. If the rotation has a `parent`, the sender wraps the new `collectionKey` under the parent key at `parent.keyGeneration` (the new one when the parent rotates in the same revocation) -> `VXCC` at the new generation. The shares reaching the parent open it through it, without a copy of their own.
+5. For every link of the rotation, the sender unwraps its `ownerVxlw` ([§5.16](#516-vxlw---link-wrap-key-copy)) and wraps the new `collectionKey` under its `publicLinkWrapKey` -> `VXPL` at the new generation. The link keeps serving the content written under the new key.
 
-6. Sender sends it all with `POST /api/v1/shares/{share_id}/revoke` and `{ rotations: [{ collectionId, vxck, vxcm, shareKeys: [{ shareId, vxck }], vxcc, parentKeyGeneration }] }`, the last two with a `parent` only, `rotations` empty for a file share. In one transaction, under the locks of the collections and of the parent of the shared collection, the server:
+6. If the rotation has a `parent`, the sender wraps the new `collectionKey` under the parent key at `parent.keyGeneration` (the new one when the parent rotates in the same revocation) -> `VXCC` at the new generation. The shares reaching the parent open it through it, without a copy of their own.
+
+7. Sender sends it all with `POST /api/v1/shares/{share_id}/revoke` and `{ rotations: [{ collectionId, vxck, vxcm, shareKeys: [{ shareId, vxck }], linkKeys: [{ linkId, vxpl }], vxcc, parentKeyGeneration }] }`, the last two with a `parent` only, `rotations` empty for a file share. In one transaction, under the locks of the collections and of the parent of the shared collection, the server:
    - sets `revoked_at = now()` and deletes the share's rows in `share_collection_keys`. Revoked recipient **gets 403 immediately**;
    - computes the plan again and **MUST** refuse the revocation (HTTP 409, with the expected collections) unless `rotations` covers each collection of the plan exactly once;
    - marks the shared collection and every collection below it, trash included, `key_rotation_pending = TRUE`;
-   - applies the rotations top-down. Each one **MUST** be refused (HTTP 409) if its `shareKeys` or its `VXCC` under the parent is not exactly its plan, for example after a share was added or the parent key rotated meanwhile: the client reads the plan again. Each rotation clears the flag of its collection.
+   - applies the rotations top-down. Each one **MUST** be refused (HTTP 409) if its `shareKeys`, its `linkKeys` or its `VXCC` under the parent is not exactly its plan, for example after a share or a link was added or the parent key rotated meanwhile: the client reads the plan again. Each rotation clears the flag of its collection.
 
    Nothing is kept if one of them is refused.
 
-7. Nothing else is written: the `VXFK` of the files stay under the older generations, and the `VXCC` below a rotated collection stay under the older parent generation. File content is **NOT re-encrypted by default** ([§11.1.1](#1111-optional-content-re-encryption-after-revocation)) and the file `generation` counter is **NOT** incremented (it tracks user modifications, **not key rotations**).
+8. Nothing else is written: the `VXFK` of the files stay under the older generations, and the `VXCC` below a rotated collection stay under the older parent generation. File content is **NOT re-encrypted by default** ([§11.1.1](#1111-optional-content-re-encryption-after-revocation)) and the file `generation` counter is **NOT** incremented (it tracks user modifications, **not key rotations**).
 
 **Collections waiting for their rotation:** a collection with `key_rotation_pending = TRUE` keeps a key the revoked recipient may know, so the server **MUST** refuse in it (HTTP 409, with the collections to rotate first, top-down):
 
@@ -2125,16 +2178,19 @@ The remaining recipients keep their `shareWrapKey`: the revoked recipient never 
 - a new sub-collection, by the owner or an editor;
 - a new `VXCM` (a rename): it comes with the rotation;
 - a file or a collection moved into it;
-- a share on it.
+- a share on it;
+- a public link on it ([§5.11](#511-vxpl---public-link-blob)).
 
 The server checks it under the lock of the collection, with a lock on its row, so a revocation marking it waits for a write in progress, and a write after it sees the mark. A collection waiting for its rotation is therefore never the shared collection of an active share. The collection routes return the flag as `keyRotationPending`.
 
 **Rotation of a waiting collection:** the same rotation as above, for one collection, without file keys and without touching the `VXCC` below it. It **MUST** be refused (HTTP 409) while the parent waits for its own rotation: the client rotates top-down. It clears the flag.
 
-- **Owner:** `GET /api/v1/shares/collections/{collection_id}/rotation-plan` (`keyGeneration`, `shares`, `parent`), then `POST /api/v1/shares/collections/{collection_id}/rotate` with `{ vxck, vxcm, shareKeys, vxcc, parentKeyGeneration }`, checked like a rotation of the revocation. The owner can rotate any of its collections, waiting or not.
-- **Editor:** `POST /api/v1/shares/{shareId}/collections/{collectionId}/rotate` with `{ vxcm, vxcc, parentKeyGeneration }`, for a collection below the shared one that waits for its rotation (HTTP 404 for the shared collection itself, HTTP 409 for a collection that does not wait). There is no share copy to write, and no owner `VXCK`: the owner opens the new generation through the `VXCC` and **SHOULD** add its `VXCK` ([Addendum §21.3](CRYPTO_ADDENDUM.md#213-access)).
+- **Owner:** `GET /api/v1/shares/collections/{collection_id}/rotation-plan` (`keyGeneration`, `shares`, `parent`, `links`), then `POST /api/v1/shares/collections/{collection_id}/rotate` with `{ vxck, vxcm, shareKeys, linkKeys, vxcc, parentKeyGeneration }`, checked like a rotation of the revocation. The owner can rotate any of its collections, waiting or not.
+- **Editor:** `POST /api/v1/shares/{shareId}/collections/{collectionId}/rotate` with `{ vxcm, vxcc, parentKeyGeneration }`, for a collection below the shared one that waits for its rotation (HTTP 404 for the shared collection itself, HTTP 409 for a collection that does not wait). There is no share copy to write, and no owner `VXCK`: the owner opens the new generation through the `VXCC` and **SHOULD** add its `VXCK` ([Addendum §21.3](CRYPTO_ADDENDUM.md#213-access)). The rotation **MUST** be refused (HTTP 409) if the collection has an active public link: an editor has no copy of its wrap key, and the link would miss the new key. Its owner rotates it.
 
-**File keys after a rotation:** the files of a rotated collection become stale ([§6.5.6.1](#6561-commit)). Their content and their `fileKey` stay as they are, and their next version comes with a fresh `fileKey` under the latest collection key, with a copy of it for each file share of the file, which keeps its access. That fresh key cuts off the public links of the file, which hold the old one.
+**Collections with a link after a revocation:** right after a revocation, the owner's client **SHOULD** rotate the waiting collections that have an active public link, top-down, one request each. An editor writing in one of them meanwhile is refused (HTTP 409) until then. A client interrupted resumes on its next start. A collection waiting for its rotation takes no new link, so an editor never meets a link created after the mark.
+
+**File keys after a rotation:** the files of a rotated collection become stale ([§6.5.6.1](#6561-commit)). Their content and their `fileKey` stay as they are, and their next version comes with a fresh `fileKey` under the latest collection key, with a copy of it for each file share and each public link of the file, which keep their access.
 
 **File share revocation:** lazy, like the collections below a collection share. Nothing rotates at once, and the remaining file shares of the file keep their `shareWrapKey`.
 
@@ -2148,17 +2204,19 @@ The server checks it under the lock of the collection, with a lock on its row, s
 
 **Rotation of a file key:** one more generation of the `fileKey`, without a new version and without a new invitation. The owner can rotate any of its files, stale or not.
 
-1. Owner reads `GET /api/v1/shares/files/{file_id}/rotation-plan`: the latest `keyGeneration` of the file, the latest `collectionKeyGeneration` of its collection, and `shares`, every active file share of the file, pending or accepted, each with its `shareId`, `recipientId` and the sender's `senderVxsw`.
+1. Owner reads `GET /api/v1/shares/files/{file_id}/rotation-plan`: the latest `keyGeneration` of the file, the latest `collectionKeyGeneration` of its collection, and `shares`, every active file share of the file, pending or accepted, each with its `shareId`, `recipientId` and the sender's `senderVxsw`, and `links`, every active public link of the file, each with its `linkId` and `ownerVxlw`.
 2. Owner generates a new `fileKey` via **CSPRNG**. Its `key_generation` is `keyGeneration` plus one.
-3. Owner wraps it with `fileKeyWrapKey` from the latest `collectionKey` -> new `VXFK` blob, and, for every share of the plan, unwraps its `senderVxsw`, derives `shareFileKeyWrapKey` and wraps it -> share copy of `VXFK` at the new generation.
-4. Owner sends `POST /api/v1/shares/files/{file_id}/rotate` with `{ vxfk, collectionKeyGeneration, shareKeys: [{ shareId, vxfk }] }`. In one transaction, under the lock of the collection the file is in, then of the file, the server:
+3. Owner wraps it with `fileKeyWrapKey` from the latest `collectionKey` -> new `VXFK` blob, and, for every share of the plan, unwraps its `senderVxsw`, derives `shareFileKeyWrapKey` and wraps it -> share copy of `VXFK` at the new generation, and, for every link of the plan, unwraps its `ownerVxlw` and wraps it under its `publicLinkWrapKey` -> `VXPL` at the new generation.
+4. Owner sends `POST /api/v1/shares/files/{file_id}/rotate` with `{ vxfk, collectionKeyGeneration, shareKeys: [{ shareId, vxfk }], linkKeys: [{ linkId, vxpl }] }`. In one transaction, under the lock of the collection the file is in, then of the file, the server:
    - **MUST** refuse a file that moved while the request waited for the lock (HTTP 409), a collection waiting for its rotation (HTTP 409) and a `collectionKeyGeneration` that is not the latest (HTTP 409, with the latest generation);
-   - **MUST** refuse `shareKeys` unless it covers every active share of the file exactly once (HTTP 409, with the expected shares): the client reads the plan again;
-   - adds the `file_keys` row at the new `key_generation`, with the latest `collection_key_generation`, and the `share_file_keys` rows at the same generation;
+   - **MUST** refuse `shareKeys` unless it covers every active share of the file exactly once (HTTP 409, with the expected shares), and `linkKeys` unless it covers every active link of the file exactly once (HTTP 409, with the expected links): the client reads the plan again;
+   - adds the `file_keys` row at the new `key_generation`, with the latest `collection_key_generation`, and the `share_file_keys` and `public_link_keys` rows at the same generation;
    - sets `pending_key_rotation = TRUE` and `key_rotation_pending = FALSE`.
-5. `files.vxfm` and the content stay under the content key until the next version ([§6.5.6.1](#6561-commit)). Old `VXFK` rows at `key_generation` <= `M` are retained alongside the new one at `M+1`, for the owner and the file shares alike. The file `generation` counter is **NOT** incremented. Re-encryption happens only when the owner **opts in** ([§11.1.1](#1111-optional-content-re-encryption-after-revocation)).
+5. `files.vxfm` and the content stay under the content key until the next version ([§6.5.6.1](#6561-commit)). Old `VXFK` rows at `key_generation` <= `M` are retained alongside the new one at `M+1`, for the owner, the file shares and the links alike. The file `generation` counter is **NOT** incremented. Re-encryption happens only when the owner **opts in** ([§11.1.1](#1111-optional-content-re-encryption-after-revocation)).
 
-**Locks of a file:** every write that adds a generation of a `fileKey` takes the lock of the collection the file is in, then the lock of the file: a version, a rotation, a move (both collections, in sorted order, [§11.4](#114-file-move-between-collections)). A revocation, a refusal, a grant and a new share of a file take the lock of the file only. So a copy is never written for a revoked or refused share, a share is never added while a new key is checked against the shares, and a version or a rotation never runs against a file moving away.
+**Locks of a file:** every write that adds a generation of a `fileKey` takes the lock of the collection the file is in, then the lock of the file: a version, a rotation, a move (both collections, in sorted order, [§11.4](#114-file-move-between-collections)). A revocation, a refusal, a grant, a new share and a new public link of a file take the lock of the file only. So a copy is never written for a revoked or refused share, a share or a link is never added while a new key is checked against them, and a version or a rotation never runs against a file moving away.
+
+**Locks of a collection link:** a new public link of a collection takes the lock of the collection, refuses a collection waiting for its rotation, and writes the collection row. A rotation of the collection is serializable: one that waited for the lock behind the link reads a snapshot without it, and fails on its own update of that row (HTTP 409) instead of leaving the link without the new key. The client sends it again with the link.
 
 **Guarantees and limitations:**
 
@@ -2171,14 +2229,15 @@ The server checks it under the lock of the collection, with a lock on its row, s
 | Metadata re-encrypted immediately                                           | ❌ `files.vxfm` stays under the content key until the next version                                                  |
 | File rename in a collection waiting for its rotation                        | ⚠️ Allowed: the name stays under the content key, known to the revoked user, until re-encryption                    |
 | File shares survive the next version of a stale file                        | ✅ The version carries a copy of the fresh `fileKey` for each file share                                            |
-| Public links survive the next version of a stale file                       | ❌ The fresh `fileKey` cuts them off, until public links get key copies of their own                                |
+| Public links survive the next version of a stale file                       | ✅ The version carries a copy of the fresh `fileKey` for each active link                                           |
+| Public links survive a collection rotation                                  | ✅ The owner gives each active link a copy, a collection with a link rotates with its owner                         |
 | File content re-encrypted by default                                        | ❌ Off by default, opt-in per ([§11.1.1](#1111-optional-content-re-encryption-after-revocation))                    |
 | File content re-encrypted when opted in                                     | ✅ Progressive, user-pausable, with progress UI                                                                     |
 | File-level revocation without affecting other files in collection           | ✅ Only the file is marked, its key rotates with its next version or its own rotation                               |
 | A refused collection share leaves no key to its recipient                   | ✅ `VXSH` carries no collection key, the share copies are served only once accepted and deleted on refusal          |
 | A refused file share leaves no key to its recipient                         | ✅ `VXSH` carries no file key, the share copies are served only once accepted and deleted on refusal                |
 | Revoked user cannot decrypt already-downloaded content                      | ❌ Inherent E2EE limitation                                                                                         |
-| Revoked user cannot decrypt cold-storage exfiltration if they kept old keys | ⚠️ Only when re-encryption setting is enabled and completed                                                         |
+| Revoked user cannot decrypt cold-storage exfiltration if they kept old keys | ⚠️ Only when re-encryption setting is enabled and completed. The same holds for a deleted or expired public link    |
 | File `generation` counter is preserved across key rotation                  | ✅ Generation is a mutation counter, not a rotation counter                                                         |
 
 **Mandatory safeguards:**
@@ -2331,7 +2390,7 @@ The `VXFK` blob remains wrapped under the source `collectionKey` and would be in
    )
    ```
 
-3. Client wraps the same `fileKey` under the new `fileKeyWrapKey` -> new `VXFK` blob, and under the `shareFileKeyWrapKey` of each active file share of the file -> `shareKeys` ([§11.1](#111-share-revocation), rotation plan of the file).
+3. Client wraps the same `fileKey` under the new `fileKeyWrapKey` -> new `VXFK` blob, under the `shareFileKeyWrapKey` of each active file share of the file -> `shareKeys`, and under the `publicLinkWrapKey` of each active public link of the file -> `linkKeys` ([§11.1](#111-share-revocation), rotation plan of the file).
 4. Client -> Server: `POST /api/v1/storage/files/{file_id}/move`:
 
    ```json
@@ -2339,11 +2398,12 @@ The `VXFK` blob remains wrapped under the source `collectionKey` and would be in
      "targetCollectionId": "...",
      "vxfk": "<new VXFK blob>",
      "collectionKeyGeneration": 0,
-     "shareKeys": [{ "shareId": "...", "vxfk": "<share copy>" }]
+     "shareKeys": [{ "shareId": "...", "vxfk": "<share copy>" }],
+     "linkKeys": [{ "linkId": "...", "vxpl": "<link copy>" }]
    }
    ```
 
-   `vxfk` is wrapped under the **latest** destination `collectionKey`, and `collectionKeyGeneration` is its generation. `shareKeys` is empty for a file without a file share.
+   `vxfk` is wrapped under the **latest** destination `collectionKey`, and `collectionKeyGeneration` is its generation. `shareKeys` is empty for a file without a file share, `linkKeys` for a file without a public link.
 
 5. Server atomically, under the locks of the source and destination collections, taken in sorted order, then of the file:
    - Reads the file again and refuses the move if it left the source collection meanwhile (HTTP 409): the client reads it again.
@@ -2351,7 +2411,7 @@ The `VXFK` blob remains wrapped under the source `collectionKey` and would be in
    - Refuses a destination waiting for its key rotation (HTTP 409, [§11.1](#111-share-revocation)).
    - Updates `files.collection_id` to `targetCollectionId`.
    - Adds a `file_keys` row with the new `VXFK` blob at the next `key_generation`, with the latest `collection_key_generation`, and sets `content_key_generation` to it.
-   - Adds the `share_file_keys` rows of `shareKeys` at the same generation. It **MUST** refuse `shareKeys` unless it covers every active share of the file exactly once (HTTP 409, with the expected shares).
+   - Adds the `share_file_keys` rows of `shareKeys` and the `public_link_keys` rows of `linkKeys` at the same generation. It **MUST** refuse `shareKeys` unless it covers every active share of the file exactly once (HTTP 409, with the expected shares), and `linkKeys` unless it covers every active link of the file exactly once (HTTP 409, with the expected links).
    - Sets `files.updated_at = now()`.
 
 **The server MUST verify before committing:**
@@ -2362,7 +2422,7 @@ The `VXFK` blob remains wrapped under the source `collectionKey` and would be in
 
 **Sharing implications:**
 
-The file shares of the file follow it: the move gives each of them a copy of the same `fileKey` at the new generation. The `key_rotation_pending` mark of the file stays: the key is the same.
+The file shares and the public links of the file follow it: the move gives each of them a copy of the same `fileKey` at the new generation. The `key_rotation_pending` mark of the file stays: the key is the same.
 
 Moving a file does not automatically re-share it with recipients of the destination collection. The file exists in the destination collection but only the owner can decrypt it until explicitly shared. This is the correct behavior. It is automatically inheriting destination collection shares would be a surprise to both the owner and existing recipients.
 
@@ -2698,7 +2758,7 @@ Cross-target consistency is verified by **JSON** test vectors. They are to be pr
 Vector categories:
 
 1. **HKDF** derivations (every domain-separated path in [§4](#4-hkdf-domain-separation))
-2. `VXWM`, `VXRM`, `VXFC`, `VXFM`, `VXSK`, `VXPS`, `VXSH`, `VXCM`, `VXCK`, `VXCC`, `VXSI`, `VXFK`, `VXPL`, `VXMC`, `VXSW` round-trips with fixed keys and nonces
+2. `VXWM`, `VXRM`, `VXFC`, `VXFM`, `VXSK`, `VXPS`, `VXSH`, `VXCM`, `VXCK`, `VXCC`, `VXSI`, `VXFK`, `VXPL`, `VXMC`, `VXSW`, `VXLW` round-trips with fixed keys and nonces
 3. Segment nonce derivation across multiple generations and indices
 4. **OPAQUE** registration and login with deterministic test-only RNG seeds
 5. **ML-KEM-768** encapsulation/decapsulation against **FIPS 203** known-answer tests
@@ -2714,6 +2774,8 @@ Vector categories:
    - `VXFK` owner copy - `collection_id ‖ file_id ‖ key_generation` (36 bytes)
    - `VXFK` share copy - `share_id ‖ file_id ‖ key_generation` (36 bytes)
    - `VXSW` - `share_id ‖ user_id ‖ role` (33 bytes)
+   - `VXPL` - `link_id ‖ key_generation` (20 bytes)
+   - `VXLW` - `link_id ‖ user_id` (32 bytes)
 
 8. `content_id` derivation vectors with `collection_uuid` bound in the **HKDF** info
 9. Segment count **verification** (`VXFM` `sc` field vs actual segment count), including the zero-byte file case (`sc = 0`, zero segments, **BLAKE3** hash over empty input).
@@ -2882,6 +2944,10 @@ which provides strict single-owner semantics: the sender loses access at the
 moment of transfer, and only one thread holds the buffer at any given time.
 `SharedArrayBuffer` provides no such guarantee and is incompatible with the
 isolation model of the **Crypto Worker**.
+
+### 16.8 Logs and error reports
+
+Logs, breadcrumbs and error reports, on the client and on the server, **MUST** carry identifiers only (UUIDs, codes, counters). They **MUST NOT** carry a file or collection name, a path, a key or a blob, a password, a link token or a URL fragment. An error message that can hold one of them **MUST** be filtered before it reaches the error tracker. A log that leaves the device is data the server or a third party keeps.
 
 ## 17. Threat Model Summary
 
@@ -3139,6 +3205,7 @@ The value is capped by the plan's maximum. A scheduled job deletes versions whos
 
 ## Changelog
 
+- **24:** public links survive new keys (§5.11): one `VXPL` per generation of the target key, in `public_link_keys`, with the AAD `link_id ‖ key_generation`, and a copy for each active link on every write adding a generation (`linkKeys`: a version of a stale file, a rotation of a file or collection key, a move). The owner keeps `VXLW`, a copy of `publicLinkWrapKey` under `publicLinkWrapCopyKey` (§4, §5.16). A collection waiting for its rotation takes no link, an editor does not rotate a collection with a link, and the owner's client rotates those right after a revocation (§11.1). The rotation plans list the links. §16.8: logs and error reports carry identifiers only.
 - **23:** §18 requires isolated parsing for any future preview or thumbnail: an iframe with an opaque origin, no cookies, no storage and no network.
 - **22:** file shares get share copies of the file key, like collection shares (§4, §5.9, §11): `shareFileKeyWrapKey`, the `VXFK` share copy with AAD `share_id ‖ file_id ‖ key_generation`, `share_file_keys`, granted per generation with `POST /api/v1/shares/{shareId}/files`. The `VXSH` of a file share has no `"k"`: 80 bytes instead of 116 (§5.10, §14). A file share revocation rotates nothing at once: it marks the file (`files.key_rotation_pending`, §10.2), which makes it stale, and the remaining file shares keep their `shareWrapKey`. A file key rotation reads a plan and gives every active file share a copy, no more fresh invitations (§11.1). A new version of a stale file and a move carry `shareKeys`, a copy for each active file share, so file shares survive them (§6.5.6.1, §11.4). A version or a rotation locks the collection the file is in before reading it, and a move locks both collections (§6.5.6.1, §11.1, §11.4).
 - **21:** the `VXSH` of a collection share has no `"k"`: 86 bytes instead of 122, checked by size against the kind of the share on the server, field by field by the recipient (§5.10, §11, §14). The previous collection layout, with a `"k"` of 32 zero bytes, is no longer accepted. No change to the file share layout, AAD or derivations.
