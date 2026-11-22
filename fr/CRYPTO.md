@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique
 
-> **Version du document :** 26
+> **Version du document :** 27
 >
 > **Version du protocole :** 1
 >
@@ -802,7 +802,7 @@ Clé : shareWrapCopyKey (§4)
 
 `user_id` est le côté qui détient la copie. L'AAD empêche le serveur de servir une copie à l'autre côté ou pour un autre partage. Le serveur vérifie le format comme pour tout autre blob ([§5](#5-formats-de-blob-binaires)).
 
-Stockage côté serveur : `shares.sender_vxsw` (posé à la création) et `shares.recipient_vxsw` (posé à l'acceptation ou plus tard, voir [§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)). Chaque côté ne reçoit jamais que sa propre copie.
+Stockage côté serveur : `shares.sender_vxsw` (posé à la création) et `shares.recipient_vxsw` (posé à l'acceptation, ou plus tôt par une rotation de la paire de clés de partage, voir [§11.3](#113-rotation-de-la-paire-de-clés-de-partage)). Chaque côté ne reçoit jamais que sa propre copie.
 
 ### 5.16 `VXLW` - Copie de la clé d'encapsulation de lien
 
@@ -1921,7 +1921,7 @@ CREATE INDEX file_keys_collection_gen
 
 Flux d'envoi :
 
-1. L'expéditeur récupère la clé d'encapsulation **X-Wing** et la clé de vérification **ML-DSA-65** du destinataire depuis le serveur.
+1. L'expéditeur récupère la clé d'encapsulation **X-Wing** et la clé de vérification **ML-DSA-65** du destinataire depuis le serveur, et garde le SHA-256 de la clé X-Wing et de sa propre clé ML-DSA-65 pour l'étape 8.
 2. L'expéditeur encapsule : `(ctXwing, sharedSecret) = X-Wing.Encaps(recipientPubXwing)`.
 3. L'expéditeur dérive :
 
@@ -1955,7 +1955,7 @@ Flux d'envoi :
 
 6. L'expéditeur signe la charge utile avec sa clé de signature **ML-DSA-65** en utilisant la chaîne de contexte `"vexahub:v1:share"` -> `signature`. Les signatures sont **déterministes** (aucun aléa par signature).
 7. L'expéditeur encapsule `shareWrapKey` sous sa propre `masterKey` -> `senderVxsw` ([§5.15](#515-vxsw---copie-de-la-clé-dencapsulation-de-partage)).
-8. L'expéditeur envoie l'invitation à `POST /api/v1/shares` : l'id du partage (`sid`, un UUID v7 généré par le client), les champs signés, `signedPayload`, `signature` et `senderVxsw`. Le serveur refuse un id qui existe déjà (HTTP 409).
+8. L'expéditeur envoie l'invitation à `POST /api/v1/shares` : l'id du partage (`sid`, un UUID v7 généré par le client), les champs signés, `signedPayload`, `signature`, `senderVxsw`, et `recipientKeyHash` et `senderKeyHash`, le SHA-256 des deux clés de l'étape 1. Le serveur refuse un id qui existe déjà (HTTP 409), et des clés qu'une rotation a remplacées entre-temps (HTTP 409, [§11.3](#113-rotation-de-la-paire-de-clés-de-partage)).
 
 Flux de réception :
 
@@ -1966,6 +1966,8 @@ Flux de réception :
 5. Le destinataire dérive `shareWrapKey`, désencapsule `VXSH` et vérifie ses champs contre l'enregistrement de partage ([§5.10](#510-vxsh---clé-de-partage-encapsulée)). **Rejet en cas de différence.**
 6. Le destinataire lit les clés du partage dans ses copies une fois accepté, pour un partage de collection comme pour un partage de fichier.
 7. Le destinataire encapsule `shareWrapKey` sous sa propre `masterKey` -> `recipientVxsw` ([§5.15](#515-vxsw---copie-de-la-clé-dencapsulation-de-partage)), envoyé avec l'acceptation.
+
+Une invitation qui a déjà sa copie destinataire, par une rotation de la paire de clés de partage, s'ouvre par elle ([§11.3](#113-rotation-de-la-paire-de-clés-de-partage)).
 
 > La sécurité se dégrade uniquement si **X25519 et ML-KEM-768 sont tous deux** compromis (garantie hybride X-Wing). L'authenticité du partage se dégrade uniquement si ML-DSA-65 est compromis. La signature couvre l'intégralité de la charge utile de l'invitation, y compris `recipient_id` et `ctXwing`, empêchant le serveur de rediriger des partages vers d'autres utilisateurs ou de substituer le matériel de clé encapsulé.
 >
@@ -1993,7 +1995,6 @@ CREATE TABLE shares (
     permission      INTEGER NOT NULL DEFAULT 1,
     sender_vxsw     BYTEA NOT NULL,         -- VXSW, copie expéditeur de shareWrapKey (78 octets)
     recipient_vxsw  BYTEA,                  -- VXSW, copie destinataire, NULL tant qu'elle n'est pas envoyée
-    pending_rekey   BOOLEAN NOT NULL DEFAULT FALSE, -- le destinataire doit recevoir une clé renouvelée
     accepted_at     TIMESTAMPTZ,            -- NULL = invitation en attente
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     revoked_at      TIMESTAMPTZ,
@@ -2040,9 +2041,9 @@ CREATE UNIQUE INDEX share_file_keys_active
     ON share_file_keys (share_id, key_generation);
 ```
 
-**Acceptation et refus :** un partage commence comme invitation en attente (`accepted_at IS NULL`). Le destinataire le vérifie et le désencapsule (flux de réception ci-dessus), puis appelle `POST /api/v1/shares/{id}/accept` avec `{ vxsw }`, qui pose `accepted_at` et `recipient_vxsw` en une seule étape. Refuser appelle `POST /api/v1/shares/{id}/deny`, qui révoque le partage et supprime ses copies, sous le verrou du fichier pour un partage de fichier. Rien ne tourne : un partage ne se lit qu'une fois accepté, et son `VXSH` ne porte aucune clé. Les invitations en attente sont listées par `GET /api/v1/shares/incoming`.
+**Acceptation et refus :** un partage commence comme invitation en attente (`accepted_at IS NULL`). Le destinataire le vérifie et le désencapsule (flux de réception ci-dessus), puis appelle `POST /api/v1/shares/{id}/accept` avec `{ vxsw }`, qui pose `accepted_at` et `recipient_vxsw` en une seule étape. Une invitation dont une rotation a déjà posé la copie destinataire s'accepte sans `vxsw`, et une copie en place est gardée ([§11.3](#113-rotation-de-la-paire-de-clés-de-partage)). Refuser appelle `POST /api/v1/shares/{id}/deny`, qui révoque le partage et supprime ses copies, sous le verrou du fichier pour un partage de fichier. Rien ne tourne : un partage ne se lit qu'une fois accepté, et son `VXSH` ne porte aucune clé. Les invitations en attente sont listées par `GET /api/v1/shares/incoming`.
 
-**Copies de la clé d'encapsulation de partage :** chaque invitation porte `senderVxsw`, y compris celles renvoyées par une rotation de la paire de clés de partage ([§11.3](#113-rotation-de-la-paire-de-clés-de-partage)) ou un renouvellement (rekey). Après une rotation de la paire de clés de partage ou un renouvellement, un partage déjà accepté reste accepté et `recipient_vxsw` vaut `NULL` : le destinataire envoie sa copie ensuite avec `PUT /api/v1/shares/{id}/recipient-copy` et `{ vxsw }`. Le serveur ne l'accepte qu'une fois, sur un partage accepté et actif sans copie destinataire (HTTP 404 sinon). Les routes de partage ne renvoient que la copie du côté de l'appelant (`vxsw`, `NULL` tant qu'elle manque).
+**Copies de la clé d'encapsulation de partage :** chaque invitation porte `senderVxsw`. La copie du destinataire vient avec l'acceptation, ou plus tôt avec une rotation de la paire de clés de partage du destinataire ([§11.3](#113-rotation-de-la-paire-de-clés-de-partage)) : un partage accepté a donc toujours les deux. Les routes de partage ne renvoient que la copie du côté de l'appelant (`vxsw`, `NULL` tant qu'elle manque).
 
 **Accès d'un partage aux collections :** un partage de collection atteint sa collection partagée et chaque collection en dessous dans l'arbre (`collections.parent_id`), quel qu'en soit le créateur. Sortir une collection de l'arbre coupe l'accès, pour elle et tout ce qu'elle contient. Le serveur l'applique à chaque lecture partagée et à la création de sous-collection ([Addenda §21](/fr/CRYPTO_ADDENDUM.md#21-création-de-sous-collection-par-un-éditeur)). Les clés ne donnent que le moyen de lire : les copies du partage pour la collection partagée, puis le `VXCC` de chaque niveau ([§5.14](#514-vxcc---clé-de-collection-encapsulée-par-la-collection-parente)). La lecture d'une collection partagée renvoie les deux, de la plus récente à la plus ancienne (`keys`, `childKeys`), et `GET /api/v1/shares/{shareId}/collections/{collectionId}/key-chain` renvoie toute la chaîne en une lecture : les copies du partage, puis le `VXCC` de chaque niveau jusqu'à la collection.
 
@@ -2224,18 +2225,28 @@ Le serveur enregistre `created_at` indépendamment. Les deux valeurs sont dispon
 
 ### 11.3 Rotation de la paire de clés de partage
 
-Un utilisateur authentifié **PEUT** effectuer une rotation de ses paires de clés de partage à **tout** moment, par exemple s'il suspecte que sa clé de signature a été **observée**.
+Un utilisateur authentifié **PEUT** effectuer une rotation de ses paires de clés de partage à **tout** moment, par exemple s'il suspecte que sa clé de signature a été **observée**. Une rotation garde tous les partages : rien n'est révoqué et aucune copie de partage ne change.
 
-1. Le client génère une nouvelle paire de clés **X-Wing** et une nouvelle paire de clés **ML-DSA-65**.
-2. Le client encapsule les nouvelles clés privées sous `masterKey` -> nouveau blob `VXSK`.
-3. Client -> Serveur : `POST /api/v1/account/sharing-keys/rotate { vxsk, sharingPublicXwing, sharingPublicSignature }`.
-4. Le serveur remplace atomiquement `vxsk`, `sharing_public_xwing`, `sharing_public_signature`, et définit `revoked_at = now()` sur **tous les partages** sortants en attente pour cet utilisateur.
-5. Le client **repartage** toutes les collections ou fichiers avec les destinataires concernés en utilisant la nouvelle clé de signature.
+Un partage ne dépend des paires de clés que tant que son destinataire n'a pas sa copie de `shareWrapKey` (`recipient_vxsw`, [§5.15](#515-vxsw---copie-de-la-clé-dencapsulation-de-partage)) : avant, le destinataire ouvre l'invitation avec sa clé X-Wing et la vérifie avec la clé ML-DSA-65 de l'expéditeur ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)). Une fois la copie là, le partage se lit par elle, sous la `masterKey` de chaque côté, qui ne tourne jamais. Une rotation ne traite que les partages actifs de l'utilisateur sans copie destinataire, dans les deux sens.
 
-> Les copies de partage des anciens partages sont supprimées avec eux, pour les partages de collection comme de fichier. Les nouveaux partages reçoivent les leurs de l'expéditeur par un grant ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)), lues seulement une fois acceptés.
+1. Le client lit `GET /api/v1/account/sharing-keys/rotation-plan` : `outgoing`, les partages actifs envoyés par l'utilisateur sans copie destinataire, chacun avec son `shareId`, son `recipientId`, sa `signature` et son `signedPayload`, et `incoming`, les partages actifs reçus par l'utilisateur sans copie, chacun avec ce dont le flux de réception a besoin (`senderId`, `ctXwing`, `vxsh`, `hkdfSalt`, `signature`, `signedPayload`).
+2. Le client génère une nouvelle paire de clés **X-Wing** et une nouvelle paire de clés **ML-DSA-65**, et encapsule les nouvelles clés privées sous `masterKey` -> nouveau blob `VXSK`.
+3. Pour chaque partage sortant, le client **DOIT** vérifier l'ancienne `signature` sur `signedPayload` avec son ancienne clé de vérification, et que la charge utile désigne ce partage (`sid`) et l'utilisateur comme expéditeur (`snd`). Puis il signe la même charge utile avec la nouvelle clé de signature, contexte `"vexahub:v1:share"`. Il ne signe jamais une charge utile qu'il n'avait pas déjà signée : le plan vient du serveur. Un partage sortant qui échoue n'est pas signé : le client le révoque ([§11.1](#111-révocation-de-partage)), ce qui le retire du plan, puis relit le plan.
+4. Pour chaque partage entrant, le client **DOIT** dérouler le flux de réception avec ses anciennes clés, étapes 2 à 5 : la signature vérifiée avec la clé de l'expéditeur récupérée de façon indépendante, puis la désencapsulation et le `VXSH`. Puis il encapsule `shareWrapKey` sous sa `masterKey` -> copie destinataire (`VXSW`). Une invitation qui échoue n'a pas de copie : le client la refuse d'abord (`POST /api/v1/shares/{id}/deny`), ce qui la retire du plan, puis relit le plan.
+5. Le client envoie `POST /api/v1/account/sharing-keys/rotate` avec `{ vxsk, sharingPublicXwing, sharingPublicSignature, signatures: [{ shareId, signature }], recipientCopies: [{ shareId, vxsw }] }`. Dans une seule transaction, sous le verrou de la ligne de l'utilisateur, le serveur :
+   - remplace `vxsk`, `sharing_public_xwing` et `sharing_public_signature` ;
+   - **DOIT** refuser `signatures` s'il ne couvre pas chaque partage sortant du plan exactement une fois, et `recipientCopies` s'il ne couvre pas chaque partage entrant du plan exactement une fois (HTTP 409, avec les partages attendus) : le client relit le plan ;
+   - **DOIT** refuser une signature d'une autre taille que 3309 octets (HTTP 400) ;
+   - pose la nouvelle `signature` de chaque partage sortant, même `signed_payload`, même `ct_xwing` et même `shareWrapKey` : ses copies de partage restent valables ;
+   - pose la `recipient_vxsw` de chaque partage entrant. Une invitation en attente reste en attente : la copie ne vaut pas acceptation.
 
-> Les partages entrants déjà acceptés et stockés par les destinataires ne sont pas affectés. Le destinataire a désencapsulé et stocké la clé localement au moment de l'acceptation.
->
+   Un partage accepté ou révoqué entre-temps est laissé tel quel.
+6. Le serveur notifie les contacts de l'utilisateur que ses clés ont changé.
+
+**Invitations pendant une rotation :** une invitation est encapsulée pour la clé X-Wing du destinataire et signée avec la clé ML-DSA-65 de l'expéditeur, lues avant son envoi. `POST /api/v1/shares` porte `recipientKeyHash` et `senderKeyHash`, le SHA-256 de ces deux clés publiques (base64url). Le serveur les compare aux clés actuelles sous un verrou partagé des deux lignes d'utilisateur, celui que prend une rotation, et **DOIT** refuser une différence (HTTP 409, en nommant la clé `recipient` ou `sender`) : le client relit les clés, puis encapsule ou signe de nouveau. Aucune invitation ne part donc vers une clé qu'une rotation a remplacée, et une invitation envoyée entre le plan et la rotation fait échouer la rotation à la place.
+
+**Acceptation après une rotation :** une invitation qui a reçu sa copie destinataire d'une rotation s'accepte sans `vxsw`. Le client lit `shareWrapKey` dans sa copie au lieu de désencapsuler, et ouvre le `VXSH` (flux de réception, étape 5). Sa signature a été vérifiée quand la copie a été faite (étape 4 ci-dessus), donc elle n'est pas vérifiée de nouveau : la copie, sous la `masterKey` et liée au partage et au destinataire par son AAD, en fait foi. Les rotations ultérieures de l'expéditeur la laissent donc de côté. Un `vxsw` envoyé quand même laisse la copie en place.
+
 > **Journal d'audit :** les entrées du journal d'audit scellé sont chiffrées pour la clé publique X-Wing ([Addenda §20.9](/fr/CRYPTO_ADDENDUM.md#209-entrées-scellées)). Après une rotation, les entrées écrites avant elle deviennent indéchiffrables. Avant de lancer une rotation, le client **DOIT** déchiffrer les entrées existantes et proposer un export à l'utilisateur.
 >
 > Un changement de mot de passe ne **déclenche PAS** automatiquement une rotation de la paire de clés de partage.
@@ -2805,7 +2816,7 @@ Les journaux, les breadcrumbs et les rapports d'erreur, côté client comme côt
 | Énumération d'emails                                                               | Réponse uniforme à l'inscription et au démarrage de la récupération, et au démarrage de la connexion (`signin/start` renvoie la même forme de réponse que le compte existe ou non ; `vxwm` et `vxsk` seulement après preuve du mot de passe)                                                                                                                                                    |
 | Révocation de partage par le propriétaire de collection/fichier                    | Le nouveau contenu est protégé par des clés renouvelées ; le contenu et les métadonnées existants restent sous l'ancienne clé jusqu'à la prochaine version ou un rechiffrement ; l'ancien texte chiffré est inaccessible via l'API ; le contenu déjà téléchargé ne peut pas être récupéré (limitation E2EE)                                                                                     |
 | Fin d'un lien public (révoqué, expiré, épuisé)                                     | Nouveau contenu sous une clé neuve dès que le serveur marque la cible, tout de suite ou dans la minute pour une expiration ; contenu déjà téléchargé non récupérable (limitation E2EE). Un serveur qui saute la marque n'est pas couvert, comme les rotations paresseuses du [§11.1](#111-révocation-de-partage)                                                                                |
-| Clé de signature ML-DSA-65 observée par un attaquant                               | Mitigé par la rotation explicite de la paire de clés de partage ([§11.3](#113-rotation-de-la-paire-de-clés-de-partage)), qui invalide tous les partages sortants en attente et remplace les clés publiques côté serveur                                                                                                                                                                         |
+| Clé de signature ML-DSA-65 observée par un attaquant                               | Mitigé par la rotation explicite de la paire de clés de partage ([§11.3](#113-rotation-de-la-paire-de-clés-de-partage)), qui remplace les clés publiques côté serveur et garde tous les partages : les invitations encore ouvertes avec les anciennes clés sont signées de nouveau ou copiées sur place                                                                                         |
 
 ## 18. Questions ouvertes et travaux futurs
 
@@ -3020,6 +3031,7 @@ La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée suppri
 
 ## Historique des modifications
 
+- **27 :** une rotation de la paire de clés de partage garde tous les partages (§11.3) : elle lit un plan de rotation, signe de nouveau les invitations sortantes sans copie destinataire, après avoir vérifié qu'elle les avait déjà signées, et donne aux entrantes leur copie destinataire, sous le verrou de la ligne de l'utilisateur avec une couverture exacte. Rien n'est révoqué et aucune copie de partage ne change. `POST /api/v1/shares` porte le SHA-256 des clés avec lesquelles l'invitation a été faite, refusées une fois qu'une rotation les a remplacées (§11). Une invitation copiée par une rotation s'accepte sans `vxsw`. Le flux de renouvellement (rekey), `pending_rekey` et `PUT /api/v1/shares/{id}/recipient-copy` disparaissent (§5.15, §11).
 - **26 :** le rechiffrement sur place remplace le flux optionnel prévu (§11.1.1) : le propriétaire renvoie le contenu courant, rien n'est téléchargé. `pending_key_rotation` marque le contenu à rechiffrer, posé par une révocation de partage, la fin d'un lien de fichier, une rotation de collection, une rotation de clé de fichier et certaines restaurations, effacé par une version ou un rechiffrement. Un rechiffrement est une version sous une clé neuve qui ne garde aucune version : même contenu prouvé par `content_id`, une nouvelle génération, l'objet remplacé supprimé (§6.5.6.1). `files.content_id_collection_id`, gardé par un déplacement et rafraîchi par un rechiffrement (§6.5.2, §11.4.1), et `content_id` gardé avec les versions et ramené par une restauration (§19.5). `GET /api/v1/storage/files/reencryptable` liste les fichiers à renvoyer avec leur total.
 - **25 :** la fin d'un lien public marque sa cible pour une clé neuve (§5.11), comme une révocation de partage : la révocation par le propriétaire, le dernier téléchargement qu'il permet et son expiration, marquée par une tâche serveur toutes les minutes. Un lien de fichier rend le fichier périmé, un lien de collection marque la collection et tout ce qui est en dessous, corbeille comprise (§6.5.6.1, §10.2, §11.1). `public_links.owner_revoked_at` et `marked_at`. Le propriétaire peut révoquer un lien expiré, épuisé ou suspendu. Un téléchargement rendu lève la marque du lien, sauf si la clé de la cible a pris une nouvelle génération entre-temps. Un lien suspendu continue de recevoir des copies, et une suspension levée ne ramène jamais un lien révoqué par son propriétaire ou terminé.
 - **24 :** les liens publics survivent aux nouvelles clés (§5.11) : un `VXPL` par génération de la clé de la cible, dans `public_link_keys`, avec l'AAD `link_id ‖ key_generation`, et une copie pour chaque lien actif à chaque écriture qui ajoute une génération (`linkKeys` : une version d'un fichier périmé, une rotation de clé de fichier ou de collection, un déplacement). Le propriétaire garde `VXLW`, une copie de `publicLinkWrapKey` sous `publicLinkWrapCopyKey` (§4, §5.16). Une collection en attente de rotation ne prend aucun lien, un éditeur ne fait pas tourner une collection qui a un lien, et le client du propriétaire les fait tourner juste après une révocation (§11.1). Les plans de rotation listent les liens. §16.8 : les journaux et les rapports d'erreur ne contiennent que des identifiants.
