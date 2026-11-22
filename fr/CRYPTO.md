@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique
 
-> **Version du document :** 28
+> **Version du document :** 29
 >
 > **Version du protocole :** 1
 >
@@ -584,7 +584,7 @@ Pas de fragment dans l'URL. Le visiteur accède au lien via `token`, le serveur 
 
 `/share/{token}` est la page de la webapp. Elle lit le lien par l'API `GET /api/v1/links/{token}`.
 
-Les liens protégés par mot de passe sont limités à **5 tentatives par 15 minutes**. Au-delà, le serveur refuse l'accès jusqu'à la fin de la fenêtre.
+Les liens protégés par mot de passe sont limités à **5 tentatives par 15 minutes**. Au-delà, le serveur refuse l'accès jusqu'à la fin de la fenêtre. Le serveur ne sait jamais si un mot de passe est le bon : une tentative est une lecture du lien, comptée par compte ou par IP. Un visiteur qui a lu le lien une fois essaie les mots de passe hors ligne, contre Argon2id.
 
 **Copies de clé :** un lien détient un `VXPL` pour chaque génération de la clé de sa cible, dans `public_link_keys`. Les anciennes versions et les anciens fichiers restent sous les anciennes clés, donc chaque génération compte.
 
@@ -2449,15 +2449,7 @@ Aucun matériel de clés n'est partagé entre le fichier original et la copie en
 
 Le serveur **DOIT** :
 
-- Retourner `HTTP 409 Conflict` lorsqu'un client téléverse une génération ≤ `files.max_generation`, ou lorsque l'`expected_generation` envoyé ne correspond plus à `files.generation`, avec un corps de réponse identifiant le conflit :
-
-```json
-{
-  "error": "generation_conflict",
-  "current_generation": 4
-}
-```
-
+- Retourner `HTTP 409 Conflict` lorsqu'un client téléverse une génération ≤ `files.max_generation`, ou lorsque l'`expected_generation` envoyé ne correspond plus à `files.generation`, avec les générations actuelles, `generation` et `maxGeneration` : le client réessaie au-dessus de `maxGeneration`, à partir du contenu de `generation`. La création tus répond avec `maxGeneration` seulement, tout ce qu'il lui faut avant l'envoi.
 - **Ne jamais** accepter silencieusement une génération **hors ordre**. L'invariant monotone du [§6.3](#63-compteur-de-génération-de-fichier-mutabilité) est absolu.
 - Permettre au client de créer un nouveau fichier dans la même collection sans indicateur de conflit particulier. Une copie en conflit n'est qu'un nouveau fichier du point de vue du serveur.
 
@@ -2480,10 +2472,10 @@ Le **CBOR** interne de `VXSH` inclut un champ `"p"` encodant les permissions de 
 | ---- | ------ | ---------------------------------------------------------- | -------------------- |
 | 0    | `0x01` | `view` (déchiffrer et lire le contenu partagé)             | 1                    |
 | 1    | `0x02` | `edit` (téléverser et modifier le contenu du fichier)      | 1                    |
-| 2    | `0x04` | `reshare` (inviter d'autres utilisateurs sur la ressource) | 1                    |
+| 2    | `0x04` | `reshare` (inviter d'autres utilisateurs sur la ressource) | Pas encore actif     |
 | 3-31 | -      | **Réservé**                                                | 1                    |
 
-À la **version 1 du protocole**, `view` (`0x01`) est la seule capacité implémentée. Les bits `1-2` sont définis mais **pas encore actifs**. Les bits `3-31` sont réservés. Les parseurs **DOIVENT** rejeter les partages où `"p"` est absent, zéro, ou a un bit au-delà du bit 2 défini.
+À la **version 1 du protocole**, un partage porte `view` (`0x01`), et `edit` (`0x02`) en plus : un éditeur crée des sous-collections et les fait tourner ([Addenda §21](/fr/CRYPTO_ADDENDUM.md#21-création-de-sous-collection-par-un-éditeur)). `reshare` (`0x04`) est défini mais **pas encore actif**. Les bits `3-31` sont réservés. Le serveur **DOIT** refuser un partage sans `view` ou avec `reshare` (HTTP 400). Les parseurs **DOIVENT** rejeter les partages où `"p"` est absent, zéro, ou a un bit au-delà du bit 2 défini.
 
 Le destinataire **DOIT** vérifier que la valeur `"p"` déchiffrée correspond à la colonne `permission` visible par le serveur. Une discordance indique une falsification par le serveur et le partage **DOIT** être rejeté.
 
@@ -2554,21 +2546,22 @@ Flux de récupération (mot de passe oublié, phrase disponible) :
 
 ### 12.2 Réinitialisation destructive
 
-> Disponible lorsque le **mot de passe et la phrase sont tous deux perdus**. Confirmée par un code envoyé par email, affiche un **avertissement** de perte de données non ambigu, puis de manière atomique :
+> Disponible lorsque le **mot de passe et la phrase sont tous deux perdus**. Confirmée par un code envoyé par email, affiche un **avertissement** de perte de données non ambigu, puis de manière atomique, en une transaction :
 >
-> 1. Supprime **tous** les fichiers, collections, clés de collection, clés de fichier et partages de l'utilisateur.
+> 1. Supprime **tous** les fichiers, versions de fichier, collections, clés de collection, clés de fichier, partages, liens publics et envois de l'utilisateur. Leurs objets de stockage sont supprimés une fois la transaction validée.
 > 2. Incrémente `reset_generation` sur la ligne utilisateur. Cette valeur est retournée aux clients à la connexion et **DOIT** être vérifiée contre la valeur mise en cache localement par les clients avec un état local persistant (bureau, mobile, web avec « Se souvenir de moi »). Une discordance indique qu'une réinitialisation **destructive** a eu lieu sur un autre appareil et le client **DOIT** effacer tous les caches locaux et le matériel de clés. Les clients web sans sessions persistantes ne sont pas affectés. Ils repartent **de zéro** à chaque connexion.
 >
 > 3. Génère une nouvelle `masterKey`, de nouvelles paires de clés de partage, de nouveaux `VXWM`, `VXSK`, `VXRM` sous une nouvelle inscription **OPAQUE**.
+> 4. Crée une nouvelle collection racine, comme à l'inscription ([§8.1](#81-inscription)) : son `VXCK` sous la nouvelle `masterKey` à la `key_generation` 0, et son `VXCM`.
 >
-> L'utilisateur repart de zéro avec un compte **vide**.
+> L'utilisateur repart de zéro avec un compte **vide**. Si une étape échoue, rien ne change.
 
 Routes, dans l'ordre :
 
 1. `POST /api/v1/auth/recovery/destructive-reset/request { email }` : envoie le code (même réponse que le compte existe ou non).
 2. `POST /api/v1/auth/recovery/destructive-reset/verify { email, code }` -> `{ recoveryToken, userId, vxrm }`.
 3. `POST /api/v1/auth/recovery/destructive-reset/start { recoveryToken, registrationRequest }` -> `{ registrationResponse }`.
-4. `POST /api/v1/auth/recovery/destructive-reset { recoveryToken, registrationRecord, vxwm, vxrm, vxsk, sharingPublicXwing, sharingPublicSignature }`.
+4. `POST /api/v1/auth/recovery/destructive-reset { recoveryToken, registrationRecord, vxwm, vxrm, vxsk, sharingPublicXwing, sharingPublicSignature, rootCollectionId, rootVxck, rootVxcm }`.
 
 ### 12.3 Rotation de la phrase
 
@@ -2796,7 +2789,7 @@ Le matériel de clés traverse les frontières de threads exclusivement via `pos
 
 ### 16.8 Journaux et rapports d'erreur
 
-Les journaux, les breadcrumbs et les rapports d'erreur, côté client comme côté serveur, **DOIVENT** ne contenir que des identifiants (UUID, codes, compteurs). Ils **NE DOIVENT PAS** contenir de nom de fichier ou de collection, de chemin, de clé ou de blob, de mot de passe, de token de lien ni de fragment d'URL. Un message d'erreur qui peut en contenir un **DOIT** être filtré avant d'arriver au suivi d'erreurs. Un journal qui quitte l'appareil est une donnée que le serveur ou un tiers conserve.
+Les journaux, les breadcrumbs et les rapports d'erreur, côté client comme côté serveur, **DOIVENT** ne contenir que des identifiants (UUID, codes, compteurs). Une réponse d'erreur de l'API porte son code, ses `params` et les champs d'une erreur de validation, jamais un message interne. Ils **NE DOIVENT PAS** contenir de nom de fichier ou de collection, de chemin, de clé ou de blob, de mot de passe, de token de lien ni de fragment d'URL. Un message d'erreur qui peut en contenir un **DOIT** être filtré avant d'arriver au suivi d'erreurs. Un journal qui quitte l'appareil est une donnée que le serveur ou un tiers conserve.
 
 ## 17. Résumé du modèle de menace
 
@@ -2975,7 +2968,7 @@ La suppression de compte se fait en deux temps : anonymisation immédiate, puis 
    - Enregistre un hash de l'email dans une table de suppression pendant 30 jours, ce qui bloque la réinscription avec la même adresse pendant cette période.
 
 5. Tous les cookies de session actifs pour cet utilisateur deviennent invalides immédiatement.
-6. **Purge des données :** une tâche planifiée supprime les fichiers, collections, clés, partages, liens publics et objets de stockage de l'utilisateur, puis pose `purged_at`.
+6. **Purge des données :** une tâche planifiée supprime les fichiers, versions de fichier, collections, clés, partages, liens publics et objets de stockage de l'utilisateur, puis pose `purged_at`.
 7. **Purge de la ligne :** la ligne `users` anonymisée est conservée pour l'intégrité référentielle des factures et paiements, et supprimée à la fin de la durée légale de conservation des factures (10 ans).
 
 Sans `VXWM`, `VXRM` ni `registration_record`, le compte ne peut plus être ouvert ni récupéré dès l'étape 4, avant même la purge des données.
@@ -3035,6 +3028,7 @@ La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée suppri
 
 ## Historique des modifications
 
+- **29 :** une réinitialisation destructive se fait en une transaction et crée une nouvelle collection racine : la route prend `rootCollectionId`, `rootVxck` et `rootVxcm` (§12.2). La purge des données supprime aussi les versions de fichier (§12.2, §19.3). Un conflit de génération répond avec `generation` et `maxGeneration` (§11.5.4). Un partage porte `view`, et `edit` en plus, `reshare` est refusé (§11.6). Une tentative sur un lien protégé par mot de passe est une lecture du lien (§5.11). Une réponse d'erreur ne porte aucun message interne (§16.8).
 - **28 :** une invitation porte les copies de chaque génération de la clé partagée (`collectionKeys` ou `fileKeys`), vérifiées sous le verrou de la cible et stockées avec le partage en une transaction (§11). Les routes de grant `POST /api/v1/shares/{shareId}/collections` et `POST /api/v1/shares/{shareId}/files` disparaissent. Une écriture qui ajoute une génération de clé la nomme avec `keyGeneration`, la dernière plus un, et est refusée sinon (§5.8) : les rotations d'une clé de collection ou d'une clé de fichier, une révocation, un déplacement de fichier, une version avec une clé neuve et un rechiffrement (§6.5.6.1, §11.1, §11.1.1, §11.4). Une révocation ne s'applique qu'à un partage encore actif (§11.1). Les créations de partage et les rotations de collection serializables sont rejouées une fois après avoir perdu contre une transaction concurrente (§11, §11.1).
 - **27 :** une rotation de la paire de clés de partage garde tous les partages (§11.3) : elle lit un plan de rotation, signe de nouveau les invitations sortantes sans copie destinataire, après avoir vérifié qu'elle les avait déjà signées, et donne aux entrantes leur copie destinataire, sous le verrou de la ligne de l'utilisateur avec une couverture exacte. Rien n'est révoqué et aucune copie de partage ne change. `POST /api/v1/shares` porte le SHA-256 des clés avec lesquelles l'invitation a été faite, refusées une fois qu'une rotation les a remplacées (§11). Une invitation copiée par une rotation s'accepte sans `vxsw`. Le flux de renouvellement (rekey), `pending_rekey` et `PUT /api/v1/shares/{id}/recipient-copy` disparaissent (§5.15, §11).
 - **26 :** le rechiffrement sur place remplace le flux optionnel prévu (§11.1.1) : le propriétaire renvoie le contenu courant, rien n'est téléchargé. `pending_key_rotation` marque le contenu à rechiffrer, posé par une révocation de partage, la fin d'un lien de fichier, une rotation de collection, une rotation de clé de fichier et certaines restaurations, effacé par une version ou un rechiffrement. Un rechiffrement est une version sous une clé neuve qui ne garde aucune version : même contenu prouvé par `content_id`, une nouvelle génération, l'objet remplacé supprimé (§6.5.6.1). `files.content_id_collection_id`, gardé par un déplacement et rafraîchi par un rechiffrement (§6.5.2, §11.4.1), et `content_id` gardé avec les versions et ramené par une restauration (§19.5). `GET /api/v1/storage/files/reencryptable` liste les fichiers à renvoyer avec leur total.

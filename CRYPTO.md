@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-> **Document version:** 28
+> **Document version:** 29
 >
 > **Protocol version:** 1
 >
@@ -589,7 +589,7 @@ No fragment in the URL. The visitor requests the link via `token`, the server re
 
 `/share/{token}` is the webapp page. It reads the link through the API at `GET /api/v1/links/{token}`.
 
-Password-protected links are limited to **5 attempts per 15 minutes**. Beyond that the server refuses access until the window expires.
+Password-protected links are limited to **5 attempts per 15 minutes**. Beyond that the server refuses access until the window expires. The server never learns whether a password is right: an attempt is a read of the link, counted per account or per IP. A visitor who read the link once tries passwords offline, against Argon2id.
 
 **Key copies:** a link holds one `VXPL` for each generation of its target key, in `public_link_keys`. Older versions and older files stay under older keys, so every generation counts.
 
@@ -2557,15 +2557,7 @@ No key material is shared between the original file and the conflicted copy. The
 
 The server **MUST**:
 
-- Return `HTTP 409 Conflict` when a client uploads a generation ≤ `files.max_generation`, or when the `expected_generation` it sent no longer matches `files.generation`, with a response body identifying the conflict:
-
-  ```json
-  {
-    "error": "generation_conflict",
-    "current_generation": 4
-  }
-  ```
-
+- Return `HTTP 409 Conflict` when a client uploads a generation ≤ `files.max_generation`, or when the `expected_generation` it sent no longer matches `files.generation`, with the current generations, `generation` and `maxGeneration`: the client retries above `maxGeneration`, from the content of `generation`. The tus creation answers with `maxGeneration` only, all it needs before the upload.
 - **Never** silently accept an **out-of-order** generation. The monotonic invariant from [§6.3](#63-file-generation-counter-mutability) is absolute.
 - Allow the client to create a new file in the same collection without any special conflict flag. A conflicted copy is just a new file from the server's perspective.
 
@@ -2590,10 +2582,10 @@ tamper-evident binding on the sender's intent.
 | ---- | ------ | ---------------------------------------------- | ---------------- |
 | 0    | `0x01` | `view` (decrypt and read shared content)       | 1                |
 | 1    | `0x02` | `edit` (upload and modify file content)        | 1                |
-| 2    | `0x04` | `reshare` (invite other users to the resource) | 1                |
+| 2    | `0x04` | `reshare` (invite other users to the resource) | Not yet active   |
 | 3-31 | -      | **Reserved**                                   | 1                |
 
-At **protocol version 1**, `view` (`0x01`) is the only implemented capability. Bits `1-2` are defined but **not yet active**. Bits `3-31` are reserved. Parsers **MUST** reject shares where `"p"` is absent, zero, or has any bit beyond bit 2 set.
+At **protocol version 1**, a share holds `view` (`0x01`), and `edit` (`0x02`) on top of it: an editor creates sub-collections and rotates them ([Addendum §21](CRYPTO_ADDENDUM.md#21-sub-collection-creation-by-an-editor)). `reshare` (`0x04`) is defined but **not yet active**. Bits `3-31` are reserved. The server **MUST** refuse a share without `view` or with `reshare` (HTTP 400). Parsers **MUST** reject shares where `"p"` is absent, zero, or has any bit beyond bit 2 set.
 
 The recipient **MUST** verify that the decrypted `"p"` value matches the
 server-visible `permission` column. A mismatch indicates server tampering and
@@ -2673,21 +2665,22 @@ Recovery flow (forgotten password, phrase available):
 
 ### 12.2 Destructive reset
 
-> Available when **both** password and phrase are lost. Confirmed by a code sent by email, displays an unambiguous data-loss **warning**, then atomically:
+> Available when **both** password and phrase are lost. Confirmed by a code sent by email, displays an unambiguous data-loss **warning**, then atomically, in one transaction:
 >
-> 1. Deletes **all** files, collections, collection keys, file keys, and shares for the user.
+> 1. Deletes **all** files, file versions, collections, collection keys, file keys, shares, public links and uploads for the user. Their storage objects are deleted once the transaction commits.
 > 2. Increments `reset_generation` on the user row. This value is returned to clients on login and **MUST** be checked against the locally cached value by clients with persistent local state (desktop, mobile, web with "Remember me"). A mismatch indicates a **destructive** reset occurred on another device and the client **MUST** clear all local caches and key material. Web clients without persistent sessions are unaffected. They start **fresh** on every login.
 >
 > 3. Generates new `masterKey`, new sharing keypairs, new `VXWM`, `VXSK`, `VXRM` under a new **OPAQUE** registration.
+> 4. Creates a new root collection, as at registration ([§8.1](#81-registration)): its `VXCK` under the new `masterKey` at `key_generation` 0, and its `VXCM`.
 >
-> The user starts fresh with an **empty** account.
+> The user starts fresh with an **empty** account. If any step fails, nothing changes.
 
 Routes, in order:
 
 1. `POST /api/v1/auth/recovery/destructive-reset/request { email }`: sends the code (same response whether the account exists or not).
 2. `POST /api/v1/auth/recovery/destructive-reset/verify { email, code }` -> `{ recoveryToken, userId, vxrm }`.
 3. `POST /api/v1/auth/recovery/destructive-reset/start { recoveryToken, registrationRequest }` -> `{ registrationResponse }`.
-4. `POST /api/v1/auth/recovery/destructive-reset { recoveryToken, registrationRecord, vxwm, vxrm, vxsk, sharingPublicXwing, sharingPublicSignature }`.
+4. `POST /api/v1/auth/recovery/destructive-reset { recoveryToken, registrationRecord, vxwm, vxrm, vxsk, sharingPublicXwing, sharingPublicSignature, rootCollectionId, rootVxck, rootVxcm }`.
 
 ### 12.3 Phrase rotation
 
@@ -2944,7 +2937,7 @@ isolation model of the **Crypto Worker**.
 
 ### 16.8 Logs and error reports
 
-Logs, breadcrumbs and error reports, on the client and on the server, **MUST** carry identifiers only (UUIDs, codes, counters). They **MUST NOT** carry a file or collection name, a path, a key or a blob, a password, a link token or a URL fragment. An error message that can hold one of them **MUST** be filtered before it reaches the error tracker. A log that leaves the device is data the server or a third party keeps.
+Logs, breadcrumbs and error reports, on the client and on the server, **MUST** carry identifiers only (UUIDs, codes, counters). An error response of the API carries its code, its `params` and the fields of a validation error, never an internal message. They **MUST NOT** carry a file or collection name, a path, a key or a blob, a password, a link token or a URL fragment. An error message that can hold one of them **MUST** be filtered before it reaches the error tracker. A log that leaves the device is data the server or a third party keeps.
 
 ## 17. Threat Model Summary
 
@@ -3143,7 +3136,7 @@ Account deletion happens in two stages: immediate anonymization, then a purge.
    - Stores a hash of the email in a suppression table for 30 days, which blocks re-registration with the same address during that time.
 
 5. All active session cookies for this user become invalid immediately.
-6. **Data purge:** a scheduled job deletes the user's files, collections, keys, shares, public links and storage objects, then sets `purged_at`.
+6. **Data purge:** a scheduled job deletes the user's files, file versions, collections, keys, shares, public links and storage objects, then sets `purged_at`.
 7. **Row purge:** the anonymized `users` row is kept for the referential integrity of invoices and payments, and is removed at the end of the legal invoice retention period (10 years).
 
 Without `VXWM`, `VXRM` and `registration_record`, the account cannot be logged into or recovered from the moment of step 4, even before the data purge.
@@ -3203,6 +3196,7 @@ The value is capped by the plan's maximum. A scheduled job deletes versions whos
 
 ## Changelog
 
+- **29:** a destructive reset runs in one transaction and creates a new root collection: the route takes `rootCollectionId`, `rootVxck` and `rootVxcm` (§12.2). The data purge deletes the file versions too (§12.2, §19.3). A generation conflict answers with `generation` and `maxGeneration` (§11.5.4). A share holds `view`, and `edit` on top of it, `reshare` is refused (§11.6). An attempt on a password-protected link is a read of the link (§5.11). An error response carries no internal message (§16.8).
 - **28:** an invitation carries the copies of every generation of the shared key (`collectionKeys` or `fileKeys`), checked under the lock of the target and stored with the share in one transaction (§11). The grant routes `POST /api/v1/shares/{shareId}/collections` and `POST /api/v1/shares/{shareId}/files` are gone. A write adding a key generation names it with `keyGeneration`, the latest plus one, and is refused otherwise (§5.8): the rotations of a collection key or a file key, a revocation, a file move, a version with a fresh key and a re-encryption (§6.5.6.1, §11.1, §11.1.1, §11.4). A revocation applies to a share still active (§11.1). The serializable share creations and collection rotations run once more after losing to a concurrent transaction (§11, §11.1).
 - **27:** a sharing keypair rotation keeps every share (§11.3): it reads a rotation plan, signs again the outgoing invitations without a recipient copy, after checking it signed them already, and gives the incoming ones their recipient copy, under the lock of the user row with exact coverage. Nothing is revoked and no share copy changes. `POST /api/v1/shares` carries the SHA-256 of the keys the invitation was made with, refused once a rotation replaced them (§11). An invitation copied by a rotation is accepted without `vxsw`. The rekey flow, `pending_rekey` and `PUT /api/v1/shares/{id}/recipient-copy` are gone (§5.15, §11).
 - **26:** in-place re-encryption replaces the planned opt-in flow (§11.1.1): the owner uploads the current content again, nothing is downloaded. `pending_key_rotation` marks the content to re-encrypt, set by a share revocation, the end of a file link, a collection rotation, a file key rotation and some restores, cleared by a version or a re-encryption. A re-encryption is a version under a fresh key that keeps no version: same content proven by `content_id`, a new generation, the replaced object deleted (§6.5.6.1). `files.content_id_collection_id`, kept by a move and refreshed by a re-encryption (§6.5.2, §11.4.1), and `content_id` kept with the versions and brought back by a restore (§19.5). `GET /api/v1/storage/files/reencryptable` lists the files to upload again with their total.
