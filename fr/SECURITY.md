@@ -15,7 +15,6 @@ Temps de réponse attendu: **72 heures**. Nous accuserons réception, confirmero
 **Dans la portée:**
 
 - `app.vexahub.com`
-- L'API, servie sous `app.vexahub.com/api`
 - `checkout.vexahub.com`
 - Les pages de liens publics (`app.vexahub.com/share/...`)
 - Implémentation des protocoles cryptographiques

@@ -15,7 +15,6 @@ Expected response time: **72 hours**. We will acknowledge receipt, confirm the s
 **In scope:**
 
 - `app.vexahub.com`
-- The API, served under `app.vexahub.com/api`
 - `checkout.vexahub.com`
 - Public link pages (`app.vexahub.com/share/...`)
 - Cryptographic protocol implementation
