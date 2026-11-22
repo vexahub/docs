@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique
 
-> **Version du document :** 25
+> **Version du document :** 26
 >
 > **Version du protocole :** 1
 >
@@ -651,7 +651,7 @@ Quand le serveur marque :
 
 Chaque marque prend le verrou de la cible avant la ligne du lien, le verrou que prend chaque écriture qui ajoute une génération. Une écriture en cours se termine d'abord, la suivante voit la marque.
 
-La clé enveloppée dans `VXPL` est la **vraie** `fileKey` ou `collectionKey`. Un visiteur qui a gardé le `VXPL` et la `linkKey` peut encore déchiffrer le contenu écrit sous cette clé avant la fin du lien. C'est la même limitation inhérente au E2EE que la révocation de partage ([§11.1](#111-révocation-de-partage)). Le mécanisme de rechiffrement prévu en [§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation) s'appliquerait de manière identique aux liens publics.
+La clé enveloppée dans `VXPL` est la **vraie** `fileKey` ou `collectionKey`. Un visiteur qui a gardé le `VXPL` et la `linkKey` peut encore déchiffrer le contenu écrit sous cette clé avant la fin du lien. C'est la même limitation inhérente au E2EE que la révocation de partage ([§11.1](#111-révocation-de-partage)). Le rechiffrement ([§11.1.1](#1111-rechiffrement-du-contenu-après-révocation)) s'y applique aussi : la fin d'un lien de fichier marque le fichier à rechiffrer.
 
 **Modération :** le serveur peut désactiver un lien signalé. Il pose `moderated_at` et `revoked_at` et enregistre le `moderation_case_id`, si bien que tout contrôle d'accès refuse le lien. Une suspension ne marque rien, puisqu'elle peut être levée : le lien continue de recevoir une copie de chaque nouvelle génération de la clé de sa cible, donc une suspension levée le retrouve entier. Annuler la décision le rétablit, sauf si son propriétaire l'a révoqué ou si sa cible a été marquée entre-temps (`owner_revoked_at` ou `marked_at` posé). Le serveur ne voit jamais le contenu derrière le lien, sauf si le signalement lui fournit la clé du lien (par exemple une URL complète sans mot de passe avec son fragment `#key=`). La modération agit sur l'accès, pas sur le chiffrement.
 
@@ -913,6 +913,8 @@ Propriétés :
 >
 > Dériver `contentIdKey` de `collectionKey` éliminerait cette fuite mais nécessiterait de télécharger et de re-hacher le texte clair complet de chaque fichier à chaque révocation. Ce qui est impraticable pour les grandes collections et constitue une pénalité UX sévère qui l'emporte sur le gain marginal de confidentialité.
 
+**Collection d'un `content_id` :** le serveur garde avec lui `content_id_collection_id`, la collection dont la `contentIdKey` l'a calculé. Un déplacement garde les deux ([§11.4.1](#1141-sémantique-de-content_id-lors-des-déplacements)), un rechiffrement le recalcule pour la collection courante ([§11.1.1](#1111-rechiffrement-du-contenu-après-révocation)). Les routes de fichier le renvoient sous le nom `contentIdCollectionId`, au propriétaire seulement.
+
 Le **client** transmet `content_id` au **serveur** en clair dans le cadre des requêtes de recherche et de création d'envoi. Le **serveur** le stocke indexé **par utilisateur** mais **ne peut pas** l'utiliser pour une quelconque **analyse inter-utilisateurs**.
 
 ### 6.5.3 Pas de déduplication inter-utilisateurs
@@ -1000,13 +1002,14 @@ Un fichier est **périmé** quand un de ses partages de fichier a été révoqu�
 
 - **Nouveau fichier :** `vxfk` est **obligatoire** (HTTP 400 sinon).
 - **Nouvelle version d'un fichier périmé :** `vxfk` est **obligatoire**, une `fileKey` neuve sous la dernière clé de collection (HTTP 409 sinon, avec la dernière génération). L'ancienne clé reste connue de ceux avec qui la collection ou le fichier était partagé, donc le nouveau contenu ne passe jamais sous elle.
+- **Rechiffrement** du contenu courant ([§11.1.1](#1111-rechiffrement-du-contenu-après-révocation)) : `vxfk` est **requis** (HTTP 400 sinon), une `fileKey` neuve, comme pour un fichier périmé.
 - **Nouvelle version de tout autre fichier :** `vxfk` est **refusé** (HTTP 400) : une nouvelle version garde la clé du fichier, que ses partages et ses liens détiennent déjà. Une version qui garde la clé est refusée (HTTP 409, avec la dernière génération) si un partage de fichier du fichier a été révoqué ou qu'un lien public du fichier a pris fin entre-temps : le client la renvoie avec une clé neuve.
 
 `shareKeys` accompagne le `vxfk` d'un fichier périmé : la `fileKey` neuve encapsulée sous la `shareFileKeyWrapKey` de chaque partage actif du fichier, en attente ou accepté, depuis son `senderVxsw` ([§5.15](#515-vxsw---copie-de-la-clé-dencapsulation-de-partage)). Le serveur le vérifie sous le verrou du fichier : il **DOIT** couvrir chaque partage actif du fichier exactement une fois et rien d'autre (HTTP 409 sinon, avec les partages attendus : le client relit le plan de rotation du fichier, [§11.1](#111-révocation-de-partage)). Les partages de fichier gardent leur accès à travers la version. Les ids de partage viennent de `GET /api/v1/shares/files/{file_id}/rotation-plan`, vide pour un fichier sans partage de fichier.
 
 `linkKeys` l'accompagne aussi : la `fileKey` neuve encapsulée sous la `publicLinkWrapKey` de chaque lien public actif du fichier, depuis son `ownerVxlw` ([§5.16](#516-vxlw---copie-de-la-clé-dencapsulation-de-lien)), à la nouvelle génération. Le serveur le vérifie sous le même verrou : il **DOIT** couvrir chaque lien actif du fichier exactement une fois (HTTP 409 sinon, avec les liens attendus). Les liens continuent de servir à travers la version ([§5.11](#511-vxpl---blob-de-lien-public)). Le plan de rotation du fichier les liste.
 
-`collectionKeyGeneration` accompagne chaque `vxfk`. Le serveur la vérifie sous le verrou de la collection : elle **DOIT** être la dernière génération (HTTP 409 sinon, avec la dernière génération : le client relit les clés de la collection et réencapsule). Une collection en attente de rotation de clé ne prend ni nouveau fichier ni nouvelle version (HTTP 409, [§11.1](#111-révocation-de-partage)). La création tus applique les mêmes règles en amont : `vxfk` dans ses métadonnées seulement pour un nouveau fichier ou un fichier périmé (HTTP 400 sinon), aucun envoi dans une collection en attente de rotation (HTTP 409). `shareKeys` n'est envoyé qu'au commit.
+`collectionKeyGeneration` accompagne chaque `vxfk`. Le serveur la vérifie sous le verrou de la collection : elle **DOIT** être la dernière génération (HTTP 409 sinon, avec la dernière génération : le client relit les clés de la collection et réencapsule). Une collection en attente de rotation de clé ne prend ni nouveau fichier ni nouvelle version (HTTP 409, [§11.1](#111-révocation-de-partage)). La création tus applique les mêmes règles en amont : `vxfk` dans ses métadonnées seulement pour un nouveau fichier, un fichier périmé ou un rechiffrement (HTTP 400 sinon), aucun envoi dans une collection en attente de rotation (HTTP 409). `shareKeys` n'est envoyé qu'au commit.
 
 Le verrou pris est celui de la collection où se trouve le fichier, avant la lecture du fichier : ni déplacement ni rotation de clé du fichier ne peut passer entre les deux. Une version **DOIT** être refusée (HTTP 409) si le fichier a quitté la collection indiquée par l'envoi avant le verrou : le client relit le fichier.
 
@@ -1016,7 +1019,8 @@ Le endpoint de commit effectue les opérations suivantes de manière atomique au
 2. Vérifie le quota de stockage.
 3. **Nouveau fichier :** crée la ligne `files`, incluant `vxfm`, avec `content_key_generation = 0`, et la ligne `file_keys` avec `vxfk`, `key_generation = 0` et `collection_key_generation` posée à la dernière génération de clé de collection.
 4. **Nouvelle version :** conserve la génération précédente comme version ([§19.5](#195-versions-de-fichiers)), puis met à jour la ligne `files` (incrémentation de génération, `vxfm`), pose `content_key_generation` à la dernière `key_generation` de `file_keys`, et `pending_key_rotation` et `key_rotation_pending` à `FALSE`. Pour un fichier périmé, la ligne `file_keys` avec le nouveau `vxfk` vient d'abord, à la `key_generation` suivante et avec la dernière `collection_key_generation`, avec les lignes `share_file_keys` de `shareKeys` et les lignes `public_link_keys` de `linkKeys` à la même génération, et le contenu est sous elle. Sinon aucune ligne `file_keys` n'est créée.
-5. Marque la ligne `tus_uploads` comme terminée.
+5. **Rechiffrement :** comme une nouvelle version avec une clé neuve, sauf que la génération précédente n'est pas conservée : son objet est supprimé après le commit ([§11.1.1](#1111-rechiffrement-du-contenu-après-révocation)).
+6. Marque la ligne `tus_uploads` comme terminée.
 
 **Invariant :** `files.vxfm` et le contenu courant sont toujours chiffrés sous la `fileKey` à `files.content_key_generation`. Les routes de fichier renvoient deux clés : `vxfk`, le `VXFK` à `content_key_generation`, pour lire le contenu et `files.vxfm`, et `latestVxfk`, le `VXFK` à la dernière `key_generation`, pour chiffrer une nouvelle version. Elles ne diffèrent qu'après une rotation de clé ([§11.1](#111-révocation-de-partage)).
 
@@ -1176,6 +1180,7 @@ CREATE TABLE tus_uploads (
     file_id       UUID,                       -- NULL jusqu'au commit
     collection_id UUID NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
     content_id    BYTEA NOT NULL,             -- 32 octets BLAKE3_keyed
+    reencrypt_content_id BYTEA,               -- §11.1.1 : content_id du contenu rechiffré
     generation    INTEGER NOT NULL,
     upload_length BIGINT NOT NULL,            -- octets de texte chiffré
     upload_offset BIGINT NOT NULL DEFAULT 0,
@@ -1791,10 +1796,11 @@ CREATE TABLE files (
     generation              INTEGER NOT NULL DEFAULT 0,
     max_generation          INTEGER NOT NULL DEFAULT 0, -- plus haute génération jamais validée, ne recule jamais
     content_id              BYTEA,
+    content_id_collection_id UUID,                      -- la collection dont la contentIdKey a calculé content_id (§6.5.2)
     upload_length           BIGINT,
     crypto_version          SMALLINT NOT NULL DEFAULT 1,
     content_key_generation  INTEGER NOT NULL DEFAULT 0,
-    pending_key_rotation    BOOLEAN NOT NULL DEFAULT FALSE,
+    pending_key_rotation    BOOLEAN NOT NULL DEFAULT FALSE, -- le contenu est à rechiffrer (§11.1.1)
     key_rotation_pending    BOOLEAN NOT NULL DEFAULT FALSE, -- un partage de fichier révoqué depuis sa dernière clé (§11.1)
     trashed_at              TIMESTAMPTZ,
     trash_root_id           UUID,
@@ -1804,12 +1810,13 @@ CREATE TABLE files (
 
 CREATE INDEX ON files (user_id, collection_id) WHERE trashed_at IS NULL;
 CREATE INDEX ON files (collection_id) WHERE pending_key_rotation = TRUE;
+CREATE INDEX ON files (user_id, id) WHERE pending_key_rotation = TRUE AND trashed_at IS NULL;
 CREATE INDEX ON files (user_id) WHERE trashed_at IS NOT NULL;
 ```
 
 `content_key_generation` est la `file_keys.key_generation` sous laquelle le contenu courant et `files.vxfm` sont chiffrés ([§6.5.6.1](#6561-commit)). Une rotation de clé ne la modifie pas.
 
-`key_rotation_pending` rend le fichier périmé ([§6.5.6.1](#6561-commit)) : sa prochaine version prend une `fileKey` neuve. Une révocation de partage de fichier et la fin d'un lien public du fichier ([§5.11](#511-vxpl---blob-de-lien-public)) le posent, une rotation de clé de fichier ou une version avec une clé neuve l'efface. `pending_key_rotation` est le marqueur de rechiffrement du [§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation).
+`key_rotation_pending` rend le fichier périmé ([§6.5.6.1](#6561-commit)) : sa prochaine version prend une `fileKey` neuve. Une révocation de partage de fichier et la fin d'un lien public du fichier ([§5.11](#511-vxpl---blob-de-lien-public)) le posent, une rotation de clé de fichier ou une version avec une clé neuve l'efface. `pending_key_rotation` marque le contenu à rechiffrer ([§11.1.1](#1111-rechiffrement-du-contenu-après-révocation)).
 
 `trashed_at` existe sur `files` et `collections` pour une expérience de corbeille symétrique. Voir [§19.1](#191-suppression-de-fichier) (**corbeille de fichiers**) et [§19.2](#192-suppression-de-collection) (**corbeille de collections**).
 
@@ -1823,6 +1830,8 @@ CREATE TABLE file_versions (
     storage_bytes   BIGINT NOT NULL,
     original_bytes  BIGINT,
     vxfm            BYTEA NOT NULL,           -- VXFM de cette génération
+    content_id      BYTEA,                    -- restauré avec la version (§11.1.1)
+    content_id_collection_id UUID,
     content_key_generation INTEGER NOT NULL DEFAULT 0, -- génération de clé de ce contenu et de ce VXFM
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at      TIMESTAMPTZ               -- NULL = conservée sans limite
@@ -1896,7 +1905,7 @@ CREATE INDEX file_keys_collection_gen
 
 > **Générations de la clé d'une collection :** `collection_keys` ne contient que des blobs `VXCK`, `child_collection_keys` les `VXCC` de chaque sous-collection. Les générations d'une collection sont celles de ses lignes `VXCK` du propriétaire et de ses lignes `VXCC` réunies : une génération est dans les deux une fois que le propriétaire a ajouté son `VXCK`. Les routes de clés de collection renvoient les deux, de la plus récente à la plus ancienne : `keys` (`VXCK`) et `childKeys` (`VXCC`, avec `parentKeyGeneration`).
 >
-> **Plusieurs lignes `file_keys` par fichier :** ce modèle permet à plusieurs lignes `file_keys` de coexister pour le même `file_id` pendant la fenêtre entre la rotation de clé et le rechiffrement du contenu. L'index `key_generation DESC` permet la recherche de la « clé la plus récente ». Le GC côté serveur des anciennes lignes est décrit au [§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation).
+> **Plusieurs lignes `file_keys` par fichier :** ce modèle permet à plusieurs lignes `file_keys` de coexister pour le même `file_id` pendant la fenêtre entre la rotation de clé et le rechiffrement du contenu. L'index `key_generation DESC` permet la recherche de la « clé la plus récente ». Les anciennes lignes restent : les versions de l'historique et les partages lisent encore avec elles ([§11.1.1](#1111-rechiffrement-du-contenu-après-révocation)).
 >
 > **Aucun `VXFM` dans `file_keys` :** le `VXFM` est toujours `files.vxfm` (ou `file_versions.vxfm` pour une version), sous la clé du contenu ([§6.5.6.1](#6561-commit)).
 
@@ -2079,7 +2088,7 @@ Les destinataires restants gardent leur `shareWrapKey` : le destinataire révoqu
 
    Rien n'est gardé si l'une d'elles est refusée.
 
-8. Rien d'autre n'est écrit : les `VXFK` des fichiers restent sous les anciennes générations, et les `VXCC` sous une collection qui a tourné restent sous l'ancienne génération de la parente. Le contenu des fichiers **n'est PAS rechiffré par défaut** ([§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation)) et le compteur de `generation` du fichier **n'est PAS** incrémenté (il suit les modifications utilisateur, **pas les rotations de clés**).
+8. Rien d'autre n'est écrit : les `VXFK` des fichiers restent sous les anciennes générations, et les `VXCC` sous une collection qui a tourné restent sous l'ancienne génération de la parente. Chaque rotation marque les fichiers de sa collection `pending_key_rotation = TRUE` : leur contenu est rechiffré quand le propriétaire le renvoie ([§11.1.1](#1111-rechiffrement-du-contenu-après-révocation)). Le compteur de `generation` du fichier **n'est PAS** incrémenté (il suit les modifications utilisateur, **pas les rotations de clés**).
 
 **Collections en attente de rotation :** une collection avec `key_rotation_pending = TRUE` garde une clé qu'un destinataire révoqué, ou les visiteurs d'un lien de collection terminé ([§5.11](#511-vxpl---blob-de-lien-public)), peuvent connaître, donc le serveur **DOIT** y refuser (HTTP 409, avec les collections à faire tourner d'abord, de haut en bas) :
 
@@ -2106,10 +2115,10 @@ Le serveur le vérifie sous le verrou de la collection, avec un verrou sur sa li
 1. L'expéditeur appelle `POST /api/v1/shares/{share_id}/revoke` avec `{ rotations: [] }` (HTTP 409 avec une rotation). Dans une transaction, sous le verrou du fichier, le serveur :
    - définit `revoked_at = now()`. Le **destinataire révoqué obtient immédiatement un 403** ;
    - supprime les lignes du partage dans `share_file_keys` ;
-   - marque le fichier `key_rotation_pending = TRUE`.
+   - marque le fichier `key_rotation_pending = TRUE` et `pending_key_rotation = TRUE`.
 2. Le fichier est alors périmé ([§6.5.6.1](#6561-commit)) : sa prochaine version **DOIT** venir avec une `fileKey` neuve et une copie pour chaque partage de fichier restant (`shareKeys`). Une version qui garde la clé est refusée (HTTP 409), y compris une version déjà en cours quand la révocation est validée. D'ici là, le contenu et `files.vxfm` restent sous la clé que connaît le destinataire révoqué.
 3. Le propriétaire **PEUT** faire tourner la clé du fichier plus tôt, sans nouvelle version (rotation d'une clé de fichier, ci-dessous).
-4. Le contenu du fichier **n'est PAS rechiffré par défaut** ([§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation)) et le compteur de `generation` du fichier **n'est PAS** incrémenté.
+4. Le contenu écrit avant est rechiffré quand le propriétaire renvoie le fichier ([§11.1.1](#1111-rechiffrement-du-contenu-après-révocation)). La révocation elle-même **n'incrémente PAS** le compteur de `generation` du fichier.
 
 **Rotation d'une clé de fichier :** une génération de plus de la `fileKey`, sans nouvelle version et sans nouvelle invitation. Le propriétaire peut faire tourner n'importe lequel de ses fichiers, périmé ou non.
 
@@ -2121,7 +2130,7 @@ Le serveur le vérifie sous le verrou de la collection, avec un verrou sur sa li
    - **DOIT** refuser `shareKeys` s'il ne couvre pas chaque partage actif du fichier exactement une fois (HTTP 409, avec les partages attendus), et `linkKeys` s'il ne couvre pas chaque lien actif du fichier exactement une fois (HTTP 409, avec les liens attendus) : le client relit le plan ;
    - ajoute la ligne `file_keys` à la nouvelle `key_generation`, avec la dernière `collection_key_generation`, et les lignes `share_file_keys` et `public_link_keys` à la même génération ;
    - pose `pending_key_rotation = TRUE` et `key_rotation_pending = FALSE`.
-5. `files.vxfm` et le contenu restent sous la clé du contenu jusqu'à la prochaine version ([§6.5.6.1](#6561-commit)). Les anciennes lignes `VXFK` à `key_generation` <= `M` sont conservées aux côtés de la nouvelle à `M+1`, pour le propriétaire, les partages de fichier et les liens. Le compteur de `generation` du fichier **n'est PAS** incrémenté. Le rechiffrement n'a lieu que si le propriétaire **opte pour cette option** ([§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation)).
+5. `files.vxfm` et le contenu restent sous la clé du contenu jusqu'à la prochaine version ([§6.5.6.1](#6561-commit)). Les anciennes lignes `VXFK` à `key_generation` <= `M` sont conservées aux côtés de la nouvelle à `M+1`, pour le propriétaire, les partages de fichier et les liens. Le compteur de `generation` du fichier **n'est PAS** incrémenté. Le contenu est rechiffré quand le propriétaire renvoie le fichier ([§11.1.1](#1111-rechiffrement-du-contenu-après-révocation)).
 
 **Verrous d'un fichier :** chaque écriture qui ajoute une génération de `fileKey` prend le verrou de la collection où se trouve le fichier, puis celui du fichier : une version, une rotation, un déplacement (les deux collections, dans l'ordre trié, [§11.4](#114-déplacement-de-fichier-entre-collections)). Une révocation, un refus, un grant, un nouveau partage et un nouveau lien public d'un fichier ne prennent que le verrou du fichier. Ainsi aucune copie n'est écrite pour un partage révoqué ou refusé, aucun partage ni lien n'est ajouté pendant qu'une nouvelle clé est vérifiée contre eux, et ni version ni rotation ne passe contre un fichier qui s'en va.
 
@@ -2143,13 +2152,13 @@ Le serveur le vérifie sous le verrou de la collection, avec un verrou sur sa li
 | Aucun nouveau contenu sous une clé que connaissent les visiteurs d'un lien public terminé                        | ✅ Sa cible est marquée comme après une révocation de partage, dans la minute pour une expiration                                             |
 | Un lien public suspendu survit aux nouvelles clés                                                                | ✅ Il continue de recevoir des copies, une suspension ne marque rien                                                                          |
 | Une suspension levée ne ramène jamais un lien révoqué par son propriétaire ou terminé                            | ✅ Rétabli seulement sans `owner_revoked_at` ni `marked_at`                                                                                   |
-| Le contenu des fichiers est rechiffré par défaut                                                                 | ❌ Désactivé par défaut, opt-in via ([§11.1.1](#1111-rechiffrement-optionnel-du-contenu-après-révocation))                                    |
-| Le contenu des fichiers est rechiffré lors de l'opt-in                                                           | ✅ Progressif, pausable par l'utilisateur, avec interface de progression                                                                      |
+| Le contenu des fichiers est rechiffré après une révocation                                                       | ⚠️ Quand le propriétaire renvoie le fichier, les fichiers à renvoyer sont listés ([§11.1.1](#1111-rechiffrement-du-contenu-après-révocation)) |
+| Un rechiffrement ne réutilise jamais un nonce ni une clé connue                                                  | ✅ Une nouvelle génération et une `fileKey` neuve, comme une version d'un fichier périmé                                                      |
 | Révocation au niveau fichier sans affecter les autres fichiers de la collection                                  | ✅ Seul le fichier est marqué, sa clé tourne avec sa prochaine version ou sa propre rotation                                                  |
 | Un partage de collection refusé ne laisse aucune clé à son destinataire                                          | ✅ `VXSH` ne porte aucune clé de collection, les copies ne sont servies qu'une fois accepté et sont supprimées au refus                       |
 | Un partage de fichier refusé ne laisse aucune clé à son destinataire                                             | ✅ `VXSH` ne porte aucune clé de fichier, les copies ne sont servies qu'une fois accepté et sont supprimées au refus                          |
 | L'utilisateur révoqué ne peut pas déchiffrer le contenu déjà téléchargé                                          | ❌ Limitation inhérente à l'E2EE                                                                                                              |
-| L'utilisateur révoqué ne peut pas déchiffrer une exfiltration en stockage froid s'il a conservé d'anciennes clés | ⚠️ Uniquement si le rechiffrement est activé et terminé. Il en va de même pour un lien public supprimé ou expiré                              |
+| L'utilisateur révoqué ne peut pas déchiffrer une exfiltration en stockage froid s'il a conservé d'anciennes clés | ⚠️ Seulement pour les fichiers renvoyés, une fois leurs anciennes versions expirées. Il en va de même pour un lien public terminé             |
 | Le compteur de `generation` du fichier est préservé lors de la rotation de clé                                   | ✅ La génération est un compteur de mutation, pas un compteur de rotation                                                                     |
 
 **Mesures de protection obligatoires :**
@@ -2158,95 +2167,46 @@ Le serveur le vérifie sous le verrou de la collection, avec un verrou sur sa li
 - Le client **DOIT** supprimer les clés mises en cache pour les partages révoqués à la prochaine synchronisation.
 - L'interface de l'expéditeur **DOIT** indiquer que la révocation ne peut pas annuler les accès antérieurs, et les clients **DOIVENT** montrer une collection en attente de rotation comme telle et la faire tourner avant d'y écrire.
 
-#### 11.1.1 Rechiffrement optionnel du contenu après révocation
+#### 11.1.1 Rechiffrement du contenu après révocation
 
-> Prévu, non implémenté dans la version 1 du protocole
+Une révocation protège le contenu écrit après elle. Le contenu écrit avant reste sous des clés qu'un destinataire révoqué, ou les visiteurs d'un lien public terminé, ont pu garder : seul le serveur les en tient à l'écart ([§11.1](#111-révocation-de-partage)). Un rechiffrement le place sous une clé neuve : le propriétaire renvoie le fichier. Rien n'est téléchargé : le serveur n'a jamais le clair, donc seul le client peut le chiffrer de nouveau, quand l'utilisateur lui redonne le fichier.
 
-> Depuis la version 20, une rotation de collection ne donne aucune nouvelle `fileKey` et ne marque aucun fichier : les fichiers à rechiffrer après elle sont ses fichiers périmés ([§6.5.6.1](#6561-commit)), et `pending_key_rotation` n'est posé que par une rotation de clé de fichier. Le flux ci-dessous sera aligné sur ce point quand il sera implémenté.
+**Fichiers à rechiffrer :** `files.pending_key_rotation` marque un fichier dont le contenu est sous une clé qui peut être connue. Le serveur le pose :
 
-Le comportement par défaut lors d'une révocation est **la rotation des clés uniquement** : les valeurs de `collectionKey` et de `fileKey` par fichier sont renouvelées, mais le contenu des fichiers et `files.vxfm` restent chiffrés sous l'ancienne `fileKey` jusqu'à la prochaine version. Le propriétaire conserve les anciennes lignes `VXFK` pour pouvoir lire le contenu existant ; les destinataires révoqués perdent l'accès au niveau de l'**API**.
+- à la révocation d'un partage de fichier et à la fin d'un lien public du fichier, avec `key_rotation_pending` ([§11.1](#111-révocation-de-partage), [§5.11](#511-vxpl---blob-de-lien-public)) ;
+- à la rotation d'une collection, pour chaque fichier de la collection : leur `fileKey` étaient encapsulées sous l'ancienne clé de collection ;
+- à la rotation d'une clé de fichier : le contenu reste sous la clé précédente ;
+- à la restauration d'une version, quand le contenu restauré est sous une clé plus ancienne que la dernière ou que le fichier était marqué ([§19.5](#195-versions-de-fichiers)).
 
-Cela protège contre une future compromission du serveur, à la **condition forte** que le destinataire révoqué n'ait pas conservé une copie locale de l'ancienne clé. Les destinataires ayant gardé des copies locales de fichiers ne peuvent pas voir ces copies invalidées rétroactivement ; il s'agit d'une limitation inhérente à l'**E2EE**.
+Une version et un rechiffrement l'effacent, un déplacement le garde.
 
-Le propriétaire **PEUT** opter pour un rechiffrement complet du contenu via un paramètre :
+**Rechiffrement :** une version du contenu courant sous une `fileKey` neuve, qui ne garde aucune version. Le client envoie `reencryptContentId` avec un envoi direct, ou `reencrypt_content_id` dans les métadonnées tus : le `content_id` du contenu courant, calculé sous la `contentIdKey` de `content_id_collection_id` ([§6.5.2](#652-identifiant-de-contenu-par-utilisateur)). Sous les verrous d'une version ([§11.1](#111-révocation-de-partage)), le serveur **DOIT** refuser :
 
-> **Rechiffrer les fichiers après révocation d'un partage** _(désactivé par défaut)_
->
-> Lorsque vous révoquez un accès, rechiffrez également le contenu des fichiers sous de nouvelles clés. Cela signifie qu'une _éventuelle_ compromission de nos serveurs ne pourrait pas exposer d'anciens contenus aux personnes avec qui vous avez précédemment partagé, même si elles ont conservé une copie de leur ancienne clé de chiffrement. Cela nécessite de re-téléverser les fichiers concernés et peut prendre du temps pour les grandes collections.
+- un fichier qui n'existe pas (HTTP 404, HTTP 400 à la création tus) ;
+- une `generation` qui ne dépasse pas `max_generation`, et une génération courante autre que celle attendue (HTTP 409, [§6.5.6.1](#6561-commit)) ;
+- un `reencryptContentId` qui n'est pas le `content_id` du contenu courant (HTTP 409) ;
+- un fichier ni marqué ni périmé (HTTP 409) ;
+- un rechiffrement sans `vxfk` neuf (HTTP 400). La clé neuve suit les règles d'une version d'un fichier périmé : sous la dernière clé de collection, avec une copie pour chaque partage de fichier actif (`shareKeys`) et chaque lien actif (`linkKeys`).
 
-#### Points de déclenchement
+Dans la même transaction, le serveur remplace le contenu sur place : la nouvelle `generation`, le nouveau texte chiffré et le nouveau `VXFM`, `content_key_generation` à la clé neuve, et le nouveau `content_id` avec `content_id_collection_id` posé à la collection courante. Il efface `pending_key_rotation` et `key_rotation_pending`, n'écrit aucune ligne dans `file_versions`, et supprime l'objet remplacé après le commit. Une restauration ou une version validée entre-temps le fait échouer (HTTP 409). Le quota ne compte que la différence de taille.
 
-Le rechiffrement opt-in peut être activé de deux manières :
+Une nouvelle génération, comme pour toute version : aucun nonce n'est réutilisé, quelle que soit la clé envoyée par le client ([§6.3](#63-compteur-de-génération-de-fichier-mutabilité)). Une clé neuve : le rechiffrement protège même quand la dernière clé est celle qui peut être connue. Le serveur apprend que les deux `content_id` de la requête appartiennent au même fichier, ce qu'il sait déjà.
 
-1. **Paramètre ACTIVÉ (global au compte, persistant) :** dans les paramètres utilisateur sous _Sécurité -> Rechiffrer les fichiers après révocation d'un partage_. Lorsqu'il est activé, chaque future révocation planifie automatiquement le rechiffrement pour la collection concernée. Désactivé par défaut.
+**Fichiers à renvoyer :** `GET /api/v1/storage/files/reencryptable?cursor=&limit=` liste les fichiers marqués du compte hors corbeille, page par page, chacun avec son `contentId` (hex), son `contentIdCollectionId`, ses tailles, et son `VXFM` avec le `VXFK` pour le lire. La première page porte le total, `{ files, bytes }`. La liste des fichiers d'une collection porte `reencryptable`, et le détail d'un fichier `reencryptable`, `contentId` et `contentIdCollectionId`, pour le propriétaire seulement.
 
-2. **Déclenchement manuel par collection (ponctuel) :** indépendamment du paramètre, la notification par collection _« N fichiers utilisent d'anciennes clés de chiffrement. [Rechiffrer maintenant] »_ déclenche le rechiffrement pour cette collection uniquement. Cela fonctionne que le paramètre global soit activé ou non.
+**Client :**
 
-Le paramètre contrôle le comportement automatique ; le déclenchement manuel est toujours disponible.
+- Le client **DEVRAIT** signaler les fichiers à rechiffrer dans ses listes, et proposer un seul endroit qui les liste avec leur total, où l'utilisateur dépose des fichiers ou un dossier. Pour chaque fichier déposé dont la longueur chiffrée ([§6.5.5](#655-intégration-tus)) est l'`uploadLength` d'un fichier de la liste, il calcule `content_id` sous la `contentIdKey` du `contentIdCollectionId` de chacun de ces candidats, et rechiffre le fichier qui correspond. Un fichier déposé qui ne correspond à rien est laissé de côté.
+- Quand l'utilisateur renvoie le contenu courant d'un fichier marqué, le client **DEVRAIT** le rechiffrer plutôt que créer une nouvelle version. Pour un fichier non marqué, il **DEVRAIT** sauter l'envoi. La recherche d'envoi ([§6.5.6](#656-flux-de-recherche-denvoi)) trouve le contenu d'un rechiffrement déjà validé : le client rechiffre quand même.
+- Après une révocation, le client **DEVRAIT** indiquer au propriétaire combien de fichiers sont à renvoyer.
+- Un fichier dans une collection en attente de rotation est refusé (HTTP 409) : la collection tourne d'abord.
 
-#### Comportement selon la taille des fichiers
+**Limites :**
 
-Le rechiffrement s'applique à **tous les fichiers marqués `pending_key_rotation = TRUE`, quelle que soit leur taille**. Un fichier de 10 Go est rechiffré de la même manière qu'un fichier de 10 Ko : téléchargement, déchiffrement sous l'ancienne `fileKey`, rechiffrement sous la nouvelle `fileKey`, téléversement via tus.
-
-Pour les fichiers volumineux, c'est coûteux. Un fichier de **10 Go** implique de télécharger **10 Go** et de téléverser **10 Go**. Le flux de rechiffrement progressif gère cela :
-
-- La concurrence est limitée à 1 fichier à la fois, de sorte qu'un fichier volumineux ne bloque pas indéfiniment les autres (les autres fichiers attendent leur tour, mais chacun se termine avant que le suivant ne commence).
-- L'utilisateur peut mettre en pause à tout moment. Une pause en cours de fichier laisse ce fichier dans l'état `pending_key_rotation = TRUE` ; la reprise redémarre ce fichier depuis le début (l'état partiel tus pour les téléversements de rechiffrement n'est pas préservé entre les pauses).
-- Le rechiffrement respecte la même planification en priorité basse que la synchronisation en arrière-plan : il ne s'exécute que lorsque le client est en ligne et que l'utilisateur n'interagit pas activement.
-
-L'interface de progression **DOIT** afficher à la fois le nombre de fichiers et la progression en octets du fichier courant pour les fichiers volumineux :
-
-> Rechiffrement de la collection : 47 / 1000 fichiers (en cours : rapport.pdf, 2,3 Go / 5,1 Go)
-
-Cela fixe des attentes correctes : l'utilisateur comprend qu'un fichier volumineux est en cours et peut mettre en pause s'il a besoin de récupérer sa bande passante.
-
-#### Comportement lorsque le paramètre est DÉSACTIVÉ (par défaut)
-
-- Les clés sont renouvelées, le contenu et `files.vxfm` restent sous les anciennes clés.
-- `pending_key_rotation = TRUE` est défini sur les fichiers concernés mais aucun travail côté client n'est déclenché.
-- Le propriétaire voit une notification par collection : _« N fichiers utilisent d'anciennes clés de chiffrement. »_ avec une action _« Rechiffrer maintenant »_ intégrée.
-- L'indicateur reste jusqu'à ce qu'il soit effacé explicitement (par fichier ou par collection entière), ou jusqu'à ce que le propriétaire active le paramètre.
-
-#### Comportement lorsque le paramètre est ACTIVÉ
-
-- Après une révocation, le client planifie le rechiffrement progressif de tous les fichiers `pending_key_rotation = TRUE` de la collection.
-- Le rechiffrement s'exécute en arrière-plan lorsque le client est en ligne et inactif. **La concurrence est limitée à 1 fichier à la fois** pour éviter de saturer la bande passante de téléversement de l'utilisateur.
-- Un élément d'interface persistant affiche la progression : `« Rechiffrement de la collection : 47 / 1000 fichiers »`.
-- L'utilisateur **PEUT** mettre en pause et reprendre à tout moment. La pause laisse les fichiers concernés dans l'état `pending_key_rotation = TRUE` ; la reprise continue à partir du fichier suivant.
-
-#### Procédure de rechiffrement pour un seul fichier
-
-Soit `M` la `key_generation` actuelle (la plus haute) dans `file_keys` pour ce `file_id`, et `R` la `key_generation` sous laquelle le contenu du fichier est actuellement chiffré. Après une révocation, `R < M`. Après plusieurs révocations sans exécution de rechiffrement, `R` peut être plusieurs générations derrière `M`. Le booléen signale seulement « ce fichier n'est pas encore à `M` » ; la valeur exacte de `R` est déterminée au moment du rechiffrement en inspectant le texte chiffré ou en la suivant côté serveur comme champ de métadonnées optionnel.
-
-1. Le client lit les lignes `file_keys` pour ce `file_id`. La clé actuelle est à `key_generation = M`. Le contenu du fichier est chiffré sous la fileKey à `key_generation = R`, avec `R <= M`.
-2. Le client désencapsule les deux fileKeys : celle à `R` (utilisée pour déchiffrer le contenu existant) et celle à `M` (utilisée pour chiffrer le contenu rechargé).
-3. Le client télécharge le texte chiffré existant et le déchiffre en utilisant `fileContentKey_R = HKDF(fileKey_R, ...)` avec la `generation` de fichier existante.
-4. Le client rechiffre sous `fileContentKey_M = HKDF(fileKey_M, ...)`. **Le compteur de `generation` du fichier ne change PAS**! La nouvelle `fileContentKey` fournit un espace de nonces frais, de sorte que les nonces de segments sont distincts du chiffrement précédent même au même `(generation, segment_index)`.
-5. Le client téléverse via le flux tus standard. Les métadonnées du téléversement signalent qu'il s'agit d'un re-téléversement de rotation de clé, pas d'une modification utilisateur.
-6. À la validation, le serveur procède atomiquement : remplace le texte chiffré au chemin de stockage, définit `pending_key_rotation = FALSE` sur la ligne du fichier, supprime toutes les lignes `file_keys` pour ce `file_id` où `key_generation < M`.
-
-#### Suivi de R côté serveur
-
-Pour éviter que les clients n'aient à inspecter le texte chiffré pour découvrir `R`, la table `files` DEVRAIT inclure une colonne `content_key_generation` suivant la génération de clé sous laquelle le texte chiffré actuel a été chiffré :
-
-> La colonne `content_key_generation` est définie dans le schéma canonique au [§10.2](#102-tables-des-fichiers-et-collections).
-
-À chaque validation de téléversement réussie, le serveur définit `content_key_generation = key_generation_used_for_upload`. Lors d'une rotation, cette colonne n'est pas modifiée (la rotation ne rechiffre pas le contenu). Le client lit `content_key_generation` pour savoir quel `R` récupérer dans `file_keys`.
-
-#### Conservation des `collection_keys` et `file_keys` du propriétaire
-
-Les anciennes lignes de génération du propriétaire dans `collection_keys` et `file_keys` **DOIVENT** être conservées jusqu'à ce que tous les fichiers qui en dépendent aient été rechiffrés vers une génération plus récente ou ne les référencent plus. Plus précisément :
-
-- Une ligne `file_keys` à `key_generation = K` **PEUT** être supprimée lorsqu'aucune ligne `files` dans sa collection n'a `content_key_generation = K`.
-- Une ligne `collection_keys` à `key_generation = K` **PEUT** être supprimée lorsqu'aucune ligne `file_keys` n'existe avec le même `collection_id` et `key_generation = K`.
-
-Ce GC s'exécute côté serveur et est déclenché par les validations de rechiffrement. Il ne nécessite pas de coordination avec le client.
-
-Les lignes des destinataires révoqués dans `share_collection_keys` et `share_file_keys` sont supprimées au moment de la révocation. Cela est indépendant de la conservation du propriétaire.
-
-#### Pourquoi le booléen est suffisant
-
-Plusieurs révocations entre des exécutions de rechiffrement ne nécessitent pas d'état supplémentaire. Le client rechiffre toujours vers la `key_generation = M` actuelle, quel que soit le nombre de rotations survenues entre la définition de l'indicateur et l'exécution du rechiffrement. Les générations intermédiaires sont ignorées. Le booléen signale seulement « ce fichier n'est pas encore à la dernière génération » ; la génération source réelle `R` est lue depuis `files.content_key_generation` et la cible `M` est lue depuis la dernière ligne `file_keys`.
+- Les versions de l'historique ne sont pas rechiffrées : elles gardent leurs clés jusqu'à ce que la rétention les fasse expirer ([§19.5](#195-versions-de-fichiers)).
+- Un destinataire révoqué garde ce qu'il a téléchargé : une limitation inhérente au E2EE.
+- Seul celui qui a envoyé un fichier peut le rechiffrer : son `content_id` dépend de son `masterKey`. Si des éditeurs envoient un jour des fichiers, ils rechiffrent les leurs, et le propriétaire peut toujours les protéger par une nouvelle version.
+- Les anciennes lignes du propriétaire dans `file_keys` et `collection_keys` restent : les versions de l'historique et les partages lisent encore avec elles.
 
 ### 11.2 Horodatage du partage
 
@@ -2365,6 +2325,7 @@ Lorsqu'un fichier est déplacé entre collections, son `content_id` stocké **n'
 - **La reprise d'un téléversement en cours ciblant le fichier déplacé** fonctionne normalement. Le téléversement a été créé avec le `content_id` de la collection source et l'utilise comme clé de recherche tout au long de la durée de vie du téléversement, quel que soit le collection dans laquelle se trouve actuellement le fichier.
 - **La détection future de doublons dans la collection de destination ne correspond pas à ce fichier.** Si l'utilisateur téléverse le même contenu en clair dans la collection de destination ultérieurement, le point d'accès de recherche ([§6.5.6](#656-flux-de-recherche-denvoi)) retourne **404** et le client le traite comme un nouveau fichier. L'utilisateur se retrouve avec deux copies. Dégradation de fonctionnalité, pas un problème de sécurité.
 - **La reprise d'un futur re-téléversement du contenu en clair du fichier déplacé dans la collection de destination** ne correspond pas non plus, pour la même raison.
+- **Le rechiffrement reconnaît toujours le fichier :** `content_id_collection_id` désigne la collection source, donc le client calcule le `content_id` à comparer avec la `contentIdKey` source. Le rechiffrement enregistre ensuite le `content_id` de la collection de destination, et la détection de doublons fonctionne de nouveau pour ce fichier ([§11.1.1](#1111-rechiffrement-du-contenu-après-révocation)).
 
 #### Pourquoi ne pas recalculer
 
@@ -2842,7 +2803,7 @@ Les journaux, les breadcrumbs et les rapports d'erreur, côté client comme côt
 | Le serveur sert un VXFM périmé d'une génération précédente                         | Détecté par le client vérifiant que la génération VXFM correspond à la génération de la ligne du fichier                                                                                                                                                                                                                                                                                        |
 | Le serveur tronque le téléchargement (supprime les segments de fin)                | Détecté par le nombre de segments dans VXFM avant le téléchargement complet                                                                                                                                                                                                                                                                                                                     |
 | Énumération d'emails                                                               | Réponse uniforme à l'inscription et au démarrage de la récupération, et au démarrage de la connexion (`signin/start` renvoie la même forme de réponse que le compte existe ou non ; `vxwm` et `vxsk` seulement après preuve du mot de passe)                                                                                                                                                    |
-| Révocation de partage par le propriétaire de collection/fichier                    | Le nouveau contenu est protégé par des clés renouvelées ; le contenu et les métadonnées existants restent sous l'ancienne clé jusqu'à la prochaine version ; l'ancien texte chiffré est inaccessible via l'API ; le contenu déjà téléchargé ne peut pas être récupéré (limitation E2EE)                                                                                                         |
+| Révocation de partage par le propriétaire de collection/fichier                    | Le nouveau contenu est protégé par des clés renouvelées ; le contenu et les métadonnées existants restent sous l'ancienne clé jusqu'à la prochaine version ou un rechiffrement ; l'ancien texte chiffré est inaccessible via l'API ; le contenu déjà téléchargé ne peut pas être récupéré (limitation E2EE)                                                                                     |
 | Fin d'un lien public (révoqué, expiré, épuisé)                                     | Nouveau contenu sous une clé neuve dès que le serveur marque la cible, tout de suite ou dans la minute pour une expiration ; contenu déjà téléchargé non récupérable (limitation E2EE). Un serveur qui saute la marque n'est pas couvert, comme les rotations paresseuses du [§11.1](#111-révocation-de-partage)                                                                                |
 | Clé de signature ML-DSA-65 observée par un attaquant                               | Mitigé par la rotation explicite de la paire de clés de partage ([§11.3](#113-rotation-de-la-paire-de-clés-de-partage)), qui invalide tous les partages sortants en attente et remplace les clés publiques côté serveur                                                                                                                                                                         |
 
@@ -3055,10 +3016,11 @@ La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée suppri
 
 **Ce qu'une version conserve côté chiffrement :** son propre texte chiffré (`storage_path`), sa `generation` et le `VXFM` de cette génération. Elle n'a pas de clé propre : elle se déchiffre avec la `fileKey` du fichier à sa propre `content_key_generation`, qui peut être plus ancienne que la courante après une rotation de clé, et ses nonces de segment viennent de sa propre `generation` ([§6.2](#62-dérivation-de-nonce-par-segment)). Le contrôle du `VXFM` de l'étape 16a du [§8.2](#82-connexion) s'applique avec la génération de la version.
 
-**Restauration :** non destructive. Le serveur bascule la ligne du fichier sur le texte chiffré, le `VXFM`, la `generation` et la `content_key_generation` de la version, et conserve le contenu courant comme version, selon le réglage de rétention : une restauration peut donc elle-même être annulée. Aucune version n'est abandonnée. `pending_key_rotation` vaut `TRUE` quand le contenu restauré est sous une clé plus ancienne que la dernière, `FALSE` sinon. `files.max_generation` garde la plus haute génération jamais validée et ne recule jamais. Tout envoi **DOIT** utiliser une génération supérieure à `max_generation` : une génération n'est donc jamais réutilisée sous la même `fileContentKey`, même après une restauration ([§6.3](#63-compteur-de-génération-de-fichier-mutabilité)).
+**Restauration :** non destructive. Le serveur bascule la ligne du fichier sur le texte chiffré, le `VXFM`, la `generation` et la `content_key_generation` de la version, et conserve le contenu courant comme version, selon le réglage de rétention : une restauration peut donc elle-même être annulée. Aucune version n'est abandonnée. `pending_key_rotation` vaut `TRUE` quand le contenu restauré est sous une clé plus ancienne que la dernière, ou quand le fichier était marqué : une révocation a aussi atteint ses anciennes clés ([§11.1.1](#1111-rechiffrement-du-contenu-après-révocation)), `FALSE` sinon. Le contenu restauré ramène son `content_id` et son `content_id_collection_id`, gardés avec la version. `files.max_generation` garde la plus haute génération jamais validée et ne recule jamais. Tout envoi **DOIT** utiliser une génération supérieure à `max_generation` : une génération n'est donc jamais réutilisée sous la même `fileContentKey`, même après une restauration ([§6.3](#63-compteur-de-génération-de-fichier-mutabilité)).
 
 ## Historique des modifications
 
+- **26 :** le rechiffrement sur place remplace le flux optionnel prévu (§11.1.1) : le propriétaire renvoie le contenu courant, rien n'est téléchargé. `pending_key_rotation` marque le contenu à rechiffrer, posé par une révocation de partage, la fin d'un lien de fichier, une rotation de collection, une rotation de clé de fichier et certaines restaurations, effacé par une version ou un rechiffrement. Un rechiffrement est une version sous une clé neuve qui ne garde aucune version : même contenu prouvé par `content_id`, une nouvelle génération, l'objet remplacé supprimé (§6.5.6.1). `files.content_id_collection_id`, gardé par un déplacement et rafraîchi par un rechiffrement (§6.5.2, §11.4.1), et `content_id` gardé avec les versions et ramené par une restauration (§19.5). `GET /api/v1/storage/files/reencryptable` liste les fichiers à renvoyer avec leur total.
 - **25 :** la fin d'un lien public marque sa cible pour une clé neuve (§5.11), comme une révocation de partage : la révocation par le propriétaire, le dernier téléchargement qu'il permet et son expiration, marquée par une tâche serveur toutes les minutes. Un lien de fichier rend le fichier périmé, un lien de collection marque la collection et tout ce qui est en dessous, corbeille comprise (§6.5.6.1, §10.2, §11.1). `public_links.owner_revoked_at` et `marked_at`. Le propriétaire peut révoquer un lien expiré, épuisé ou suspendu. Un téléchargement rendu lève la marque du lien, sauf si la clé de la cible a pris une nouvelle génération entre-temps. Un lien suspendu continue de recevoir des copies, et une suspension levée ne ramène jamais un lien révoqué par son propriétaire ou terminé.
 - **24 :** les liens publics survivent aux nouvelles clés (§5.11) : un `VXPL` par génération de la clé de la cible, dans `public_link_keys`, avec l'AAD `link_id ‖ key_generation`, et une copie pour chaque lien actif à chaque écriture qui ajoute une génération (`linkKeys` : une version d'un fichier périmé, une rotation de clé de fichier ou de collection, un déplacement). Le propriétaire garde `VXLW`, une copie de `publicLinkWrapKey` sous `publicLinkWrapCopyKey` (§4, §5.16). Une collection en attente de rotation ne prend aucun lien, un éditeur ne fait pas tourner une collection qui a un lien, et le client du propriétaire les fait tourner juste après une révocation (§11.1). Les plans de rotation listent les liens. §16.8 : les journaux et les rapports d'erreur ne contiennent que des identifiants.
 - **23 :** le §18 impose une analyse isolée pour tout futur aperçu ou toute future miniature : une iframe d'origine opaque, sans cookies, sans stockage et sans réseau.
