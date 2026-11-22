@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique | **Addenda**
 
-> **Version du document :** 7
+> **Version du document :** 8
 >
 > **Statut :** (Brouillon) Proposé
 
@@ -264,7 +264,7 @@ L'éditeur et le propriétaire dérivent tous deux `childCollectionKeyWrapKey` d
 - **Propriétaire** : dispose de `parentCollectionKey` via son propre `VXCK` -> dérive `childCollectionKeyWrapKey` -> désencapsule la `collectionKey` de la sous-collection. L'accès est immédiat, aucune interaction requise.
 - **Éditeur** : dispose de `parentCollectionKey` via son partage -> dérive `childCollectionKeyWrapKey` -> désencapsule la `collectionKey` de la sous-collection. L'accès persiste tant que son partage `edit` sur la collection parente reste valide.
 
-**Accès côté serveur :** un partage atteint la sous-collection comme tout ce qui est sous sa collection partagée, par l'arbre ([CRYPTO §11](/fr/CRYPTO.md#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)). Un partage ajouté plus haut ensuite l'atteint aussi, sans grant.
+**Accès côté serveur :** un partage atteint la sous-collection comme tout ce qui est sous sa collection partagée, par l'arbre ([CRYPTO §11](/fr/CRYPTO.md#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)). Un partage ajouté plus haut ensuite l'atteint aussi, sans copie à lui.
 
 **`VXCK` du propriétaire :**
 
@@ -328,6 +328,7 @@ La chaîne d'info `"vexahub:v1:childCollectionKeyWrap:"` est distincte de toutes
 
 ## Historique des modifications
 
+- **8 :** alignée sur CRYPTO v28 : un partage porte ses copies dès sa création, il n'y a plus de grant (§21.3).
 - **7 :** rotation de clé paresseuse, alignée sur CRYPTO v20. Une rotation de la parente laisse les `VXCC` en dessous tels quels, la sous-collection attend sa propre rotation, par le propriétaire ou un éditeur (§21.4, §21.7). Aucune sous-collection sous une parente en attente de rotation (§21.2).
 - **6 :** la clé de chaque sous-collection est un `VXCC` sous sa parente, alignée sur CRYPTO v19. Accès par l'arbre (§21.3). Le `VXCK` du propriétaire devient un DEVRAIT (§21.3). Un déplacement porte un `VXCC` sous la nouvelle parente, ou le `VXCK` du propriétaire à la racine (§21.4, §21.7).
 - **5 :** `VXCC` dans leur propre table `child_collection_keys`, une ligne pour le propriétaire et les partages, réencapsulée sur place (§21.2, §21.4, §21.5). `parentKeyGeneration` à la création (§21.2). Accès par la parente (§21.3). Le propriétaire ajoute son `VXCK` à côté du `VXCC`, implémenté côté serveur (§21.3). Déplacement refusé tant qu'une génération n'existe qu'en `VXCC`, lignes `VXCC` supprimées lors d'un déplacement (§21.4). Garanties mises à jour (§21.7), alignées sur CRYPTO v18.

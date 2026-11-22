@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification | **Addendum**
 
-> **Document version:** 7
+> **Document version:** 8
 >
 > **Status:** (Draft) Proposed
 
@@ -299,7 +299,7 @@ of `parentCollectionKey` and the `child_uuid`. Both can unwrap
   `childCollectionKeyWrapKey` -> unwraps sub-collection `collectionKey`. Access
   persists as long as their `edit` share on the parent remains valid.
 
-**Server-side access:** a share reaches the sub-collection like anything below its shared collection, through the tree ([CRYPTO §11](CRYPTO.md#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)). A share added above later reaches it too, without a grant.
+**Server-side access:** a share reaches the sub-collection like anything below its shared collection, through the tree ([CRYPTO §11](CRYPTO.md#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)). A share added above later reaches it too, with no copy of its own.
 
 **Owner `VXCK`:**
 
@@ -368,6 +368,7 @@ existing info strings in [§4](./CRYPTO.md#4-hkdf-domain-separation). No protoco
 
 ## Changelog
 
+- **8:** aligned with CRYPTO v28: a share carries its copies from its creation, there is no grant anymore (§21.3).
 - **7:** lazy key rotation, aligned with CRYPTO v20. A rotation of the parent leaves the `VXCC` below as they are, the sub-collection waits for its own rotation, by the owner or an editor (§21.4, §21.7). No sub-collection below a parent waiting for its rotation (§21.2).
 - **6:** every sub-collection key is a `VXCC` under its parent, aligned with CRYPTO v19. Access through the tree (§21.3). The owner `VXCK` becomes a SHOULD (§21.3). A move carries a `VXCC` under the new parent, or the owner `VXCK` at the root (§21.4, §21.7).
 - **5:** `VXCC` in their own table `child_collection_keys`, one row for the owner and the shares, re-wrapped in place (§21.2, §21.4, §21.5). `parentKeyGeneration` on creation (§21.2). Access through the parent (§21.3). The owner adds its `VXCK` next to the `VXCC`, implemented on the server (§21.3). Move refused while a generation is held only as a `VXCC`, `VXCC` rows deleted on a move (§21.4). Guarantees updated (§21.7), aligned with CRYPTO v18.
