@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique | **Addenda**
 
-> **Version du document :** 9
+> **Version du document :** 10
 >
 > **Statut :** (Brouillon) Proposé
 
@@ -28,29 +28,40 @@ Les événements suivants **DOIVENT** être journalisés :
 | Connexion (échouée)                                  | `login_failed`                      | `timestamp`, `ip_network`, `user_agent`                                                   |
 | Inscription                                          | `registration`                      | `timestamp`, `ip_network`, `user_agent`                                                   |
 | Changement de mot de passe                           | `password_change`                   | `timestamp`, `ip_network`, `session_id`                                                   |
+| Compte récupéré (phrase de récupération)             | `account_recovered`                 | `timestamp`, `ip_network`, `user_agent`                                                   |
 | Rotation de la phrase de récupération                | `recovery_phrase_rotation`          | `timestamp`, `session_id`                                                                 |
 | Rotation de la paire de clés de partage              | `sharing_keypair_rotation`          | `timestamp`, `session_id`                                                                 |
+| Code de contact régénéré                             | `contact_code_regenerated`          | `timestamp`, `session_id`                                                                 |
 | Partage créé (sortant)                               | `share_created`                     | `timestamp`, `session_id`, `recipient_id`, `share_id`, `share_kind`, `permission`         |
 | Partage accepté (entrant)                            | `share_accepted`                    | `timestamp`, `session_id`, `sender_id`, `share_id`                                        |
 | Partage révoqué                                      | `share_revoked`                     | `timestamp`, `session_id`, `share_id`                                                     |
+| Lien public créé                                     | `public_link_created`               | `timestamp`, `session_id`, `link_id`, `link_kind`                                         |
+| Lien public révoqué                                  | `public_link_revoked`               | `timestamp`, `session_id`, `link_id`                                                      |
 | Session persistante créée                            | `persistent_session_created`        | `timestamp`, `device_label`, `session_id`                                                 |
 | Session persistante révoquée                         | `persistent_session_revoked`        | `timestamp`, `device_label`                                                               |
+| Session révoquée                                     | `session_revoked`                   | `timestamp`, `session_id`, `revoked_session_id`                                           |
 | Fichier déplacé                                      | `file_move`                         | `timestamp`, `session_id`, `file_id`, `source_collection_id`, `destination_collection_id` |
 | Fichier mis à la corbeille                           | `file_trashed`                      | `timestamp`, `session_id`, `file_id`, `collection_id`                                     |
 | Fichier restauré                                     | `file_restored`                     | `timestamp`, `session_id`, `file_id`, `collection_id`                                     |
 | Fichier supprimé définitivement                      | `file_deleted`                      | `timestamp`, `session_id`, `file_id`                                                      |
+| Version de fichier restaurée                         | `file_version_restored`             | `timestamp`, `session_id`, `file_id`, `version_id`                                        |
+| Version de fichier supprimée                         | `file_version_deleted`              | `timestamp`, `session_id`, `file_id`, `version_id`                                        |
+| Toutes les versions supprimées                       | `file_versions_cleared`             | `timestamp`, `session_id`                                                                 |
 | Collection mise à la corbeille                       | `collection_trashed`                | `timestamp`, `session_id`, `collection_id`                                                |
 | Collection restaurée                                 | `collection_restored`               | `timestamp`, `session_id`, `collection_id`                                                |
 | Collection supprimée définitivement                  | `collection_deleted`                | `timestamp`, `session_id`, `collection_id`                                                |
+| Collection déplacée                                  | `collection_move`                   | `timestamp`, `session_id`, `collection_id`, `source_parent_id`, `destination_parent_id`   |
 | Réinitialisation destructive                         | `destructive_reset`                 | `timestamp`, `ip_network`                                                                 |
 | Suppression de compte initiée                        | `account_deletion_initiated`        | `timestamp`, `ip_network`                                                                 |
 | Rétractation (droit de rétractation sur un paiement) | `withdrawal`                        | `timestamp`, `session_id`, `payment_id`                                                   |
 | Code de secours 2FA utilisé                          | `two_factor_recovery_code_used`     | `timestamp`, `ip_network`, `user_agent`                                                   |
 | Codes de secours 2FA renouvelés                      | `two_factor_recovery_codes_renewed` | `timestamp`, `ip_network`, `user_agent`                                                   |
+| 2FA activée                                          | `two_factor_enabled`                | `timestamp`, `ip_network`, `session_id`                                                   |
+| 2FA désactivée                                       | `two_factor_disabled`               | `timestamp`, `ip_network`, `session_id`                                                   |
 | Journal d'audit activé                               | `audit_log_enabled`                 | `timestamp`, `session_id`                                                                 |
 | Journal d'audit désactivé                            | `audit_log_disabled`                | `timestamp`, `session_id`                                                                 |
 
-Les noms de fichiers et de collections ne sont **JAMAIS** journalisés. Ils sont **chiffrés** dans les blobs `VXFM` et `VXCM` et le serveur **ne les voit jamais**. `share_kind` indique si une collection ou un fichier a été partagé, mais **pas** son nom ni son contenu.
+Les noms de fichiers et de collections ne sont **JAMAIS** journalisés. Ils sont **chiffrés** dans les blobs `VXFM` et `VXCM` et le serveur **ne les voit jamais**. `share_kind` et `link_kind` indiquent si une collection ou un fichier a été partagé, mais **pas** son nom ni son contenu. Une action groupée écrit une entrée par fichier ou collection de la requête, comme les actions unitaires, jamais une par fichier contenu dans une collection : vider la corbeille écrit une entrée par élément à la racine de la corbeille, et une restauration à une date un `file_version_restored` par fichier restauré. `public_link_revoked` ne concerne que la révocation par le propriétaire : un lien qui expire, qui est épuisé ou que la modération désactive n'est pas une action du compte.
 
 Les événements **journal d'audit activé** et **journal d'audit désactivé** sont écrits quel que soit l'état actuel. L'activation écrit toujours la première entrée, et la désactivation écrit toujours la dernière, afin que l'utilisateur dispose d'un enregistrement clair des périodes pendant lesquelles la journalisation était active.
 
@@ -125,7 +136,7 @@ GET /api/v1/account/audit-log?limit=50&before={cursor}
 >
 > `recipient_id` et `sender_id` dans les événements de partage sont des UUIDs à l'intérieur du `metadata` scellé. Le client les résout en noms d'affichage via le point d'accès de recherche d'utilisateurs existant. Le serveur ne stocke ni ne retourne de noms d'utilisateurs ou d'emails dans le journal d'audit.
 
-Le backend est écrit en TypeScript. Avant de sceller une entrée, il **DOIT** tronquer l'IP client à **/24 (IPv4)** ou **/48 (IPv6)**, bits d'hôte mis à zéro, et stocker le résultat comme chaîne CIDR dans `ip_network`. L'IP complète du client n'entre jamais dans le journal d'audit.
+Avant de sceller une entrée, le serveur **DOIT** tronquer l'IP client à **/24 (IPv4)** ou **/48 (IPv6)**, bits d'hôte mis à zéro, et stocker le résultat comme chaîne CIDR dans `ip_network`. L'IP complète du client n'entre jamais dans le journal d'audit.
 
 La table `sessions` stocke l'IP exacte du client en tant que `INET`, puisqu'elle sert à des fins de sécurité (affichage des sessions actives, réponse aux incidents) et est automatiquement purgée quand la session expire.
 
@@ -331,13 +342,14 @@ La chaîne d'info `"vexahub:v1:childCollectionKeyWrap:"` est distincte de toutes
 
 ## Historique des modifications
 
+- **10 :** nouveaux événements journalisés : récupération de compte, 2FA activée et désactivée, lien public créé et révoqué, session révoquée, collection déplacée, version de fichier restaurée et supprimée, toutes les versions supprimées, code de contact régénéré. Une action groupée écrit une entrée par fichier ou collection de la requête (§20.2).
 - **9 :** alignée sur CRYPTO v31 : désactiver ou effacer le journal d'audit demande une réauthentification récente de la session (§20.4, §20.5, §20.8).
 - **8 :** alignée sur CRYPTO v28 : un partage porte ses copies dès sa création, il n'y a plus de grant (§21.3).
 - **7 :** rotation de clé paresseuse, alignée sur CRYPTO v20. Une rotation de la parente laisse les `VXCC` en dessous tels quels, la sous-collection attend sa propre rotation, par le propriétaire ou un éditeur (§21.4, §21.7). Aucune sous-collection sous une parente en attente de rotation (§21.2).
 - **6 :** la clé de chaque sous-collection est un `VXCC` sous sa parente, alignée sur CRYPTO v19. Accès par l'arbre (§21.3). Le `VXCK` du propriétaire devient un DEVRAIT (§21.3). Un déplacement porte un `VXCC` sous la nouvelle parente, ou le `VXCK` du propriétaire à la racine (§21.4, §21.7).
 - **5 :** `VXCC` dans leur propre table `child_collection_keys`, une ligne pour le propriétaire et les partages, réencapsulée sur place (§21.2, §21.4, §21.5). `parentKeyGeneration` à la création (§21.2). Accès par la parente (§21.3). Le propriétaire ajoute son `VXCK` à côté du `VXCC`, implémenté côté serveur (§21.3). Déplacement refusé tant qu'une génération n'existe qu'en `VXCC`, lignes `VXCC` supprimées lors d'un déplacement (§21.4). Garanties mises à jour (§21.7), alignées sur CRYPTO v18.
 - **4 :** génération de clé dans l'AAD de `VXCC` et du `VXCK` du propriétaire (§21.2, §21.3), alignée sur CRYPTO v17.
-- **3 :** journal d'audit activé par défaut, scellé avec la clé publique X-Wing de l'utilisateur, rétention de 6 mois (§20.1, §20.3, §20.4, nouveau §20.9). Liste des événements alignée sur le code (§20.2). Seul `UPDATE` est retiré au rôle applicatif (§20.3). Masquage d'IP décrit pour le backend TypeScript (§20.6). §21 renommé en `childCollectionKeyWrap`, UUID v7, route réelle, marqué comme prévu. Blob `VXCC` pour la clé de sous-collection, réencapsulé en `VXCK` par le propriétaire (§21.2 à §21.5, §21.7).
+- **3 :** journal d'audit activé par défaut, scellé avec la clé publique X-Wing de l'utilisateur, rétention de 6 mois (§20.1, §20.3, §20.4, nouveau §20.9). Liste des événements complétée (§20.2). Seul `UPDATE` est retiré au rôle applicatif (§20.3). Masquage d'IP décrit pour le serveur (§20.6). §21 renommé en `childCollectionKeyWrap`, UUID v7, sa route, marqué comme prévu. Blob `VXCC` pour la clé de sous-collection, réencapsulé en `VXCK` par le propriétaire (§21.2 à §21.5, §21.7).
 
 [//]: # "LINKS"
 [cbor_rfc]: https://www.rfc-editor.org/rfc/rfc8949.html#section-4.2.1

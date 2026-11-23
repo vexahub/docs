@@ -166,7 +166,7 @@ HttpOnly; Secure; SameSite=Strict; Path=/
 Domain=.vexahub.com   // en production uniquement, partagé avec checkout.vexahub.com
 ```
 
-Durée de vie absolue : 24 heures, renouvelée à l'activité. Le `sessionKey` brut est effacé côté client et serveur immédiatement après l'émission du cookie. Le serveur ne le stocke jamais.
+Durée de vie : 24 heures après la dernière activité, une session utilisée n'expire donc pas. Le `sessionKey` brut est effacé côté client et serveur immédiatement après l'émission du cookie. Le serveur ne le stocke jamais.
 
 ### 4.5 Authentification à deux facteurs
 

@@ -166,7 +166,7 @@ HttpOnly; Secure; SameSite=Strict; Path=/
 Domain=.vexahub.com   // production only, shared with checkout.vexahub.com
 ```
 
-Absolute lifetime: 24 hours, renewed on activity. The raw `sessionKey` is zeroized on both client and server immediately after the cookie is issued. The server never stores it.
+Lifetime: 24 hours after the last activity, so a session in use does not expire. The raw `sessionKey` is zeroized on both client and server immediately after the cookie is issued. The server never stores it.
 
 ### 4.5 Two-factor authentication
 

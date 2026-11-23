@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique
 
-> **Version du document :** 31
+> **Version du document :** 32
 >
 > **Version du protocole :** 1
 >
@@ -1040,13 +1040,13 @@ Les clients calculent la génération suivante comme `max_generation + 1`, lue s
 
 ### 6.5.7 Alignement de reprise
 
-Un tus `PATCH` **PEUT** contenir n'importe quel nombre d'octets, et peut s'interrompre à n'importe quelle limite d'octet. Lorsqu'un envoi interrompu est repris via `HEAD` suivi de `PATCH`, le `Upload-Offset` rapporté par le serveur peut se trouver au milieu d'un segment crypto **VexaHub** ou d'une part de stockage. Le client **NE DOIT PAS** soumettre du texte chiffré commençant à ce décalage arbitraire, car `XChaCha20-Poly1305` ne supporte pas les écritures **AEAD** partielles et le backend de stockage exige que toutes les parts non terminales aient une taille identique.
+Un tus `PATCH` **PEUT** contenir n'importe quel nombre d'octets, et peut s'interrompre à n'importe quelle limite d'octet. Lorsqu'un envoi interrompu est repris via `HEAD` suivi de `PATCH`, le `Upload-Offset` rapporté par le serveur peut se trouver au milieu d'un segment crypto **VexaHub** ou d'une part de stockage. Le client **NE DOIT PAS** soumettre du texte chiffré commençant à ce décalage arbitraire, car `XChaCha20-Poly1305` ne supporte pas les écritures **AEAD** partielles et le stockage exige que toutes les parts non terminales aient une taille identique.
 
 La cible de rembobinage **DOIT** satisfaire deux contraintes d'alignement :
 
 1. **Alignement segment** : le décalage **DOIT** tomber sur une limite de segment chiffré (`offset % SEGMENT_CIPHERTEXT_SIZE_FULL == 0`), car `XChaCha20-Poly1305` ne supporte pas les écritures **AEAD** partielles. Un segment est une unité de chiffrement atomique unique.
 
-2. **Alignement part de stockage** : le décalage **DOIT** tomber sur une limite de part de stockage. Le backend de stockage découpe les envois en parts de taille fixe pour le transfert multipart ; toutes les parts non terminales doivent avoir une taille identique. Reprendre au milieu d'une part produit une part sous-dimensionnée qui provoque l'échec de la finalisation multipart. La taille de part est définie comme `STORAGE_PART_SIZE = SEGMENT_CIPHERTEXT_SIZE_FULL * STORAGE_PART_SEGMENTS` (actuellement `STORAGE_PART_SEGMENTS = 8`).
+2. **Alignement part de stockage** : le décalage **DOIT** tomber sur une limite de part de stockage. Le stockage découpe les envois en parts de taille fixe pour le transfert multipart ; toutes les parts non terminales doivent avoir une taille identique. Reprendre au milieu d'une part produit une part sous-dimensionnée qui provoque l'échec de la finalisation multipart. La taille de part est définie comme `STORAGE_PART_SIZE = SEGMENT_CIPHERTEXT_SIZE_FULL * STORAGE_PART_SEGMENTS` (actuellement `STORAGE_PART_SEGMENTS = 8`).
 
 L'alignement sur les parts de stockage satisfait automatiquement l'alignement sur les segments.
 
@@ -1074,13 +1074,13 @@ Procédure de reprise :
 
 L'endpoint rewind ne fait **PAS** partie du standard tus. C'est une extension **VexaHub** nécessaire car tus seul ne peut pas exprimer la contrainte que les envois doivent être alignés sur les limites de segment **AEAD** et de part de stockage.
 
-#### 6.5.7.1 Alignement de la couche de stockage backend
+#### 6.5.7.1 Alignement de la couche de stockage
 
-**VexaHub** utilise un serveur backend pour persister les données d'envoi vers le stockage. Le serveur traduit en interne les requêtes tus `PATCH` en parties d'envoi multipart. Cette section spécifie les contraintes qui relient le modèle de segment cryptographique avec les mécanismes d'envoi **multipart du serveur**.
+Le serveur **VexaHub** persiste les données d'envoi vers le stockage. Le serveur traduit en interne les requêtes tus `PATCH` en parties d'envoi multipart. Cette section spécifie les contraintes qui relient le modèle de segment cryptographique avec les mécanismes d'envoi **multipart du serveur**.
 
 **Invariant côté client :** Chaque requête tus `PATCH` **DOIT** contenir un ou plusieurs segments de texte chiffré `VXFC` **complets**. Le client **NE DOIT PAS** envoyer un segment partiel dans un corps de `PATCH`. Ceci est imposé par le pipeline de chiffrement du client : le client chiffre un segment de texte clair complet en un blob `VXFC` et ne l'écrit dans le flux `PATCH` qu'ensuite. Le dernier `PATCH` d'un envoi **PEUT** contenir un segment final plus court que `SEGMENT_CIPHERTEXT_SIZE_FULL` (car le dernier segment de texte clair peut être plus court que 1 Mio), mais c'est tout de même un blob `VXFC` **complet**.
 
-**Conséquence :** Si une interruption réseau survient en plein milieu d'un `PATCH`, les octets reçus par le serveur backend peuvent se terminer à un décalage arbitraire. Le serveur stocke les octets de queue qui tombent en dessous de la taille minimale de partie comme une **partie incomplète** (un objet `.part` séparé). Ces octets peuvent contenir zéro ou plusieurs segments `VXFC` complets suivis optionnellement d'un segment partiel. Les octets de segment partiel ne sont **pas utilisables**.
+**Conséquence :** Si une interruption réseau survient en plein milieu d'un `PATCH`, les octets reçus par le serveur peuvent se terminer à un décalage arbitraire. Le serveur stocke les octets de queue qui tombent en dessous de la taille minimale de partie comme une **partie incomplète** (un objet `.part` séparé). Ces octets peuvent contenir zéro ou plusieurs segments `VXFC` complets suivis optionnellement d'un segment partiel. Les octets de segment partiel ne sont **pas utilisables**.
 
 `XChaCha20-Poly1305` nécessite le texte chiffré complet et la balise pour déchiffrer.
 
@@ -1090,7 +1090,7 @@ Le serveur **DOIT** sélectionner une taille de partie qui est un multiple de `S
 
 **Gestion des réponses `HEAD` (obligatoire) :**
 
-Le serveur backend rapporte `Upload-Offset` comme `committed_parts_size + incomplete_part_size`. Pour les envois **VexaHub**, ce décalage peut tomber en milieu de segment lorsqu'une interruption est survenue en plein milieu d'un blob `VXFC`. Le serveur **DOIT** intercepter les réponses `HEAD` pour les envois **VexaHub** et appliquer la logique suivante :
+Le serveur rapporte `Upload-Offset` comme `committed_parts_size + incomplete_part_size`. Pour les envois **VexaHub**, ce décalage peut tomber en milieu de segment lorsqu'une interruption est survenue en plein milieu d'un blob `VXFC`. Le serveur **DOIT** intercepter les réponses `HEAD` pour les envois **VexaHub** et appliquer la logique suivante :
 
 1. Calculer `committed_offset` = somme des tailles des parties multipart complétées.
 2. Obtenir `incomplete_part_size` depuis l'objet `.part`, ou `0` s'il n'en existe pas.
@@ -1101,7 +1101,7 @@ Cela garantit que chaque réponse `HEAD` rapporte un décalage aligné sur les s
 
 > **Pourquoi intercepter au moment du `HEAD` plutôt qu'à chaque `PATCH` ?**
 >
-> La méthode d'écriture du serveur backend préfixe automatiquement les octets de `.part` aux données du prochain `PATCH`. Ce comportement est correct lorsque `.part` contient des segments complets (les octets préfixés sont des blobs `VXFC` valides). Il est corrupteur uniquement lorsque `.part` contient un segment partiel en queue. Supprimer `.part` inconditionnellement avant chaque écriture supprimerait des segments complets valides et causerait un décalage entre le `Upload-Offset` rapporté par le serveur et l'état validé réel. Intercepter au moment du `HEAD` est précis : `.part` n'est supprimé que lorsque ses octets sont dangereux à préfixer, et le décalage rapporté est toujours aligné sur les segments.
+> La méthode d'écriture du serveur préfixe automatiquement les octets de `.part` aux données du prochain `PATCH`. Ce comportement est correct lorsque `.part` contient des segments complets (les octets préfixés sont des blobs `VXFC` valides). Il est corrupteur uniquement lorsque `.part` contient un segment partiel en queue. Supprimer `.part` inconditionnellement avant chaque écriture supprimerait des segments complets valides et causerait un décalage entre le `Upload-Offset` rapporté par le serveur et l'état validé réel. Intercepter au moment du `HEAD` est précis : `.part` n'est supprimé que lorsque ses octets sont dangereux à préfixer, et le décalage rapporté est toujours aligné sur les segments.
 
 **Procédure de rembobinage :**
 
@@ -1147,7 +1147,7 @@ Le `content_id` recalculé **DOIT** correspondre à la valeur initialement enreg
 
 **Résumé des invariants :**
 
-> Au moment où la méthode d'écriture du serveur backend commence à traiter tout `PATCH` pour un envoi **VexaHub** :
+> Au moment où la méthode d'écriture du serveur commence à traiter tout `PATCH` pour un envoi **VexaHub** :
 >
 > - Soit aucun objet `.part` n'existe pour cet ID d'envoi, SOIT
 > - L'objet `.part` contient exclusivement des segments `VXFC` complets (sa longueur en octets est divisible par `SEGMENT_CIPHERTEXT_SIZE_FULL`, ou est égale au décalage du segment de queue).
@@ -1226,7 +1226,7 @@ Sémantique de `expected_current_generation` :
 
 ### 6.5.11 Collecte des ordures des envois abandonnés
 
-Un job planifié **DOIT** périodiquement (recommandé : toutes les heures) supprimer les lignes de `tus_uploads` où `completed_at IS NULL AND expires_at < now()`, et **DOIT** supprimer l'objet correspondant à `storage_path` du backend de stockage. Le TTL par défaut pour un envoi incomplet est de **7 jours** à partir de `created_at`, renouvelé à 7 jours à chaque `PATCH` réussi. Les envois de longue durée de très grands fichiers restent donc actifs tant que l'utilisateur progresse, mais les envois véritablement abandonnés sont nettoyés en moins d'une semaine.
+Un job planifié **DOIT** périodiquement (recommandé : toutes les heures) supprimer les lignes de `tus_uploads` où `completed_at IS NULL AND expires_at < now()`, et **DOIT** supprimer l'objet correspondant à `storage_path` du stockage. Le TTL par défaut pour un envoi incomplet est de **7 jours** à partir de `created_at`, renouvelé à 7 jours à chaque `PATCH` réussi. Les envois de longue durée de très grands fichiers restent donc actifs tant que l'utilisateur progresse, mais les envois véritablement abandonnés sont nettoyés en moins d'une semaine.
 
 ### 6.5.12 Ajouts au modèle de menace
 
@@ -1256,7 +1256,7 @@ Un job planifié **DOIT** périodiquement (recommandé : toutes les heures) supp
 VexaHub implémente **OPAQUE** ([RFC 9807][opaque_rfc]) sur la base du crate Rust `opaque-ke`, empaqueté séparément pour chaque côté :
 
 - `@vexahub/opaque-client` : build **WebAssembly** utilisé par la webapp **SvelteKit**.
-- `@vexahub/opaque-server` : build utilisé par le **backend**.
+- `@vexahub/opaque-server` : build utilisé par le **serveur**.
 
 Les futurs clients (desktop, **Android (Kotlin)**, **iOS (Swift)**) sont prévus sur un crate Rust unifié ([§18](#18-questions-ouvertes-et-travaux-futurs)). L'identité des sorties octet par octet entre cibles est vérifiée par les vecteurs de test en [§14](#14-vecteurs-de-test).
 
@@ -1331,7 +1331,7 @@ Cela défend contre un serveur substitué, sous réserve que le canal de distrib
 3. Client -> Serveur : `POST /api/v1/auth/signin/start { login, authRequest }` (`login` est l'email canonique).
 4. Serveur : recherche l'utilisateur, charge `registrationRecord`. Pour un email inconnu, il utilise la réponse OPAQUE factice déjà produite par `startLogin` : la réponse a la même forme que le compte existe ou non.
 5. Serveur : `opaque.server.startLogin(...)` -> `{ loginResponse, serverLoginState }`.
-6. Serveur : stocke `serverLoginState` dans Valkey sous un `loginSessionId` aléatoire avec un TTL de **120 secondes**.
+6. Serveur : stocke `serverLoginState` côté serveur sous un `loginSessionId` aléatoire avec un TTL de **120 secondes**.
 
    > Si le `loginSessionId` expire avant que le client envoie `signin/finish`, le serveur retourne **HTTP 401**. Le client **DOIT** redémarrer le flux de connexion depuis l'**étape 1**.
    >
@@ -1341,7 +1341,7 @@ Cela défend contre un serveur substitué, sous réserve que le canal de distrib
 8. Client : `opaque.client.finishLogin(...)` -> `{ finishLoginRequest, sessionKey, exportKey, serverStaticPublicKey }`.
 9. Client : vérifie la clé épinglée.
 10. Client -> Serveur : `POST /api/v1/auth/signin/finish { loginSessionId, authFinish }`.
-11. Serveur : récupère et supprime immédiatement `serverLoginState` de Valkey.
+11. Serveur : récupère et supprime immédiatement `serverLoginState`.
 12. Serveur : `opaque.server.finishLogin(...)` -> `{ sessionKey }`. Le mot de passe est maintenant prouvé.
 13. Serveur : une des trois issues suivantes :
 
@@ -1380,7 +1380,7 @@ Cela défend contre un serveur substitué, sous réserve que le canal de distrib
 - `masterKey` et les clés de partage privées résident exclusivement à l'intérieur du Crypto Web Worker dédié, jamais dans l'heap JavaScript du thread principal.
 - La communication principale <--> Worker utilise un protocole strict de demande/réponse (`encryptSegment`, `decryptSegment`, `unwrapCollectionKey`, `createShareInvitation`, `acceptShareInvitation`, etc.). Le Worker renvoie des résultats d'opérations, pas du matériau de clé, avec une exception : `localKey` est renvoyée au thread principal à la création d'une session persistante, pour être stockée en IndexedDB ([§9.2](#92-sessions-persistantes-se-souvenir-de-moi-opt-in)).
 - Délai d'inactivité : 30 minutes. À l'expiration, le Worker est terminé et tout le matériau de clé en mémoire est mis à zéro ; l'utilisateur doit se réauthentifier.
-- Cookie de session : durée de vie absolue de 24 heures, renouvelé en cas d'activité, `HttpOnly; Secure; SameSite=Strict`.
+- Cookie de session : expire 24 heures après la dernière activité, une session utilisée n'expire donc pas, `HttpOnly; Secure; SameSite=Strict`.
 - Fermer l'onglet détruit le Worker et la `masterKey`. Sans session persistante, la prochaine visite nécessite une nouvelle connexion.
 - Le script Worker est servi en même origine sous strictes entêtes de sécurité (CSP) du web ([§16](#16-en-têtes-de-sécurité-web)), pas d'inline, pas d'éval au-delà de `wasm-unsafe-eval`.
 
@@ -3007,6 +3007,7 @@ La suppression de compte se fait en deux temps : anonymisation immédiate, puis 
    - Supprime toutes les lignes `sessions` et `persistent_sessions`, le journal d'audit, l'index de recherche, les codes de vérification d'email et les notifications de cet utilisateur.
    - Efface de la ligne `users` `registration_record`, `VXWM`, `VXRM`, `VXSK` et les deux clés publiques de partage, le secret 2FA, les données de profil et de facturation, remplace l'email par une valeur factice et pose `deleted_at`.
    - Enregistre un hash de l'email dans une table de suppression pendant 30 jours, ce qui bloque la réinscription avec la même adresse pendant cette période.
+   - Révoque tous les liens publics et tous les partages de l'utilisateur, dans les deux sens. Dès cette étape, plus rien du compte n'est servi, même quand une procédure de modération retient ses données (étape 6), et une décision annulée ne ramène jamais l'un de ses liens.
 
 5. Tous les cookies de session actifs pour cet utilisateur deviennent invalides immédiatement.
 6. **Purge des données :** une tâche planifiée supprime les fichiers, versions de fichier, collections, clés, partages, liens publics et objets de stockage de l'utilisateur, puis pose `purged_at`. Tant qu'une procédure de modération sur le compte ou l'un de ses liens n'est pas close, décision rendue ou appel en cours compris, la purge des données attend sa clôture. L'anonymisation de l'étape 4 a quand même lieu tout de suite.
@@ -3069,6 +3070,7 @@ La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée suppri
 
 ## Historique des modifications
 
+- **32 :** la suppression de compte révoque d'un coup les liens publics et les partages du compte : plus rien n'en est servi pendant qu'une procédure de modération retient ses données, et une décision annulée ne restaure jamais l'un de ses liens (§19.3). Le cookie de session expire 24 heures après la dernière activité (§9.1).
 - **31 :** une réauthentification récente de la session est aussi exigée pour activer la 2FA et pour désactiver ou effacer le journal d'audit (§9.9). Une session persistante ne se crée que dans les 10 minutes qui suivent l'ouverture de la session (§9.2). Un journal de requêtes garde la méthode, le chemin et le statut, tokens masqués (§16.8). Une procédure de modération non close retient la purge des données d'un compte supprimé (§19.3).
 - **30 :** la récupération et les actions sensibles demandent plus qu'une session ou un code reçu par email. Les codes de récupération servent une fois, pour leur flux seulement, avec 5 essais, au plus 3 par heure et par adresse, et seule une empreinte à clé est stockée (§12.1). Une récupération demande le second facteur d'un compte qui a la 2FA (`recovery/2fa`). Sans lui, une réinitialisation destructive attend 72 heures avec un lien d'annulation, un nouveau mot de passe l'annule, et un compte suspendu n'est pas réinitialisé (§12.2). Le changement de mot de passe, la rotation de la phrase et la rotation des paires de clés de partage suivent une réauthentification de la session, `reauth/start` et `reauth/finish`, qui met fin à la session, puis à toutes les sessions de l'utilisateur, après des échecs répétés (§9.9, §11.3, §12.3). L'élévation 2FA est liée à la session. Les connexions d'une adresse ralentissent après des échecs répétés, et `2fa/verify` revérifie le compte (§8.2). La déconnexion met fin à la session persistante de l'appareil (§9.2).
 - **29 :** une réinitialisation destructive se fait en une transaction et crée une nouvelle collection racine : la route prend `rootCollectionId`, `rootVxck` et `rootVxcm` (§12.2). La purge des données supprime aussi les versions de fichier (§12.2, §19.3). Un conflit de génération répond avec `generation` et `maxGeneration` (§11.5.4). Un partage porte `view`, et `edit` en plus, `reshare` est refusé (§11.6). Une tentative sur un lien protégé par mot de passe est une lecture du lien (§5.11). Une réponse d'erreur ne porte aucun message interne (§16.8).
@@ -3083,8 +3085,8 @@ La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée suppri
 - **20 :** rotation de clé paresseuse (§11.1). La révocation porte les rotations que seul le propriétaire peut faire, lues dans un plan de révocation : la collection partagée, les racines de partage en dessous et le chemin entre elles, de haut en bas, en une transaction avec une couverture exacte. Le reste de l'arbre révoqué attend sa rotation (`collections.key_rotation_pending`, §10.2) : aucun nouveau fichier, version, sous-collection, renommage, déplacement dedans ou partage sur elle avant la rotation de sa clé, par le propriétaire ou un éditeur. Une rotation ne donne plus de nouvelles clés de fichier et ne réencapsule plus les `VXCC` en dessous (§5.14, §11, §11.1, §11.1.1). Chaque `vxfk` vient avec sa `collectionKeyGeneration`, vérifiée comme la dernière, et une nouvelle version d'un fichier périmé prend une `fileKey` neuve (§6.5, §6.5.6.1, §11.4, §11.5.2). Le `VXSH` d'un partage de collection ne porte aucune clé, un refus supprime les copies du partage (§5.10, §11). `file_keys.vxfm` supprimé (§10.3). Aucun changement de disposition des blobs, d'AAD ni de dérivations.
 - **19 :** chaque sous-collection a un `VXCC` sous sa parente, un partage n'a de copies que pour sa collection partagée (§5.8, §5.14, §10.3, §11). L'accès d'un partage suit l'arbre, route de chaîne de clés, grants pour la collection partagée seulement (§11). `VXCC` exigé à la création, réencapsulé sous la nouvelle parente au déplacement, `VXCK` du propriétaire envoyé avec un déplacement à la racine, rien à la restauration (§11). Plan de rotation avec la `parent`, nouveau `VXCC` sous elle (§11.1 étapes 1, 7b, 8, 10). Aucun changement des formats de blob, des AAD ni des dérivations.
 - **18 :** rotation de collection sans nouveau KEM : les partages restants reçoivent une génération de plus sous leur `shareWrapKey` inchangée, plan de rotation, couverture exacte des partages et des `VXCC`, rotation de chaque collection que le partage révoqué atteignait (§11.1). `VXCC` dans leur propre table `child_collection_keys`, réencapsulés sur place, jamais dans une colonne `vxck` (§5.14, §10.3). Accès d'un partage aux collections, grants avec chaque génération (§11). Correction de la copie destinataire d'une clé de collection partagée (§11) et des lignes supprimées à la révocation (§11.1.1). Aucun changement des formats de blob, des AAD ni des dérivations.
-- **17 :** alignement sur les changements de clés de fichier et de partage du code. Une nouvelle version garde la clé du fichier : `vxfk` seulement pour un nouveau fichier, `content_key_generation` posée à la dernière clé, `vxfk` et `latestVxfk` renvoyés par les routes de fichier, invariant sur `files.vxfm` (§6.5, §6.5.6.1, §10.2, §11.5.2). `file_versions.content_key_generation`, restauration non destructive (§10.2, §19.5). Liens publics servis depuis `files.vxfm`, HTTP 410 quand le contenu a changé de clé (§5.11). `file_keys.vxfm` obsolète (§10.3). Les rotations laissent `files.vxfm` sous la clé du contenu (§11.1, §11.1.1, §17). Nouveau blob `VXSW` (§5.15). Id de partage généré par le client, `sender_vxsw` et `recipient_vxsw`, `vxsw` à l'acceptation, `PUT /api/v1/shares/{id}/recipient-copy` (§11). Vérification côté serveur du format de chaque blob (§5, §5.15, §6.5.6.1). Génération de clé dans l'AAD de `VXCK`, `VXFK` et `VXCC`, AAD et clé d'encapsulation distinctes pour les copies de `VXCK` des partages, AAD et clé d'encapsulation de `VXSW`, plus haute génération gardée par les clients (§4, §5.8, §5.9, §5.14, §5.15). Ces changements d'AAD cassent les blobs existants : le protocole reste en version 1 car aucun compte n'a été créé sous les anciennes AAD.
-- **16 :** alignement sur le code actuel. Chemins d'API sous `/api/v1` (same-origin), UUID v7 presque partout, routes et schémas réels. `session_id` de `VXPS` généré par le client (§5.6, §9.2). `vxwm` et `vxsk` renvoyés seulement après `signin/finish`, `signin/start` uniforme (§8.2). `ts` informatif, sans contrôle obligatoire (§11.2). Nouveaux `VXMC` (§5.12) et `VXSI` (§5.13), dérivations `localCacheKey`, `sessionToken` et `childCollectionKeyWrap` (§4). Envoi direct pour les petits fichiers (§6.5). Flux de récupération (§12.1), CSP (§16.1) et suppression de compte (§19.3) réécrits. Nouvelle section sur les versions de fichiers (§19.5). Rechiffrement après révocation (§11.1.1) et sessions persistantes web (§9.2) marqués comme prévus. Nouveau blob `VXCC` pour les sous-collections créées par un éditeur, transitoire côté propriétaire (§5.14). Email vérifié par code avant la création du compte, `signup/start` uniforme (§8.1).
+- **17 :** changements des clés de fichier et de partage. Une nouvelle version garde la clé du fichier : `vxfk` seulement pour un nouveau fichier, `content_key_generation` posée à la dernière clé, `vxfk` et `latestVxfk` renvoyés par les routes de fichier, invariant sur `files.vxfm` (§6.5, §6.5.6.1, §10.2, §11.5.2). `file_versions.content_key_generation`, restauration non destructive (§10.2, §19.5). Liens publics servis depuis `files.vxfm`, HTTP 410 quand le contenu a changé de clé (§5.11). `file_keys.vxfm` obsolète (§10.3). Les rotations laissent `files.vxfm` sous la clé du contenu (§11.1, §11.1.1, §17). Nouveau blob `VXSW` (§5.15). Id de partage généré par le client, `sender_vxsw` et `recipient_vxsw`, `vxsw` à l'acceptation, `PUT /api/v1/shares/{id}/recipient-copy` (§11). Vérification côté serveur du format de chaque blob (§5, §5.15, §6.5.6.1). Génération de clé dans l'AAD de `VXCK`, `VXFK` et `VXCC`, AAD et clé d'encapsulation distinctes pour les copies de `VXCK` des partages, AAD et clé d'encapsulation de `VXSW`, plus haute génération gardée par les clients (§4, §5.8, §5.9, §5.14, §5.15). Ces changements d'AAD cassent les blobs existants : le protocole reste en version 1 car aucun compte n'a été créé sous les anciennes AAD.
+- **16 :** chemins d'API sous `/api/v1` (same-origin), UUID v7 presque partout, routes et schémas décrits en entier. `session_id` de `VXPS` généré par le client (§5.6, §9.2). `vxwm` et `vxsk` renvoyés seulement après `signin/finish`, `signin/start` uniforme (§8.2). `ts` informatif, sans contrôle obligatoire (§11.2). Nouveaux `VXMC` (§5.12) et `VXSI` (§5.13), dérivations `localCacheKey`, `sessionToken` et `childCollectionKeyWrap` (§4). Envoi direct pour les petits fichiers (§6.5). Flux de récupération (§12.1), CSP (§16.1) et suppression de compte (§19.3) réécrits. Nouvelle section sur les versions de fichiers (§19.5). Rechiffrement après révocation (§11.1.1) et sessions persistantes web (§9.2) marqués comme prévus. Nouveau blob `VXCC` pour les sous-collections créées par un éditeur, transitoire côté propriétaire (§5.14). Email vérifié par code avant la création du compte, `signup/start` uniforme (§8.1).
 
 [//]: # "LINKS"
 [opaque_rfc]: https://www.rfc-editor.org/info/rfc9807

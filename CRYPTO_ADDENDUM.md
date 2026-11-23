@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification | **Addendum**
 
-> **Document version:** 9
+> **Document version:** 10
 >
 > **Status:** (Draft) Proposed
 
@@ -37,29 +37,40 @@ The following events **MUST** be logged:
 | Login (failed)                                | `login_failed`                      | `timestamp`, `ip_network`, `user_agent`                                                   |
 | Registration                                  | `registration`                      | `timestamp`, `ip_network`, `user_agent`                                                   |
 | Password change                               | `password_change`                   | `timestamp`, `ip_network`, `session_id`                                                   |
+| Account recovered (recovery phrase)           | `account_recovered`                 | `timestamp`, `ip_network`, `user_agent`                                                   |
 | Recovery phrase rotation                      | `recovery_phrase_rotation`          | `timestamp`, `session_id`                                                                 |
 | Sharing keypair rotation                      | `sharing_keypair_rotation`          | `timestamp`, `session_id`                                                                 |
+| Contact code regenerated                      | `contact_code_regenerated`          | `timestamp`, `session_id`                                                                 |
 | Share created (outgoing)                      | `share_created`                     | `timestamp`, `session_id`, `recipient_id`, `share_id`, `share_kind`, `permission`         |
 | Share accepted (incoming)                     | `share_accepted`                    | `timestamp`, `session_id`, `sender_id`, `share_id`                                        |
 | Share revoked                                 | `share_revoked`                     | `timestamp`, `session_id`, `share_id`                                                     |
+| Public link created                           | `public_link_created`               | `timestamp`, `session_id`, `link_id`, `link_kind`                                         |
+| Public link revoked                           | `public_link_revoked`               | `timestamp`, `session_id`, `link_id`                                                      |
 | Persistent session created                    | `persistent_session_created`        | `timestamp`, `device_label`, `session_id`                                                 |
 | Persistent session revoked                    | `persistent_session_revoked`        | `timestamp`, `device_label`                                                               |
+| Session revoked                               | `session_revoked`                   | `timestamp`, `session_id`, `revoked_session_id`                                           |
 | File move                                     | `file_move`                         | `timestamp`, `session_id`, `file_id`, `source_collection_id`, `destination_collection_id` |
 | File trashed                                  | `file_trashed`                      | `timestamp`, `session_id`, `file_id`, `collection_id`                                     |
 | File restored                                 | `file_restored`                     | `timestamp`, `session_id`, `file_id`, `collection_id`                                     |
 | File permanently deleted                      | `file_deleted`                      | `timestamp`, `session_id`, `file_id`                                                      |
+| File version restored                         | `file_version_restored`             | `timestamp`, `session_id`, `file_id`, `version_id`                                        |
+| File version deleted                          | `file_version_deleted`              | `timestamp`, `session_id`, `file_id`, `version_id`                                        |
+| All file versions deleted                     | `file_versions_cleared`             | `timestamp`, `session_id`                                                                 |
 | Collection trashed                            | `collection_trashed`                | `timestamp`, `session_id`, `collection_id`                                                |
 | Collection restored                           | `collection_restored`               | `timestamp`, `session_id`, `collection_id`                                                |
 | Collection permanently deleted                | `collection_deleted`                | `timestamp`, `session_id`, `collection_id`                                                |
+| Collection move                               | `collection_move`                   | `timestamp`, `session_id`, `collection_id`, `source_parent_id`, `destination_parent_id`   |
 | Destructive reset                             | `destructive_reset`                 | `timestamp`, `ip_network`                                                                 |
 | Account deletion initiated                    | `account_deletion_initiated`        | `timestamp`, `ip_network`                                                                 |
 | Withdrawal (right of withdrawal on a payment) | `withdrawal`                        | `timestamp`, `session_id`, `payment_id`                                                   |
 | 2FA recovery code used                        | `two_factor_recovery_code_used`     | `timestamp`, `ip_network`, `user_agent`                                                   |
 | 2FA recovery codes renewed                    | `two_factor_recovery_codes_renewed` | `timestamp`, `ip_network`, `user_agent`                                                   |
+| 2FA enabled                                   | `two_factor_enabled`                | `timestamp`, `ip_network`, `session_id`                                                   |
+| 2FA disabled                                  | `two_factor_disabled`               | `timestamp`, `ip_network`, `session_id`                                                   |
 | Audit log enabled                             | `audit_log_enabled`                 | `timestamp`, `session_id`                                                                 |
 | Audit log disabled                            | `audit_log_disabled`                | `timestamp`, `session_id`                                                                 |
 
-File and collection names are **NEVER** logged. They are **encrypted** inside `VXFM` and `VXCM` blobs and the server **never sees** them. `share_kind` indicates whether a collection or a file was shared, but **not** its name or content.
+File and collection names are **NEVER** logged. They are **encrypted** inside `VXFM` and `VXCM` blobs and the server **never sees** them. `share_kind` and `link_kind` indicate whether a collection or a file was shared, but **not** its name or content. A bulk action logs one entry per file or collection of the request, like the single actions, never one per file inside a collection: emptying the trash logs one entry per item at the root of the trash, and a restore to a date one `file_version_restored` per file it restores. `public_link_revoked` is the revocation by the owner only: a link that expires, is used up or is disabled by moderation is not an action of the account.
 
 The **audit log enabled** and **audit log disabled** events are written
 regardless of the current state. Enabling always writes the first
@@ -150,7 +161,7 @@ GET /api/v1/account/audit-log?limit=50&before={cursor}
 >
 > `recipient_id` and `sender_id` in share events are UUIDs inside the sealed `metadata`. The client resolves them to display names using the existing user lookup endpoint. The server does not store or return usernames or emails in the audit log.
 
-The backend is written in TypeScript. Before sealing an entry, it **MUST** coarsen the client IP to **/24 (IPv4)** or **/48 (IPv6)**, with host bits zeroed, and store the result as a CIDR string in `ip_network`. The full client IP never enters the audit log.
+Before sealing an entry, the server **MUST** coarsen the client IP to **/24 (IPv4)** or **/48 (IPv6)**, with host bits zeroed, and store the result as a CIDR string in `ip_network`. The full client IP never enters the audit log.
 
 The `sessions` table stores the exact client IP as `INET`, since it is used for security purposes (active session display, incident response) and is automatically purged when the session expires.
 
@@ -374,13 +385,14 @@ existing info strings in [§4](./CRYPTO.md#4-hkdf-domain-separation). No protoco
 
 ## Changelog
 
+- **10:** new logged events: account recovery, 2FA enabled and disabled, public link created and revoked, session revoked, collection move, file version restored and deleted, all versions deleted, contact code regenerated. A bulk action logs one entry per file or collection of the request (§20.2).
 - **9:** aligned with CRYPTO v31: disabling or clearing the audit log requires a recent reauthentication of the session (§20.4, §20.5, §20.8).
 - **8:** aligned with CRYPTO v28: a share carries its copies from its creation, there is no grant anymore (§21.3).
 - **7:** lazy key rotation, aligned with CRYPTO v20. A rotation of the parent leaves the `VXCC` below as they are, the sub-collection waits for its own rotation, by the owner or an editor (§21.4, §21.7). No sub-collection below a parent waiting for its rotation (§21.2).
 - **6:** every sub-collection key is a `VXCC` under its parent, aligned with CRYPTO v19. Access through the tree (§21.3). The owner `VXCK` becomes a SHOULD (§21.3). A move carries a `VXCC` under the new parent, or the owner `VXCK` at the root (§21.4, §21.7).
 - **5:** `VXCC` in their own table `child_collection_keys`, one row for the owner and the shares, re-wrapped in place (§21.2, §21.4, §21.5). `parentKeyGeneration` on creation (§21.2). Access through the parent (§21.3). The owner adds its `VXCK` next to the `VXCC`, implemented on the server (§21.3). Move refused while a generation is held only as a `VXCC`, `VXCC` rows deleted on a move (§21.4). Guarantees updated (§21.7), aligned with CRYPTO v18.
 - **4:** key generation in the AAD of `VXCC` and of the owner `VXCK` (§21.2, §21.3), aligned with CRYPTO v17.
-- **3:** audit log enabled by default, sealed with the user's X-Wing public key, 6-month retention (§20.1, §20.3, §20.4, new §20.9). Events list aligned with the code (§20.2). `UPDATE` alone is withheld from the application role (§20.3). IP masking described for the TypeScript backend (§20.6). §21 renamed to `childCollectionKeyWrap`, UUID v7, real route, marked as planned. `VXCC` blob for the sub-collection key, re-wrapped as `VXCK` by the owner (§21.2 to §21.5, §21.7).
+- **3:** audit log enabled by default, sealed with the user's X-Wing public key, 6-month retention (§20.1, §20.3, §20.4, new §20.9). Events list completed (§20.2). `UPDATE` alone is withheld from the application role (§20.3). IP masking described for the server (§20.6). §21 renamed to `childCollectionKeyWrap`, UUID v7, its route, marked as planned. `VXCC` blob for the sub-collection key, re-wrapped as `VXCK` by the owner (§21.2 to §21.5, §21.7).
 
 [//]: # "LINKS"
 [cbor_rfc]: https://www.rfc-editor.org/rfc/rfc8949.html#section-4.2.1

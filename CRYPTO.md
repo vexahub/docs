@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-> **Document version:** 31
+> **Document version:** 32
 >
 > **Protocol version:** 1
 >
@@ -1045,13 +1045,13 @@ Clients compute the next generation as `max_generation + 1`, read from `GET /api
 
 ### 6.5.7 Resume alignment
 
-A tus `PATCH` **MAY** contain any number of bytes, and may interrupt at any byte boundary. When an interrupted upload is resumed via `HEAD` followed by `PATCH`, the server-reported `Upload-Offset` may fall in the middle of a **VexaHub** crypto segment or a storage part. The client **MUST NOT** submit ciphertext starting at that arbitrary offset, because `XChaCha20-Poly1305` does not support partial **AEAD** writes and the storage backend requires all non-trailing parts to have identical size.
+A tus `PATCH` **MAY** contain any number of bytes, and may interrupt at any byte boundary. When an interrupted upload is resumed via `HEAD` followed by `PATCH`, the server-reported `Upload-Offset` may fall in the middle of a **VexaHub** crypto segment or a storage part. The client **MUST NOT** submit ciphertext starting at that arbitrary offset, because `XChaCha20-Poly1305` does not support partial **AEAD** writes and the storage requires all non-trailing parts to have identical size.
 
 The rewind target **MUST** satisfy two alignment constraints:
 
 1. **Segment-aligned**: the offset **MUST** fall on a segment ciphertext boundary (`offset % SEGMENT_CIPHERTEXT_SIZE_FULL == 0`), because `XChaCha20-Poly1305` does not support partial **AEAD** writes. A segment is a single atomic encryption unit.
 
-2. **Storage-part-aligned**: the offset **MUST** fall on a storage part boundary. The storage backend splits uploads into fixed-size parts for multipart transfer; all non-trailing parts must have identical size. Resuming mid-part produces an undersized part that causes the multipart finalization to fail. The part size is defined as `STORAGE_PART_SIZE = SEGMENT_CIPHERTEXT_SIZE_FULL * STORAGE_PART_SEGMENTS` (currently `STORAGE_PART_SEGMENTS = 8`).
+2. **Storage-part-aligned**: the offset **MUST** fall on a storage part boundary. The storage splits uploads into fixed-size parts for multipart transfer; all non-trailing parts must have identical size. Resuming mid-part produces an undersized part that causes the multipart finalization to fail. The part size is defined as `STORAGE_PART_SIZE = SEGMENT_CIPHERTEXT_SIZE_FULL * STORAGE_PART_SEGMENTS` (currently `STORAGE_PART_SEGMENTS = 8`).
 
 Since `STORAGE_PART_SEGMENTS` is a multiple of 1, aligning to storage parts automatically satisfies segment alignment.
 
@@ -1079,13 +1079,13 @@ Resume procedure:
 
 The rewind endpoint is **NOT** part of the tus standard. It is a **VexaHub** extension necessary because tus alone cannot express the constraint that uploads must be aligned to **AEAD** segment and storage part boundaries.
 
-#### 6.5.7.1 Backend Storage Layer Alignment
+#### 6.5.7.1 Storage Layer Alignment
 
-**VexaHub** uses a backend server to persist upload data to storage. The server internally translates tus `PATCH` requests into multipart upload parts. This section specifies constraints that bridge the cryptographic segment model with the **server's multipart** upload mechanics.
+The **VexaHub** server persists upload data to storage. The server internally translates tus `PATCH` requests into multipart upload parts. This section specifies constraints that bridge the cryptographic segment model with the **server's multipart** upload mechanics.
 
 **Client-side invariant:** Every tus `PATCH` request **MUST** contain one or more **complete** `VXFC` ciphertext segments. The client **MUST NOT** send a partial segment in a `PATCH` body. This is enforced by the client's encryption pipeline: the client encrypts a full plaintext segment into a `VXFC` blob and only then writes it to the `PATCH` stream. The last `PATCH` of an upload **MAY** contain a final segment shorter than `SEGMENT_CIPHERTEXT_SIZE_FULL` (because the last plaintext segment may be shorter than 1 MiB), but it is still a **complete** `VXFC` blob.
 
-**Consequence:** If a network interruption occurs mid-`PATCH`, the bytes received by the backend server may end at an arbitrary offset. The server stores trailing bytes that fall below the minimum part size as an **incomplete part** (a separate `.part` object). These bytes may contain zero or more complete `VXFC` segments followed optionally by a partial segment. Partial segment bytes are **not usable**.
+**Consequence:** If a network interruption occurs mid-`PATCH`, the bytes received by the server may end at an arbitrary offset. The server stores trailing bytes that fall below the minimum part size as an **incomplete part** (a separate `.part` object). These bytes may contain zero or more complete `VXFC` segments followed optionally by a partial segment. Partial segment bytes are **not usable**.
 
 `XChaCha20-Poly1305` requires the full ciphertext and tag to decrypt.
 
@@ -1095,7 +1095,7 @@ The server **MUST** select a part size that is a multiple of `SEGMENT_CIPHERTEXT
 
 **`HEAD` response handling (mandatory):**
 
-The backend server reports `Upload-Offset` as `committed_parts_size + incomplete_part_size`. For **VexaHub** uploads, this offset may fall mid-segment when an interruption occurred mid-`VXFC` blob. The server **MUST** intercept `HEAD` responses for **VexaHub** uploads and apply the following logic:
+The server reports `Upload-Offset` as `committed_parts_size + incomplete_part_size`. For **VexaHub** uploads, this offset may fall mid-segment when an interruption occurred mid-`VXFC` blob. The server **MUST** intercept `HEAD` responses for **VexaHub** uploads and apply the following logic:
 
 1. Compute `committed_offset` = sum of completed multipart part sizes.
 2. Get `incomplete_part_size` from the `.part` object, or `0` if none exists.
@@ -1106,7 +1106,7 @@ This ensures every `HEAD` response reports a segment-aligned offset, and the ser
 
 > **Why intercept at `HEAD` rather than at every `PATCH`?**
 >
-> The backend server's write method automatically prepends `.part` bytes to the next `PATCH` data. This behavior is correct when `.part` contains complete segments (the prepended bytes are valid `VXFC` blobs). It is corrupting only when `.part` contains a trailing partial segment. Deleting `.part` unconditionally before every write would discard valid complete segments and cause an offset mismatch between the server's reported `Upload-Offset` and the actual committed state. Intercepting at `HEAD` is precise: `.part` is deleted only when its bytes are unsafe to prepend, and the reported offset is always segment-aligned.
+> The server's write method automatically prepends `.part` bytes to the next `PATCH` data. This behavior is correct when `.part` contains complete segments (the prepended bytes are valid `VXFC` blobs). It is corrupting only when `.part` contains a trailing partial segment. Deleting `.part` unconditionally before every write would discard valid complete segments and cause an offset mismatch between the server's reported `Upload-Offset` and the actual committed state. Intercepting at `HEAD` is precise: `.part` is deleted only when its bytes are unsafe to prepend, and the reported offset is always segment-aligned.
 
 **Rewind procedure:**
 
@@ -1152,7 +1152,7 @@ The recomputed `content_id` **MUST** match the value originally registered with 
 
 **Invariant summary:**
 
-> At the moment the backend server's write method begins processing any `PATCH` for a **VexaHub** upload:
+> At the moment the server's write method begins processing any `PATCH` for a **VexaHub** upload:
 >
 > - Either no `.part` object exists for that upload ID, OR
 > - The `.part` object contains exclusively complete `VXFC` segments (its byte length is divisible by `SEGMENT_CIPHERTEXT_SIZE_FULL`, or equals the trailing-segment offset).
@@ -1231,7 +1231,7 @@ CREATE INDEX tus_uploads_user_collection
 
 ### 6.5.11 Abandoned upload garbage collection
 
-A scheduled job **MUST** periodically (recommended: hourly) remove rows from `tus_uploads` where `completed_at IS NULL AND expires_at < now()`, and **MUST** delete the corresponding object at `storage_path` from the storage backend. The default TTL for an incomplete upload is **7 days** from `created_at`, refreshed to 7 days on each successful `PATCH`. Long-running uploads of very large files therefore stay alive as long as the user is making progress, but truly abandoned uploads are reaped within a week.
+A scheduled job **MUST** periodically (recommended: hourly) remove rows from `tus_uploads` where `completed_at IS NULL AND expires_at < now()`, and **MUST** delete the corresponding object at `storage_path` from the storage. The default TTL for an incomplete upload is **7 days** from `created_at`, refreshed to 7 days on each successful `PATCH`. Long-running uploads of very large files therefore stay alive as long as the user is making progress, but truly abandoned uploads are reaped within a week.
 
 ### 6.5.12 Threat model additions
 
@@ -1261,7 +1261,7 @@ A scheduled job **MUST** periodically (recommended: hourly) remove rows from `tu
 VexaHub implements **OPAQUE** ([RFC 9807][opaque_rfc]) on top of the `opaque-ke` Rust crate, packaged separately for each side:
 
 - `@vexahub/opaque-client`: **WebAssembly** build used by the **SvelteKit** webapp.
-- `@vexahub/opaque-server`: build used by the **backend**.
+- `@vexahub/opaque-server`: build used by the **server**.
 
 Future clients (desktop, **Android (Kotlin)**, **iOS (Swift)**) are planned on a unified Rust crate ([§18](#18-open-questions-and-future-work)). Byte-for-byte identical outputs across targets are verified by the test vectors in [§14](#14-test-vectors).
 
@@ -1336,7 +1336,7 @@ This defends against a substituted server, contingent on the client distribution
 3. Client -> Server: `POST /api/v1/auth/signin/start { login, authRequest }` (`login` is the canonical email).
 4. Server: looks up the user, loads `registrationRecord`. For an unknown email it uses the fake OPAQUE response already produced by `startLogin`, so the response has the same shape whether the account exists or not.
 5. Server: `opaque.server.startLogin(...)` -> `{ loginResponse, serverLoginState }`.
-6. Server: stores `serverLoginState` in Valkey under a random `loginSessionId` with a **120-second** TTL.
+6. Server: stores `serverLoginState` server-side under a random `loginSessionId` with a **120-second** TTL.
 
    > If the `loginSessionId` expires before the client sends `signin/finish`, the server returns **HTTP 401**. The client **MUST** restart the login flow from **step 1**.
    >
@@ -1346,7 +1346,7 @@ This defends against a substituted server, contingent on the client distribution
 8. Client: `opaque.client.finishLogin(...)` -> `{ finishLoginRequest, sessionKey, exportKey, serverStaticPublicKey }`.
 9. Client: verifies pinned key.
 10. Client -> Server: `POST /api/v1/auth/signin/finish { loginSessionId, authFinish }`.
-11. Server: retrieves and immediately deletes `serverLoginState` from Valkey.
+11. Server: retrieves and immediately deletes `serverLoginState`.
 12. Server: `opaque.server.finishLogin(...)` -> `{ sessionKey }`. The password is now proven.
 13. Server: one of three outcomes:
 
@@ -1385,7 +1385,7 @@ This defends against a substituted server, contingent on the client distribution
 - `masterKey` and sharing private keys live exclusively inside a dedicated Crypto Web Worker, never in the main thread's JavaScript heap.
 - Main <--> Worker communication uses a strict request/response protocol (`encryptSegment`, `decryptSegment`, `unwrapCollectionKey`, `createShareInvitation`, `acceptShareInvitation`, etc.). The Worker returns operation results, not key material, with one exception: `localKey` is returned to the main thread when a persistent session is created, so it can be stored in IndexedDB ([§9.2](#92-persistent-sessions-remember-me-opt-in)).
 - Inactivity timeout: 30 minutes. On timeout, the Worker is terminated and all in-memory key material is zeroized; the user must re-authenticate.
-- Session cookie: 24-hour absolute lifetime, renewed on activity, `HttpOnly; Secure; SameSite=Strict`.
+- Session cookie: expires 24 hours after the last activity, so a session in use does not expire, `HttpOnly; Secure; SameSite=Strict`.
 - Closing the tab destroys the Worker and the `masterKey`. Without a persistent session, the next visit requires a fresh login.
 - Worker script is served same-origin under strict CSP ([§16](#16-web-security-headers)), no inline, no eval beyond `wasm-unsafe-eval`.
 
@@ -3175,6 +3175,7 @@ Account deletion happens in two stages: immediate anonymization, then a purge.
    - Deletes all `sessions` and `persistent_sessions` rows, the audit log, the search index, email verification codes and notifications for this user.
    - Clears `registration_record`, `VXWM`, `VXRM`, `VXSK` and both sharing public keys, the 2FA secret, profile and billing details from the `users` row, replaces the email with a placeholder and sets `deleted_at`.
    - Stores a hash of the email in a suppression table for 30 days, which blocks re-registration with the same address during that time.
+   - Revokes every public link and every share of the user, in both directions. From this step nothing of the account is served, even while a moderation case holds its data (step 6), and a reversed decision never brings one of its links back.
 
 5. All active session cookies for this user become invalid immediately.
 6. **Data purge:** a scheduled job deletes the user's files, file versions, collections, keys, shares, public links and storage objects, then sets `purged_at`. While a moderation case about the account or one of its links is not closed, decided or under appeal included, the data purge waits until it is. The anonymization of step 4 still happens at once.
@@ -3237,6 +3238,7 @@ The value is capped by the plan's maximum. A scheduled job deletes versions whos
 
 ## Changelog
 
+- **32:** account deletion revokes the public links and the shares of the account at once, so nothing of it is served while a moderation case holds its data, and a reversed decision never restores one of its links (§19.3). The session cookie expires 24 hours after the last activity (§9.1).
 - **31:** a recent reauthentication of the session is also required to enable 2FA and to disable or clear the audit log (§9.9). A persistent session is created only within 10 minutes of the opening of the session (§9.2). A request log keeps the method, the path and the status, with tokens masked (§16.8). A moderation case not closed holds the data purge of a deleted account (§19.3).
 - **30:** recovery and sensitive actions need more than a session or an email code. Recovery codes are used once, for their flow only, with 5 guesses, at most 3 an hour per address, and only a keyed hash is stored (§12.1). A recovery asks for the second factor of an account with 2FA (`recovery/2fa`). Without it a destructive reset waits 72 hours with a cancel link, a new password cancels it, and a suspended account is not reset (§12.2). The password change, the phrase rotation and the sharing keypair rotation follow a reauthentication of the session, `reauth/start` and `reauth/finish`, which ends the session, then every session of the user, after repeated misses (§9.9, §11.3, §12.3). The 2FA elevation is bound to the session. Logins of an address slow down after repeated failures, and `2fa/verify` checks the account again (§8.2). Logout ends the persistent session of the device (§9.2).
 - **29:** a destructive reset runs in one transaction and creates a new root collection: the route takes `rootCollectionId`, `rootVxck` and `rootVxcm` (§12.2). The data purge deletes the file versions too (§12.2, §19.3). A generation conflict answers with `generation` and `maxGeneration` (§11.5.4). A share holds `view`, and `edit` on top of it, `reshare` is refused (§11.6). An attempt on a password-protected link is a read of the link (§5.11). An error response carries no internal message (§16.8).
@@ -3251,8 +3253,8 @@ The value is capped by the plan's maximum. A scheduled job deletes versions whos
 - **20:** lazy key rotation (§11.1). The revocation carries the rotations only the owner can do, read from a revocation plan: the shared collection, the share roots below it and the path between them, top-down, in one transaction with an exact coverage. The rest of the revoked tree waits for its rotation (`collections.key_rotation_pending`, §10.2): no new file, version, sub-collection, rename, move into it or share on it until its key rotates, by the owner or by an editor. A rotation no longer gives new file keys nor re-wraps the `VXCC` below (§5.14, §11, §11.1, §11.1.1). Every `vxfk` comes with its `collectionKeyGeneration`, checked as the latest, and a new version of a stale file takes a fresh `fileKey` (§6.5, §6.5.6.1, §11.4, §11.5.2). The `VXSH` of a collection share carries no key, a refusal deletes the share copies (§5.10, §11). `file_keys.vxfm` removed (§10.3). No change to blob layouts, AAD or derivations.
 - **19:** every sub-collection has a `VXCC` under its parent, a share holds copies of its shared collection only (§5.8, §5.14, §10.3, §11). Share access follows the tree, key chain route, grants for the shared collection only (§11). `VXCC` required on creation, re-wrapped under the new parent on a move, owner `VXCK` sent with a move to the root, nothing on a restore (§11). Rotation plan with the `parent`, new `VXCC` under it (§11.1 steps 1, 7b, 8, 10). No change to blob formats, AAD or derivations.
 - **18:** collection rotation without a new KEM: the remaining shares get one more generation under their unchanged `shareWrapKey`, rotation plan, exact coverage of the shares and `VXCC`, rotation of every collection the revoked share reached (§11.1). `VXCC` in their own table `child_collection_keys`, re-wrapped in place, never in a `vxck` column (§5.14, §10.3). Collection access of a share, grants with every generation (§11). Fixed the recipient copy of a shared collection key (§11) and the rows deleted at revocation (§11.1.1). No change to blob formats, AAD or derivations.
-- **17:** aligned with the share and file key changes in the code. A new version keeps the file key: `vxfk` only for a new file, `content_key_generation` set to the latest key, `vxfk` and `latestVxfk` returned by the file routes, invariant on `files.vxfm` (§6.5, §6.5.6.1, §10.2, §11.5.2). `file_versions.content_key_generation`, non-destructive restore (§10.2, §19.5). Public links served from `files.vxfm`, HTTP 410 once the content changed key (§5.11). `file_keys.vxfm` deprecated (§10.3). Rotations leave `files.vxfm` under the content key (§11.1, §11.1.1, §17). New `VXSW` blob (§5.15). Client-generated share id, `sender_vxsw` and `recipient_vxsw`, `vxsw` on accept, `PUT /api/v1/shares/{id}/recipient-copy` (§11). Server-side checks of every blob format (§5, §5.15, §6.5.6.1). Key generation in the AAD of `VXCK`, `VXFK` and `VXCC`, distinct AAD and wrapping key for the share copies of `VXCK`, AAD and wrapping key of `VXSW`, highest generation kept by clients (§4, §5.8, §5.9, §5.14, §5.15). These AAD changes break existing blobs: the protocol stays at version 1 because no account was created under the previous AAD.
-- **16:** aligned with the current code. API paths under `/api/v1` (same-origin), UUID v7 mostly everywhere, real routes and schemas. Client-generated `session_id` for `VXPS` (§5.6, §9.2). `vxwm` and `vxsk` returned only after `signin/finish`, uniform `signin/start` (§8.2). `ts` informative, no mandatory check (§11.2). New `VXMC` (§5.12) and `VXSI` (§5.13), `localCacheKey`, `sessionToken` and `childCollectionKeyWrap` derivations (§4). Direct upload for small files (§6.5). Rewritten recovery flow (§12.1), CSP (§16.1), account deletion (§19.3). New file versions section (§19.5). Re-encryption after revocation (§11.1.1) and web persistent sessions (§9.2) marked as planned. New `VXCC` blob for editor-created sub-collections, transitional on the owner side (§5.14). Email verified by code before the account is created, uniform `signup/start` (§8.1).
+- **17:** share and file key changes. A new version keeps the file key: `vxfk` only for a new file, `content_key_generation` set to the latest key, `vxfk` and `latestVxfk` returned by the file routes, invariant on `files.vxfm` (§6.5, §6.5.6.1, §10.2, §11.5.2). `file_versions.content_key_generation`, non-destructive restore (§10.2, §19.5). Public links served from `files.vxfm`, HTTP 410 once the content changed key (§5.11). `file_keys.vxfm` deprecated (§10.3). Rotations leave `files.vxfm` under the content key (§11.1, §11.1.1, §17). New `VXSW` blob (§5.15). Client-generated share id, `sender_vxsw` and `recipient_vxsw`, `vxsw` on accept, `PUT /api/v1/shares/{id}/recipient-copy` (§11). Server-side checks of every blob format (§5, §5.15, §6.5.6.1). Key generation in the AAD of `VXCK`, `VXFK` and `VXCC`, distinct AAD and wrapping key for the share copies of `VXCK`, AAD and wrapping key of `VXSW`, highest generation kept by clients (§4, §5.8, §5.9, §5.14, §5.15). These AAD changes break existing blobs: the protocol stays at version 1 because no account was created under the previous AAD.
+- **16:** API paths under `/api/v1` (same-origin), UUID v7 mostly everywhere, routes and schemas described in full. Client-generated `session_id` for `VXPS` (§5.6, §9.2). `vxwm` and `vxsk` returned only after `signin/finish`, uniform `signin/start` (§8.2). `ts` informative, no mandatory check (§11.2). New `VXMC` (§5.12) and `VXSI` (§5.13), `localCacheKey`, `sessionToken` and `childCollectionKeyWrap` derivations (§4). Direct upload for small files (§6.5). Rewritten recovery flow (§12.1), CSP (§16.1), account deletion (§19.3). New file versions section (§19.5). Re-encryption after revocation (§11.1.1) and web persistent sessions (§9.2) marked as planned. New `VXCC` blob for editor-created sub-collections, transitional on the owner side (§5.14). Email verified by code before the account is created, uniform `signup/start` (§8.1).
 
 [//]: # "LINKS"
 [opaque_rfc]: https://www.rfc-editor.org/info/rfc9807
