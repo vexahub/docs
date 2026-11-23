@@ -1346,8 +1346,10 @@ Cela défend contre un serveur substitué, sous réserve que le canal de distrib
 13. Serveur : une des trois issues suivantes :
 
     - **Compte suspendu :** erreur, aucune session n'est créée. Ce n'est révélé qu'une fois le mot de passe prouvé.
-    - **2FA requise :** la réponse porte un `twoFactorToken` de courte durée ; le client termine avec `POST /api/v1/auth/2fa/verify` ([AUTHENTICATION §4.5](/fr/AUTHENTICATION.md#45-authentification-à-deux-facteurs)). Pas encore de session.
+    - **2FA requise :** la réponse porte un `twoFactorToken` de courte durée ; le client termine avec `POST /api/v1/auth/2fa/verify` ([AUTHENTICATION §4.5](/fr/AUTHENTICATION.md#45-authentification-à-deux-facteurs)). Pas encore de session. Avant de la créer, `2fa/verify` revérifie le compte : suspendu ou supprimé, pas de session.
     - **Succès :** voir l'étape 14.
+
+    > **Échecs répétés :** les connexions échouées d'une adresse sont comptées, qu'elle ait un compte ou non. Au-delà de 10 échecs en 15 minutes, `signin/start` accepte une tentative par minute pour cette adresse. Rien n'est jamais bloqué, personne ne peut donc empêcher un propriétaire de se connecter, et la réponse ne révèle rien du compte. Le propriétaire d'un compte existant est prévenu une fois par email. Un mot de passe prouvé remet le compte à zéro.
 
 14. Serveur : dérive le jeton de session, stocke une ligne de session hachée et pose le cookie :
 
@@ -1421,7 +1423,7 @@ Un mécanisme de reprise lié à l'appareil. **JAMAIS** activé par défaut.
 
 #### Revocation
 
-- **Se déconnecter**: le client supprime `localKey` de l'`IndexedDB` + `DELETE /api/v1/account/persistent-sessions/{id}`.
+- **Se déconnecter**: le client supprime `localKey` de l'`IndexedDB`. La route de déconnexion révoque aussi la session persistante de l'appareil qui l'appelle, par son cookie `PS-AUTH`, et efface ce cookie. `DELETE /api/v1/account/persistent-sessions/{id}` révoque toute autre session persistante.
 - **Déconnecter de partout**: le client vide l'`IndexedDB` + `DELETE /api/v1/account/persistent-sessions` (sans id) révoque toutes les `persistent_sessions` de l'utilisateur.
 - **Changement de mot de passe**: le serveur éfface toutes les `persistent_sessions`; le client doit réactiver "Se souvenir de moi".
 
@@ -1734,6 +1736,22 @@ Pour éviter cela, le Crypto Worker **DOIT** suspendre l'éviction en inactivit�
 - Le statut d'épinglage pour téléchargement **DOIT** être effacé dès que le téléchargement se termine, est interrompu, ou que le flux est fermé. Selon ce qui survient en premier.
 - Le délai d'inactivité de session de 30 minutes n'est **pas** suspendu. Si le délai de session se déclenche durant un téléchargement, le Worker est terminé, le flux de téléchargement est interrompu, et l'utilisateur doit se réauthentifier.
 - Seules les clés directement requises pour le téléchargement actif sont épinglées. Le minuteur d'éviction en inactivité continue d'évincer normalement toutes les autres clés mises en cache.
+
+### 9.9 Réauthentification
+
+Trois actions changent ce qui protège le compte : le changement de mot de passe ([AUTHENTICATION §6.4](/fr/AUTHENTICATION.md#64-changement-de-mot-de-passe)), la rotation de la phrase de récupération ([§12.3](#123-rotation-de-la-phrase)) et la rotation des paires de clés de partage ([§11.3](#113-rotation-de-la-paire-de-clés-de-partage)). Une session seule ne suffit pas pour elles. Un cookie de session volé ne porte pas la `masterKey`, mais il pourrait remplacer `VXWM`, `VXRM` ou les clés de partage par des blobs que le propriétaire ne peut plus ouvrir. Ces actions **DOIVENT** suivre une réauthentification récente de la même session :
+
+1. Client -> Serveur : `POST /api/v1/auth/reauth/start { authRequest }` -> `{ loginResponse }` : une connexion **OPAQUE** du compte connecté, comme en [§8.2](#82-connexion).
+2. Client -> Serveur : `POST /api/v1/auth/reauth/finish { authFinish, otp }`. `otp` est un code TOTP ou un code de secours, exigé quand le compte a la 2FA, absent sinon.
+3. Serveur : une fois le mot de passe prouvé, et le second facteur quand il y en a un, les actions sensibles de **cette session seulement** s'ouvrent pour 10 minutes. Les autres sessions de l'utilisateur restent telles quelles.
+
+L'élévation 2FA de `POST /api/v1/auth/2fa/elevate` est liée à la session de la même façon ([AUTHENTICATION §4.5](/fr/AUTHENTICATION.md#45-authentification-à-deux-facteurs)), et une réauthentification avec un second facteur l'accorde aussi.
+
+Les mauvais mots de passe d'une réauthentification sont comptés par session et par utilisateur, jamais par adresse : ils ne ralentissent donc jamais les connexions du propriétaire ([§8.2](#82-connexion)) :
+
+- Après 5 échecs, la session prend fin.
+- Après 15 échecs de l'utilisateur dans la journée, toutes ses sessions et sessions persistantes prennent fin, et le propriétaire est prévenu par email. Une session persistante volée ne peut pas ouvrir une nouvelle session pour continuer à deviner.
+- Une réauthentification réussie remet les deux comptes à zéro.
 
 ## 10. Stockage côté serveur
 
@@ -2227,7 +2245,7 @@ Le serveur enregistre `created_at` indépendamment. Les deux valeurs sont dispon
 
 ### 11.3 Rotation de la paire de clés de partage
 
-Un utilisateur authentifié **PEUT** effectuer une rotation de ses paires de clés de partage à **tout** moment, par exemple s'il suspecte que sa clé de signature a été **observée**. Une rotation garde tous les partages : rien n'est révoqué et aucune copie de partage ne change.
+Un utilisateur authentifié **PEUT** effectuer une rotation de ses paires de clés de partage à **tout** moment, par exemple s'il suspecte que sa clé de signature a été **observée**. Une rotation garde tous les partages : rien n'est révoqué et aucune copie de partage ne change. La route de rotation exige une réauthentification récente de la session ([§9.9](#99-réauthentification)).
 
 Un partage ne dépend des paires de clés que tant que son destinataire n'a pas sa copie de `shareWrapKey` (`recipient_vxsw`, [§5.15](#515-vxsw---copie-de-la-clé-dencapsulation-de-partage)) : avant, le destinataire ouvre l'invitation avec sa clé X-Wing et la vérifie avec la clé ML-DSA-65 de l'expéditeur ([§11](#11-partage-kem-hybride-x-wing--signatures-ml-dsa-65)). Une fois la copie là, le partage se lit par elle, sous la `masterKey` de chaque côté, qui ne tourne jamais. Une rotation ne traite que les partages actifs de l'utilisateur sans copie destinataire, dans les deux sens.
 
@@ -2526,8 +2544,12 @@ La phrase est montrée une fois, **jamais persistée** côté client, **jamais t
 
 Flux de récupération (mot de passe oublié, phrase disponible) :
 
-1. L'utilisateur saisit son email. Client -> Serveur : `POST /api/v1/auth/recovery/start { email }`. La réponse est identique que le compte existe ou non. S'il existe, le serveur envoie un code à usage unique à cet email.
-2. L'utilisateur saisit le code. Client -> Serveur : `POST /api/v1/auth/recovery/verify { email, code }` -> `{ recoveryToken, userId, vxrm }`. `recoveryToken` est valable 15 minutes. Un code faux et un email inconnu renvoient la même erreur.
+1. L'utilisateur saisit son email. Client -> Serveur : `POST /api/v1/auth/recovery/start { email }`. La réponse est identique que le compte existe ou non. S'il existe, le serveur envoie un code à usage unique à cet email. Une adresse reçoit au plus 3 codes par heure, avec la même réponse au-delà.
+2. L'utilisateur saisit le code. Client -> Serveur : `POST /api/v1/auth/recovery/verify { email, code }` -> `{ recoveryToken, userId, vxrm, requires2FA }`. `recoveryToken` est valable 15 minutes. Un code faux et un email inconnu renvoient la même erreur.
+
+   > **Le code :** valable 15 minutes, pour un seul usage, et seulement pour le flux pour lequel il a été envoyé : un code de récupération n'ouvre jamais une réinitialisation destructive ([§12.2](#122-réinitialisation-destructive)), et inversement. Il accepte 5 essais, puis il disparaît. Le serveur n'en garde qu'une empreinte à clé.
+   >
+   > **Second facteur :** `requires2FA` vaut vrai quand le compte a la 2FA. Le client envoie alors `POST /api/v1/auth/recovery/2fa { recoveryToken, code }` avec un code TOTP ou un code de secours avant l'étape 4. Une récupération ne contourne jamais le second facteur : les étapes 4 et 6 sont refusées sans lui.
 3. L'utilisateur saisit sa phrase de récupération. Le client redérive `recoveryKey` et désencapsule `masterKey` depuis `VXRM` avec `userId` en AAD.
 
    > **En cas d'échec d'authentification AEAD :** le client **DOIT** afficher un message générique unique tel que « Phrase de récupération incorrecte ».
@@ -2535,7 +2557,7 @@ Flux de récupération (mot de passe oublié, phrase disponible) :
 4. L'utilisateur choisit un nouveau mot de passe. Le client démarre une nouvelle inscription **OPAQUE** : `POST /api/v1/auth/recovery/opaque { recoveryToken, registrationRequest }` -> `{ registrationResponse }`.
 5. Le client termine l'inscription et réencapsule la même `masterKey` avec le nouveau `masterKeyWrapper` -> nouveau `VXWM`.
 6. Client -> Serveur : `POST /api/v1/auth/recovery/finish { recoveryToken, registrationRecord, vxwm }`.
-7. Le serveur remplace uniquement `registration_record` et `vxwm` atomiquement, puis révoque toutes les sessions et sessions persistantes. `VXRM` et `VXSK` ne changent pas.
+7. Le serveur remplace uniquement `registration_record` et `vxwm` atomiquement, puis révoque toutes les sessions et sessions persistantes. `VXRM` et `VXSK` ne changent pas. Une réinitialisation destructive en attente pour le compte est annulée ([§12.2](#122-réinitialisation-destructive)).
 8. Tous les fichiers, collections et partages existants restent valides.
 
 > La phrase secrète BIP39 est intentionnellement laissée vide (`""`). Dans les portefeuilles de cryptomonnaies, la phrase secrète sert de « 25ème mot » pour créer des portefeuilles cachés.
@@ -2556,23 +2578,35 @@ Flux de récupération (mot de passe oublié, phrase disponible) :
 >
 > L'utilisateur repart de zéro avec un compte **vide**. Si une étape échoue, rien ne change.
 
+**Quand elle s'exécute.** Avec le second facteur d'un compte qui a la 2FA, donné sur le jeton de récupération, la réinitialisation s'exécute tout de suite. Sans lui (pas de 2FA, ou 2FA non donnée), elle attend 72 heures : la route répond `scheduledAt`, rien ne change entre-temps, et le propriétaire reçoit un email avec un lien pour l'annuler. Une fois l'échéance atteinte, le serveur l'exécute en une transaction, seulement si elle est toujours en attente. Une boîte mail seule n'efface jamais un compte sur-le-champ.
+
+- Le lien l'annule avec `POST /api/v1/auth/recovery/destructive-reset/cancel { token }`. Le serveur ne garde qu'une empreinte du jeton.
+- Un nouveau mot de passe du propriétaire, par un changement de mot de passe ou une récupération ([§12.1](#121-phrase-de-récupération-non-destructive)), l'annule.
+- Une réinitialisation ultérieure du même compte la remplace.
+- Un compte suspendu n'est pas réinitialisé : la demande est refusée, et une réinitialisation déjà en attente est retenue tant que la suspension dure.
+
+Le code suit les règles de [§12.1](#121-phrase-de-récupération-non-destructive), pour ce flux seulement.
+
 Routes, dans l'ordre :
 
 1. `POST /api/v1/auth/recovery/destructive-reset/request { email }` : envoie le code (même réponse que le compte existe ou non).
-2. `POST /api/v1/auth/recovery/destructive-reset/verify { email, code }` -> `{ recoveryToken, userId, vxrm }`.
-3. `POST /api/v1/auth/recovery/destructive-reset/start { recoveryToken, registrationRequest }` -> `{ registrationResponse }`.
-4. `POST /api/v1/auth/recovery/destructive-reset { recoveryToken, registrationRecord, vxwm, vxrm, vxsk, sharingPublicXwing, sharingPublicSignature, rootCollectionId, rootVxck, rootVxcm }`.
+2. `POST /api/v1/auth/recovery/destructive-reset/verify { email, code }` -> `{ recoveryToken, userId, vxrm, requires2FA }`.
+3. `POST /api/v1/auth/recovery/2fa { recoveryToken, code }`, quand `requires2FA` vaut vrai et que le second facteur est disponible : la réinitialisation s'exécutera tout de suite.
+4. `POST /api/v1/auth/recovery/destructive-reset/start { recoveryToken, registrationRequest }` -> `{ registrationResponse }`.
+5. `POST /api/v1/auth/recovery/destructive-reset { recoveryToken, registrationRecord, vxwm, vxrm, vxsk, sharingPublicXwing, sharingPublicSignature, rootCollectionId, rootVxck, rootVxcm }` -> `{ scheduledAt }`, null quand la réinitialisation s'est exécutée tout de suite.
+6. `POST /api/v1/auth/recovery/destructive-reset/cancel { token }`, depuis le lien de l'email.
 
 ### 12.3 Rotation de la phrase
 
-Les utilisateurs authentifiés peuvent régénérer leur phrase de récupération depuis les paramètres avec `POST /api/v1/account/recovery-phrase/rotate`. La nouvelle phrase encapsule la `masterKey` existante ; l'ancien `vxrm` est remplacé atomiquement.
+Les utilisateurs authentifiés peuvent régénérer leur phrase de récupération depuis les paramètres avec `POST /api/v1/account/recovery-phrase/rotate`. La nouvelle phrase encapsule la `masterKey` existante ; l'ancien `vxrm` est remplacé atomiquement. La route exige une réauthentification récente de la session ([§9.9](#99-réauthentification)).
 
 ### 12.4 Mesures de protection
 
 - L'étape de confirmation de la phrase à l'inscription est obligatoire. Aucune option pour passer cette étape.
 - La phrase est affichée une fois, jamais journalisée, jamais persistée.
-- Les points d'accès de récupération sont soumis à une limitation agressive par IP et par email.
-- La réinitialisation destructive nécessite une vérification par code email.
+- Codes de récupération : un seul usage, liés à leur flux, 5 essais, 15 minutes, au plus 3 par heure et par adresse, stockés sous forme d'empreinte à clé ([§12.1](#121-phrase-de-récupération-non-destructive)).
+- Une récupération exige le second facteur d'un compte qui a la 2FA. Une réinitialisation destructive sans lui attend 72 heures et peut être annulée ([§12.2](#122-réinitialisation-destructive)).
+- Le changement de mot de passe, la rotation de la phrase et la rotation des paires de clés de partage exigent une réauthentification récente de la session ([§9.9](#99-réauthentification)).
 
 ## 13. Versionnage du protocole et migration
 
@@ -3028,6 +3062,7 @@ La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée suppri
 
 ## Historique des modifications
 
+- **30 :** la récupération et les actions sensibles demandent plus qu'une session ou un code reçu par email. Les codes de récupération servent une fois, pour leur flux seulement, avec 5 essais, au plus 3 par heure et par adresse, et seule une empreinte à clé est stockée (§12.1). Une récupération demande le second facteur d'un compte qui a la 2FA (`recovery/2fa`). Sans lui, une réinitialisation destructive attend 72 heures avec un lien d'annulation, un nouveau mot de passe l'annule, et un compte suspendu n'est pas réinitialisé (§12.2). Le changement de mot de passe, la rotation de la phrase et la rotation des paires de clés de partage suivent une réauthentification de la session, `reauth/start` et `reauth/finish`, qui met fin à la session, puis à toutes les sessions de l'utilisateur, après des échecs répétés (§9.9, §11.3, §12.3). L'élévation 2FA est liée à la session. Les connexions d'une adresse ralentissent après des échecs répétés, et `2fa/verify` revérifie le compte (§8.2). La déconnexion met fin à la session persistante de l'appareil (§9.2).
 - **29 :** une réinitialisation destructive se fait en une transaction et crée une nouvelle collection racine : la route prend `rootCollectionId`, `rootVxck` et `rootVxcm` (§12.2). La purge des données supprime aussi les versions de fichier (§12.2, §19.3). Un conflit de génération répond avec `generation` et `maxGeneration` (§11.5.4). Un partage porte `view`, et `edit` en plus, `reshare` est refusé (§11.6). Une tentative sur un lien protégé par mot de passe est une lecture du lien (§5.11). Une réponse d'erreur ne porte aucun message interne (§16.8).
 - **28 :** une invitation porte les copies de chaque génération de la clé partagée (`collectionKeys` ou `fileKeys`), vérifiées sous le verrou de la cible et stockées avec le partage en une transaction (§11). Les routes de grant `POST /api/v1/shares/{shareId}/collections` et `POST /api/v1/shares/{shareId}/files` disparaissent. Une écriture qui ajoute une génération de clé la nomme avec `keyGeneration`, la dernière plus un, et est refusée sinon (§5.8) : les rotations d'une clé de collection ou d'une clé de fichier, une révocation, un déplacement de fichier, une version avec une clé neuve et un rechiffrement (§6.5.6.1, §11.1, §11.1.1, §11.4). Une révocation ne s'applique qu'à un partage encore actif (§11.1). Les créations de partage et les rotations de collection serializables sont rejouées une fois après avoir perdu contre une transaction concurrente (§11, §11.1).
 - **27 :** une rotation de la paire de clés de partage garde tous les partages (§11.3) : elle lit un plan de rotation, signe de nouveau les invitations sortantes sans copie destinataire, après avoir vérifié qu'elle les avait déjà signées, et donne aux entrantes leur copie destinataire, sous le verrou de la ligne de l'utilisateur avec une couverture exacte. Rien n'est révoqué et aucune copie de partage ne change. `POST /api/v1/shares` porte le SHA-256 des clés avec lesquelles l'invitation a été faite, refusées une fois qu'une rotation les a remplacées (§11). Une invitation copiée par une rotation s'accepte sans `vxsw`. Le flux de renouvellement (rekey), `pending_rekey` et `PUT /api/v1/shares/{id}/recipient-copy` disparaissent (§5.15, §11).

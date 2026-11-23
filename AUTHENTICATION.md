@@ -173,11 +173,21 @@ Absolute lifetime: 24 hours, renewed on activity. The raw `sessionKey` is zeroiz
 After `signin/finish` has proven the password, the server can still stop the login before creating a session:
 
 1. **Account suspended:** an error, no session. This is only revealed after the password is proven.
-2. **2FA enabled:** the server answers with a short-lived `twoFactorToken` and no session. The client completes with `POST /api/v1/auth/2fa/verify { twoFactorToken, code }`, where `code` is a TOTP code or one of the single-use **recovery codes**. Only then is the session cookie issued.
+2. **2FA enabled:** the server answers with a short-lived `twoFactorToken` and no session. The client completes with `POST /api/v1/auth/2fa/verify { twoFactorToken, code }`, where `code` is a TOTP code or one of the single-use **recovery codes**. Before issuing it, `2fa/verify` checks the account again: suspended or deleted, no session. Only then is the session cookie issued.
 
-2FA is set up from the account settings (`POST /api/v1/account/2fa/setup`, then `POST /api/v1/account/2fa/verify`), recovery codes are renewed with `POST /api/v1/account/2fa/recovery-codes`, and 2FA is turned off with `DELETE /api/v1/account/2fa`. Some sensitive account actions require a fresh 2FA code (`POST /api/v1/auth/2fa/elevate`).
+2FA is set up from the account settings (`POST /api/v1/account/2fa/setup`, then `POST /api/v1/account/2fa/verify`), recovery codes are renewed with `POST /api/v1/account/2fa/recovery-codes`, and 2FA is turned off with `DELETE /api/v1/account/2fa`. Some sensitive account actions require a fresh 2FA code (`POST /api/v1/auth/2fa/elevate`). The elevation lasts 15 minutes, for the session that gave the code only.
+
+A TOTP code is accepted once: the same code, or one of an earlier time step, is refused afterwards ([RFC 6238 §5.2](https://www.rfc-editor.org/rfc/rfc6238#section-5.2)). A recovery code works once too.
 
 > **2FA is a server-side access control.** It decides whether the server creates a session. It does **not** protect the keys: `VXWM` is wrapped only by the password-derived `masterKeyWrapper`, and nothing in the key hierarchy depends on the TOTP secret. The server holds the TOTP secret (`users.two_factor_secret`).
+
+### 4.6 Failed logins
+
+The failed logins of an address are counted, whether it has an account or not. Past 10 failures within 15 minutes, the address gets one login attempt per minute. Nothing is ever locked, so nobody can lock an owner out, and the answer reveals nothing about the account. The owner of an existing account is told once by email. A proven password clears the count ([CRYPTO §8.2](./CRYPTO.md#82-login)).
+
+### 4.7 Reauthentication
+
+The password change (§6.4), the recovery phrase rotation (§6.3) and the sharing keypair rotation need more than a session: a recent **OPAQUE** login of the same session, `POST /api/v1/auth/reauth/start` then `POST /api/v1/auth/reauth/finish`, with the second factor when the account has 2FA. It opens these actions for 10 minutes, on that session only. Repeated wrong passwords end the session, then every session and persistent session of the user, and never slow down the owner's own logins. The full rules are in [CRYPTO §9.9](./CRYPTO.md#99-reauthentication).
 
 ## 5. Session Management
 
@@ -234,7 +244,7 @@ Never enabled by default. When opted in, a device-bound blob lets the user resum
 
 **Revocation:**
 
-- **Logout**: client deletes `localKey` from IndexedDB + `DELETE /api/v1/account/persistent-sessions/{id}`
+- **Logout**: client deletes `localKey` from IndexedDB. The logout route also revokes the persistent session of the device it is called from, by its `PS-AUTH` cookie, and clears that cookie. `DELETE /api/v1/account/persistent-sessions/{id}` revokes any other one.
 - **Sign out everywhere**: client clears IndexedDB + `DELETE /api/v1/account/persistent-sessions` (no id) revokes all `persistent_sessions` for the user
 - **Password change**: server wipes all `persistent_sessions`; client must re-activate "Remember me"
 
@@ -289,28 +299,30 @@ The phrase is shown once at registration, never stored client-side, never transm
 
 **Recovery flow (password forgotten, phrase available):**
 
-1. User enters their **email**. Client -> Server: `POST /api/v1/auth/recovery/start { email }` (_rate-limited_). Same response whether the account exists or not; a code is sent by email if it does.
-2. User enters the code. Client -> Server: `POST /api/v1/auth/recovery/verify { email, code }` <- { **recoveryToken**, **userId**, **vxrm** }
+1. User enters their **email**. Client -> Server: `POST /api/v1/auth/recovery/start { email }` (_rate-limited_). Same response whether the account exists or not; a code is sent by email if it does. The code is valid 15 minutes, for one use, for this flow only, and takes 5 guesses. An address gets at most 3 codes an hour.
+2. User enters the code. Client -> Server: `POST /api/v1/auth/recovery/verify { email, code }` <- { **recoveryToken**, **userId**, **vxrm**, **requires2FA** }. When **requires2FA** is true, the client sends `POST /api/v1/auth/recovery/2fa { recoveryToken, code }` with a TOTP or recovery code: a recovery never goes around the second factor
 3. User enters the **recovery phrase**. Client re-derives `recoveryKey` from phrase + **userId**
 4. Client decrypts `VXRM` (AAD **userId**) -> `masterKey` (same `masterKey` as always)
 5. User chooses a new password
 6. Client runs a fresh **OPAQUE** registration: `POST /api/v1/auth/recovery/opaque { recoveryToken, registrationRequest }`
 7. Client re-wraps `masterKey` with the new `masterKeyWrapper` -> new `VXWM`
 8. Client -> Server: `POST /api/v1/auth/recovery/finish`
-   { **recoveryToken**, **registrationRecord**, **vxwm** } (_atomic replace_, all sessions revoked)
+   { **recoveryToken**, **registrationRecord**, **vxwm** } (_atomic replace_, all sessions revoked, a waiting destructive reset cancelled)
 9. All existing files, collections, and shares remain valid. `masterKey`, `VXRM` and `VXSK` never changed
 
 Full flow: [CRYPTO §12.1](./CRYPTO.md#121-recovery-phrase-non-destructive).
 
 ### 6.2 Destructive Reset
 
-When both password and recovery phrase are lost. Confirmed only by a code sent by email. Displays an explicit data-loss warning, then atomically wipes all files and rotates all key material under a new `reset_generation`. There is no way back from this path.
+When both password and recovery phrase are lost. Confirmed by a code sent by email. Displays an explicit data-loss warning, then atomically wipes all files and rotates all key material under a new `reset_generation`. There is no way back from this path.
 
-Routes: `POST /api/v1/auth/recovery/destructive-reset/request`, `.../verify`, `.../start`, then `POST /api/v1/auth/recovery/destructive-reset` ([CRYPTO §12.2](./CRYPTO.md#122-destructive-reset)).
+With the second factor of an account that has 2FA (`POST /api/v1/auth/recovery/2fa`), the reset runs at once. Without it, it waits 72 hours and the owner gets an email with a link to cancel it. A new password of the owner cancels it too, and a suspended account is not reset.
+
+Routes: `POST /api/v1/auth/recovery/destructive-reset/request`, `.../verify`, optionally `POST /api/v1/auth/recovery/2fa`, `.../start`, then `POST /api/v1/auth/recovery/destructive-reset`, which answers `scheduledAt` when the reset waits. The link of the email calls `.../cancel` ([CRYPTO §12.2](./CRYPTO.md#122-destructive-reset)).
 
 ### 6.3 Phrase Rotation
 
-From settings, an authenticated user can regenerate their recovery phrase with `POST /api/v1/account/recovery-phrase/rotate` ([CRYPTO §12.3](./CRYPTO.md#123-phrase-rotation)). The new phrase wraps the existing `masterKey`; the old `VXRM` is replaced atomically. The `masterKey` itself does not change, so no file re-encryption is needed.
+From settings, an authenticated user can regenerate their recovery phrase with `POST /api/v1/account/recovery-phrase/rotate` ([CRYPTO §12.3](./CRYPTO.md#123-phrase-rotation)). The new phrase wraps the existing `masterKey`; the old `VXRM` is replaced atomically. The `masterKey` itself does not change, so no file re-encryption is needed. The route requires a recent reauthentication of the session (§4.7).
 
 ### 6.4 Password Change
 
@@ -319,7 +331,9 @@ An authenticated user changes their password in two steps:
 1. `POST /api/v1/auth/change-password/start { registrationRequest }` -> `{ registrationResponse }`: a fresh **OPAQUE** registration for the new password.
 2. `POST /api/v1/auth/change-password { registrationRecord, vxwm }`: the client re-wraps the same `masterKey` under the new `masterKeyWrapper`.
 
-Only `registration_record` and `VXWM` change. `VXRM`, `VXSK` and every file and collection key stay as they are. All sessions and persistent sessions of the user are revoked.
+Only `registration_record` and `VXWM` change. `VXRM`, `VXSK` and every file and collection key stay as they are. All sessions and persistent sessions of the user are revoked, and a destructive reset waiting for the account is cancelled.
+
+The second step requires a recent reauthentication of the session (§4.7): a stolen session cannot replace the password.
 
 ## 7. Key Material Quick Reference
 

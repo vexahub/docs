@@ -173,11 +173,21 @@ Durée de vie absolue : 24 heures, renouvelée à l'activité. Le `sessionKey` b
 Une fois le mot de passe prouvé par `signin/finish`, le serveur peut encore arrêter la connexion avant de créer une session :
 
 1. **Compte suspendu :** une erreur, pas de session. Ce n'est révélé qu'après la preuve du mot de passe.
-2. **2FA activée :** le serveur répond avec un `twoFactorToken` de courte durée et sans session. Le client termine avec `POST /api/v1/auth/2fa/verify { twoFactorToken, code }`, où `code` est un code TOTP ou l'un des **codes de secours** à usage unique. Ce n'est qu'alors que le cookie de session est émis.
+2. **2FA activée :** le serveur répond avec un `twoFactorToken` de courte durée et sans session. Le client termine avec `POST /api/v1/auth/2fa/verify { twoFactorToken, code }`, où `code` est un code TOTP ou l'un des **codes de secours** à usage unique. Avant de l'émettre, `2fa/verify` revérifie le compte : suspendu ou supprimé, pas de session. Ce n'est qu'alors que le cookie de session est émis.
 
-La 2FA s'active depuis les paramètres du compte (`POST /api/v1/account/2fa/setup`, puis `POST /api/v1/account/2fa/verify`), les codes de secours se renouvellent avec `POST /api/v1/account/2fa/recovery-codes`, et la 2FA se désactive avec `DELETE /api/v1/account/2fa`. Certaines actions sensibles du compte demandent un code 2FA récent (`POST /api/v1/auth/2fa/elevate`).
+La 2FA s'active depuis les paramètres du compte (`POST /api/v1/account/2fa/setup`, puis `POST /api/v1/account/2fa/verify`), les codes de secours se renouvellent avec `POST /api/v1/account/2fa/recovery-codes`, et la 2FA se désactive avec `DELETE /api/v1/account/2fa`. Certaines actions sensibles du compte demandent un code 2FA récent (`POST /api/v1/auth/2fa/elevate`). L'élévation dure 15 minutes, pour la seule session qui a donné le code.
+
+Un code TOTP n'est accepté qu'une fois : le même code, ou celui d'un pas de temps antérieur, est refusé ensuite ([RFC 6238 §5.2](https://www.rfc-editor.org/rfc/rfc6238#section-5.2)). Un code de secours ne sert qu'une fois lui aussi.
 
 > **La 2FA est un contrôle d'accès côté serveur.** Elle décide si le serveur crée une session. Elle ne protège **pas** les clés : `VXWM` n'est encapsulé que par le `masterKeyWrapper` dérivé du mot de passe, et rien dans la hiérarchie de clés ne dépend du secret TOTP. Le serveur détient le secret TOTP (`users.two_factor_secret`).
+
+### 4.6 Connexions échouées
+
+Les connexions échouées d'une adresse sont comptées, qu'elle ait un compte ou non. Au-delà de 10 échecs en 15 minutes, l'adresse a droit à une tentative de connexion par minute. Rien n'est jamais bloqué, personne ne peut donc empêcher un propriétaire de se connecter, et la réponse ne révèle rien du compte. Le propriétaire d'un compte existant est prévenu une fois par email. Un mot de passe prouvé remet le compte à zéro ([CRYPTO §8.2](/fr/CRYPTO.md#82-connexion)).
+
+### 4.7 Réauthentification
+
+Le changement de mot de passe (§6.4), la rotation de la phrase de récupération (§6.3) et la rotation des paires de clés de partage demandent plus qu'une session : une connexion **OPAQUE** récente de la même session, `POST /api/v1/auth/reauth/start` puis `POST /api/v1/auth/reauth/finish`, avec le second facteur quand le compte a la 2FA. Elle ouvre ces actions pour 10 minutes, sur cette session seulement. Des mauvais mots de passe répétés mettent fin à la session, puis à toutes les sessions et sessions persistantes de l'utilisateur, et ne ralentissent jamais les connexions du propriétaire. Les règles complètes sont en [CRYPTO §9.9](/fr/CRYPTO.md#99-réauthentification).
 
 ## 5. Gestion des sessions
 
@@ -234,7 +244,7 @@ Jamais activé par défaut. Lorsqu'il est choisi, un blob lié à l'appareil per
 
 **Révocation :**
 
-- **Déconnexion** : le client supprime `localKey` d'IndexedDB + `DELETE /api/v1/account/persistent-sessions/{id}`
+- **Déconnexion** : le client supprime `localKey` d'IndexedDB. La route de déconnexion révoque aussi la session persistante de l'appareil qui l'appelle, par son cookie `PS-AUTH`, et efface ce cookie. `DELETE /api/v1/account/persistent-sessions/{id}` révoque toute autre session persistante.
 - **Déconnecter partout** : le client vide IndexedDB + `DELETE /api/v1/account/persistent-sessions` (sans id) révoque toutes les `persistent_sessions` de l'utilisateur
 - **Changement de mot de passe** : le serveur efface toutes les `persistent_sessions` ; le client doit réactiver « Se souvenir de moi »
 
@@ -289,28 +299,30 @@ La phrase est montrée une fois à l'inscription, jamais stockée côté client,
 
 **Flux de récupération (mot de passe oublié, phrase disponible) :**
 
-1. L'utilisateur saisit son **email**. Client -> Serveur : `POST /api/v1/auth/recovery/start { email }` _(limité en débit)_. Même réponse que le compte existe ou non ; un code est envoyé par email s'il existe.
-2. L'utilisateur saisit le code. Client -> Serveur : `POST /api/v1/auth/recovery/verify { email, code }` <- { **recoveryToken**, **userId**, **vxrm** }
+1. L'utilisateur saisit son **email**. Client -> Serveur : `POST /api/v1/auth/recovery/start { email }` _(limité en débit)_. Même réponse que le compte existe ou non ; un code est envoyé par email s'il existe. Le code est valable 15 minutes, pour un seul usage, pour ce flux seulement, et accepte 5 essais. Une adresse reçoit au plus 3 codes par heure.
+2. L'utilisateur saisit le code. Client -> Serveur : `POST /api/v1/auth/recovery/verify { email, code }` <- { **recoveryToken**, **userId**, **vxrm**, **requires2FA** }. Quand **requires2FA** vaut vrai, le client envoie `POST /api/v1/auth/recovery/2fa { recoveryToken, code }` avec un code TOTP ou un code de secours : une récupération ne contourne jamais le second facteur
 3. L'utilisateur saisit la **phrase de récupération**. Le client redérive `recoveryKey` à partir de la phrase + **userId**
 4. Le client déchiffre `VXRM` (AAD **userId**) -> `masterKey` (la même `masterKey` qu'avant)
 5. L'utilisateur choisit un nouveau mot de passe
 6. Le client lance une nouvelle inscription **OPAQUE** : `POST /api/v1/auth/recovery/opaque { recoveryToken, registrationRequest }`
 7. Le client réencapsule `masterKey` avec le nouveau `masterKeyWrapper` -> nouveau `VXWM`
 8. Client -> Serveur : `POST /api/v1/auth/recovery/finish`
-   { **recoveryToken**, **registrationRecord**, **vxwm** } _(remplacement atomique, toutes les sessions révoquées)_
+   { **recoveryToken**, **registrationRecord**, **vxwm** } _(remplacement atomique, toutes les sessions révoquées, une réinitialisation destructive en attente annulée)_
 9. Tous les fichiers, collections et partages existants restent valides. `masterKey`, `VXRM` et `VXSK` n'ont pas changé
 
 Flux complet : [CRYPTO §12.1](/fr/CRYPTO.md#121-phrase-de-récupération-non-destructive).
 
 ### 6.2 Réinitialisation destructive
 
-Lorsque le mot de passe et la phrase de récupération sont tous deux perdus. Confirmée uniquement par un code envoyé par email. Affiche un avertissement explicite de perte de données, puis efface atomiquement tous les fichiers et fait tourner tout le matériel de clés sous un nouveau `reset_generation`. Il n'y a pas de retour en arrière possible sur ce chemin.
+Lorsque le mot de passe et la phrase de récupération sont tous deux perdus. Confirmée par un code envoyé par email. Affiche un avertissement explicite de perte de données, puis efface atomiquement tous les fichiers et fait tourner tout le matériel de clés sous un nouveau `reset_generation`. Il n'y a pas de retour en arrière possible sur ce chemin.
 
-Routes : `POST /api/v1/auth/recovery/destructive-reset/request`, `.../verify`, `.../start`, puis `POST /api/v1/auth/recovery/destructive-reset` ([CRYPTO §12.2](/fr/CRYPTO.md#122-réinitialisation-destructive)).
+Avec le second facteur d'un compte qui a la 2FA (`POST /api/v1/auth/recovery/2fa`), la réinitialisation s'exécute tout de suite. Sans lui, elle attend 72 heures et le propriétaire reçoit un email avec un lien pour l'annuler. Un nouveau mot de passe du propriétaire l'annule aussi, et un compte suspendu n'est pas réinitialisé.
+
+Routes : `POST /api/v1/auth/recovery/destructive-reset/request`, `.../verify`, éventuellement `POST /api/v1/auth/recovery/2fa`, `.../start`, puis `POST /api/v1/auth/recovery/destructive-reset`, qui répond `scheduledAt` quand la réinitialisation attend. Le lien de l'email appelle `.../cancel` ([CRYPTO §12.2](/fr/CRYPTO.md#122-réinitialisation-destructive)).
 
 ### 6.3 Rotation de la phrase
 
-Depuis les paramètres, un utilisateur authentifié peut régénérer sa phrase de récupération avec `POST /api/v1/account/recovery-phrase/rotate` ([CRYPTO §12.3](/fr/CRYPTO.md#123-rotation-de-la-phrase)). La nouvelle phrase encapsule la `masterKey` existante ; l'ancien `VXRM` est remplacé de manière atomique. La `masterKey` elle-même ne change pas, aucun rechiffrement de fichiers n'est donc nécessaire.
+Depuis les paramètres, un utilisateur authentifié peut régénérer sa phrase de récupération avec `POST /api/v1/account/recovery-phrase/rotate` ([CRYPTO §12.3](/fr/CRYPTO.md#123-rotation-de-la-phrase)). La nouvelle phrase encapsule la `masterKey` existante ; l'ancien `VXRM` est remplacé de manière atomique. La `masterKey` elle-même ne change pas, aucun rechiffrement de fichiers n'est donc nécessaire. La route exige une réauthentification récente de la session (§4.7).
 
 ### 6.4 Changement de mot de passe
 
@@ -319,7 +331,9 @@ Un utilisateur authentifié change son mot de passe en deux étapes :
 1. `POST /api/v1/auth/change-password/start { registrationRequest }` -> `{ registrationResponse }` : une nouvelle inscription **OPAQUE** pour le nouveau mot de passe.
 2. `POST /api/v1/auth/change-password { registrationRecord, vxwm }` : le client réencapsule la même `masterKey` sous le nouveau `masterKeyWrapper`.
 
-Seuls `registration_record` et `VXWM` changent. `VXRM`, `VXSK` et toutes les clés de fichiers et de collections restent identiques. Toutes les sessions et sessions persistantes de l'utilisateur sont révoquées.
+Seuls `registration_record` et `VXWM` changent. `VXRM`, `VXSK` et toutes les clés de fichiers et de collections restent identiques. Toutes les sessions et sessions persistantes de l'utilisateur sont révoquées, et une réinitialisation destructive en attente pour le compte est annulée.
+
+La seconde étape exige une réauthentification récente de la session (§4.7) : une session volée ne peut pas remplacer le mot de passe.
 
 ## 7. Référence rapide du matériel de clés
 

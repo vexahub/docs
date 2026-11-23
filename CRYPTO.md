@@ -1351,8 +1351,10 @@ This defends against a substituted server, contingent on the client distribution
 13. Server: one of three outcomes:
 
     - **Account suspended:** error, no session is created. This is only revealed after the password is proven.
-    - **2FA required:** the response carries a short-lived `twoFactorToken`; the client completes with `POST /api/v1/auth/2fa/verify` ([AUTHENTICATION §4.5](AUTHENTICATION.md#45-two-factor-authentication)). No session yet.
+    - **2FA required:** the response carries a short-lived `twoFactorToken`; the client completes with `POST /api/v1/auth/2fa/verify` ([AUTHENTICATION §4.5](AUTHENTICATION.md#45-two-factor-authentication)). No session yet. Before creating it, `2fa/verify` checks the account again: suspended or deleted, no session.
     - **Success:** see step 14.
+
+    > **Repeated failures:** the failed logins of an address are counted, whether it has an account or not. Past 10 failures within 15 minutes, `signin/start` takes one attempt per minute for that address. Nothing is ever locked, so nobody can lock an owner out, and the answer reveals nothing about the account. The owner of an existing account is told once by email. A proven password clears the count.
 
 14. Server: derives the session token, stores a hashed session row and sets the cookie:
 
@@ -1427,7 +1429,7 @@ A device-bound resume mechanism. **NEVER** enabled by default.
 
 #### Revocation
 
-- **Logout**: client deletes `localKey` from `IndexedDB` + `DELETE /api/v1/account/persistent-sessions/{id}`.
+- **Logout**: client deletes `localKey` from `IndexedDB`. The logout route also revokes the persistent session of the device it is called from, by its `PS-AUTH` cookie, and clears that cookie. `DELETE /api/v1/account/persistent-sessions/{id}` revokes any other one.
 - **Sign out everywhere**: client clears `IndexedDB` + `DELETE /api/v1/account/persistent-sessions` (no id) revokes all `persistent_sessions` for the user.
 - **Password change**: server wipes all `persistent_sessions`; client must re-activate "Remember me".
 
@@ -1843,6 +1845,22 @@ currently participating in an active download. Concretely:
   aborted, and the user must re-authenticate.
 - Only keys directly required for the active download are pinned. The idle-eviction
   timer continues to evict all other cached keys normally.
+
+### 9.9 Reauthentication
+
+Three actions change what protects the account: the password change ([AUTHENTICATION §6.4](AUTHENTICATION.md#64-password-change)), the recovery phrase rotation ([§12.3](#123-phrase-rotation)) and the sharing keypair rotation ([§11.3](#113-sharing-keypair-rotation)). A session alone is not enough for them. A stolen session cookie does not carry the `masterKey`, but it could replace `VXWM`, `VXRM` or the sharing keys with blobs the owner can no longer open. These actions **MUST** follow a recent reauthentication of the same session:
+
+1. Client -> Server: `POST /api/v1/auth/reauth/start { authRequest }` -> `{ loginResponse }`: an **OPAQUE** login of the signed in account, as in [§8.2](#82-login).
+2. Client -> Server: `POST /api/v1/auth/reauth/finish { authFinish, otp }`. `otp` is a TOTP or recovery code, required when the account has 2FA, absent otherwise.
+3. Server: once the password, and the second factor when there is one, is proven, the sensitive actions of **this session only** open for 10 minutes. The other sessions of the user stay as they were.
+
+The 2FA elevation of `POST /api/v1/auth/2fa/elevate` is bound to the session the same way ([AUTHENTICATION §4.5](AUTHENTICATION.md#45-two-factor-authentication)), and a reauthentication with a second factor grants it too.
+
+Wrong passwords on a reauthentication are counted per session and per user, never per address, so they never slow down the owner's own logins ([§8.2](#82-login)):
+
+- After 5 misses, the session ends.
+- After 15 misses of the user within a day, every session and persistent session of the user ends, and the owner is told by email. A stolen persistent session cannot open a new session to keep guessing.
+- A successful reauthentication clears both counts.
 
 ## 10. Server-side Storage
 
@@ -2336,7 +2354,7 @@ The server records `created_at` independently. Both values are available to the 
 
 ### 11.3 Sharing Keypair Rotation
 
-An authenticated user **MAY** rotate their sharing keypairs at **any** time, for example if they suspect their signing key has been **observed**. A rotation keeps every share: nothing is revoked and no share copy changes.
+An authenticated user **MAY** rotate their sharing keypairs at **any** time, for example if they suspect their signing key has been **observed**. A rotation keeps every share: nothing is revoked and no share copy changes. The rotation route requires a recent reauthentication of the session ([§9.9](#99-reauthentication)).
 
 A share depends on the keypairs only until its recipient holds its copy of `shareWrapKey` (`recipient_vxsw`, [§5.15](#515-vxsw---share-wrap-key-copy)): before, the recipient opens the invitation with its X-Wing key and checks it against the sender's ML-DSA-65 key ([§11](#11-sharing-x-wing-hybrid-kem--ml-dsa-65-signatures)). Once the copy is there, the share is read through it, under the `masterKey` of each side, which never rotates. A rotation only deals with the active shares of the user without a recipient copy, in both directions.
 
@@ -2645,8 +2663,12 @@ The phrase is shown once, **never persisted** client-side, **never transmitted**
 
 Recovery flow (forgotten password, phrase available):
 
-1. User enters email. Client -> Server: `POST /api/v1/auth/recovery/start { email }`. The response is identical whether the account exists or not. If it exists, the server sends a one-time code to that email.
-2. User enters the code. Client -> Server: `POST /api/v1/auth/recovery/verify { email, code }` -> `{ recoveryToken, userId, vxrm }`. `recoveryToken` is valid for 15 minutes. A wrong code or an unknown email both return the same error.
+1. User enters email. Client -> Server: `POST /api/v1/auth/recovery/start { email }`. The response is identical whether the account exists or not. If it exists, the server sends a one-time code to that email. An address gets at most 3 codes an hour, with the same response past the limit.
+2. User enters the code. Client -> Server: `POST /api/v1/auth/recovery/verify { email, code }` -> `{ recoveryToken, userId, vxrm, requires2FA }`. `recoveryToken` is valid for 15 minutes. A wrong code or an unknown email both return the same error.
+
+   > **The code:** valid 15 minutes, for one use, and only for the flow it was sent for: a recovery code never opens a destructive reset ([§12.2](#122-destructive-reset)), and back. It takes 5 guesses, then it is gone. The server keeps only a keyed hash of it.
+   >
+   > **Second factor:** `requires2FA` is true when the account has 2FA. The client then sends `POST /api/v1/auth/recovery/2fa { recoveryToken, code }` with a TOTP or recovery code before step 4. A recovery never goes around the second factor: steps 4 and 6 are refused without it.
 3. User enters the recovery phrase. Client re-derives `recoveryKey` and unwraps `masterKey` from `VXRM` with `userId` as AAD.
 
    > **On AEAD authentication failure:** the client **MUST** display a single generic message such as "Incorrect recovery phrase".
@@ -2654,7 +2676,7 @@ Recovery flow (forgotten password, phrase available):
 4. User chooses a new password. Client starts a fresh **OPAQUE** registration: `POST /api/v1/auth/recovery/opaque { recoveryToken, registrationRequest }` -> `{ registrationResponse }`.
 5. Client finishes the registration and re-wraps the same `masterKey` with the new `masterKeyWrapper` -> new `VXWM`.
 6. Client -> Server: `POST /api/v1/auth/recovery/finish { recoveryToken, registrationRecord, vxwm }`.
-7. Server replaces only `registration_record` and `vxwm` atomically, then revokes all sessions and persistent sessions. `VXRM` and `VXSK` are unchanged.
+7. Server replaces only `registration_record` and `vxwm` atomically, then revokes all sessions and persistent sessions. `VXRM` and `VXSK` are unchanged. A destructive reset waiting for the account is cancelled ([§12.2](#122-destructive-reset)).
 8. All existing files, collections, and shares remain valid.
 
 > The BIP39 passphrase is intentionally left empty (`""`). In cryptocurrency wallets, the passphrase serves as a "25th word" to create hidden wallets.
@@ -2675,23 +2697,35 @@ Recovery flow (forgotten password, phrase available):
 >
 > The user starts fresh with an **empty** account. If any step fails, nothing changes.
 
+**When it runs.** With the second factor of an account that has 2FA, given on the recovery token, the reset runs at once. Without it (no 2FA, or 2FA not given), it waits 72 hours: the route answers `scheduledAt`, nothing changes in the meantime, and the owner gets an email with a link to cancel it. Once due, the server runs it in one transaction, only if it is still waiting. A mailbox alone never wipes an account on the spot.
+
+- The link cancels it with `POST /api/v1/auth/recovery/destructive-reset/cancel { token }`. The server keeps only a hash of the token.
+- A new password of the owner, by a password change or a recovery ([§12.1](#121-recovery-phrase-non-destructive)), cancels it.
+- A later reset of the same account replaces it.
+- A suspended account is not reset: the request is refused, and a reset already waiting is held until the suspension is lifted.
+
+The code follows the rules of [§12.1](#121-recovery-phrase-non-destructive), for this flow only.
+
 Routes, in order:
 
 1. `POST /api/v1/auth/recovery/destructive-reset/request { email }`: sends the code (same response whether the account exists or not).
-2. `POST /api/v1/auth/recovery/destructive-reset/verify { email, code }` -> `{ recoveryToken, userId, vxrm }`.
-3. `POST /api/v1/auth/recovery/destructive-reset/start { recoveryToken, registrationRequest }` -> `{ registrationResponse }`.
-4. `POST /api/v1/auth/recovery/destructive-reset { recoveryToken, registrationRecord, vxwm, vxrm, vxsk, sharingPublicXwing, sharingPublicSignature, rootCollectionId, rootVxck, rootVxcm }`.
+2. `POST /api/v1/auth/recovery/destructive-reset/verify { email, code }` -> `{ recoveryToken, userId, vxrm, requires2FA }`.
+3. `POST /api/v1/auth/recovery/2fa { recoveryToken, code }`, when `requires2FA` is true and the second factor is at hand: the reset will run at once.
+4. `POST /api/v1/auth/recovery/destructive-reset/start { recoveryToken, registrationRequest }` -> `{ registrationResponse }`.
+5. `POST /api/v1/auth/recovery/destructive-reset { recoveryToken, registrationRecord, vxwm, vxrm, vxsk, sharingPublicXwing, sharingPublicSignature, rootCollectionId, rootVxck, rootVxcm }` -> `{ scheduledAt }`, null when the reset ran at once.
+6. `POST /api/v1/auth/recovery/destructive-reset/cancel { token }`, from the link of the email.
 
 ### 12.3 Phrase rotation
 
-Authenticated users can regenerate their recovery phrase from settings with `POST /api/v1/account/recovery-phrase/rotate`. The new phrase wraps the existing `masterKey`; the old `vxrm` is replaced atomically.
+Authenticated users can regenerate their recovery phrase from settings with `POST /api/v1/account/recovery-phrase/rotate`. The new phrase wraps the existing `masterKey`; the old `vxrm` is replaced atomically. The route requires a recent reauthentication of the session ([§9.9](#99-reauthentication)).
 
 ### 12.4 Safeguards
 
 - Phrase confirmation step at registration is mandatory. No skip option.
 - Phrase displayed once, never logged, never persisted.
-- Recovery endpoints aggressively rate-limited per IP and per email.
-- Destructive reset requires email-code verification.
+- Recovery codes: one use, bound to their flow, 5 guesses, 15 minutes, at most 3 an hour per address, stored as a keyed hash ([§12.1](#121-recovery-phrase-non-destructive)).
+- A recovery requires the second factor of an account with 2FA. A destructive reset without it waits 72 hours and can be cancelled ([§12.2](#122-destructive-reset)).
+- The password change, the phrase rotation and the sharing keypair rotation require a recent reauthentication of the session ([§9.9](#99-reauthentication)).
 
 ## 13. Protocol Versioning and Migration
 
@@ -3196,6 +3230,7 @@ The value is capped by the plan's maximum. A scheduled job deletes versions whos
 
 ## Changelog
 
+- **30:** recovery and sensitive actions need more than a session or an email code. Recovery codes are used once, for their flow only, with 5 guesses, at most 3 an hour per address, and only a keyed hash is stored (§12.1). A recovery asks for the second factor of an account with 2FA (`recovery/2fa`). Without it a destructive reset waits 72 hours with a cancel link, a new password cancels it, and a suspended account is not reset (§12.2). The password change, the phrase rotation and the sharing keypair rotation follow a reauthentication of the session, `reauth/start` and `reauth/finish`, which ends the session, then every session of the user, after repeated misses (§9.9, §11.3, §12.3). The 2FA elevation is bound to the session. Logins of an address slow down after repeated failures, and `2fa/verify` checks the account again (§8.2). Logout ends the persistent session of the device (§9.2).
 - **29:** a destructive reset runs in one transaction and creates a new root collection: the route takes `rootCollectionId`, `rootVxck` and `rootVxcm` (§12.2). The data purge deletes the file versions too (§12.2, §19.3). A generation conflict answers with `generation` and `maxGeneration` (§11.5.4). A share holds `view`, and `edit` on top of it, `reshare` is refused (§11.6). An attempt on a password-protected link is a read of the link (§5.11). An error response carries no internal message (§16.8).
 - **28:** an invitation carries the copies of every generation of the shared key (`collectionKeys` or `fileKeys`), checked under the lock of the target and stored with the share in one transaction (§11). The grant routes `POST /api/v1/shares/{shareId}/collections` and `POST /api/v1/shares/{shareId}/files` are gone. A write adding a key generation names it with `keyGeneration`, the latest plus one, and is refused otherwise (§5.8): the rotations of a collection key or a file key, a revocation, a file move, a version with a fresh key and a re-encryption (§6.5.6.1, §11.1, §11.1.1, §11.4). A revocation applies to a share still active (§11.1). The serializable share creations and collection rotations run once more after losing to a concurrent transaction (§11, §11.1).
 - **27:** a sharing keypair rotation keeps every share (§11.3): it reads a rotation plan, signs again the outgoing invitations without a recipient copy, after checking it signed them already, and gives the incoming ones their recipient copy, under the lock of the user row with exact coverage. Nothing is revoked and no share copy changes. `POST /api/v1/shares` carries the SHA-256 of the keys the invitation was made with, refused once a rotation replaced them (§11). An invitation copied by a rotation is accepted without `vxsw`. The rekey flow, `pending_rekey` and `PUT /api/v1/shares/{id}/recipient-copy` are gone (§5.15, §11).
