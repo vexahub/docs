@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique | **Addenda**
 
-> **Version du document :** 10
+> **Version du document :** 11
 >
 > **Statut :** (Brouillon) Proposé
 
@@ -67,25 +67,33 @@ Les événements **journal d'audit activé** et **journal d'audit désactivé** 
 
 ### 20.3 Stockage
 
-Les entrées du **journal d'audit** sont stockées dans une table `audit_log` dédiée. Seules les colonnes nécessaires à la pagination et à la purge sont en clair ; tout le reste est scellé ([§20.9](#209-entrées-scellées)). L'état est suivi par `users.audit_log_enabled` ([CRYPTO §10.1](/fr/CRYPTO.md#101-table-des-utilisateurs)), à `TRUE` par défaut :
+Les entrées du **journal d'audit** sont stockées dans une table `audit_log` dédiée, et les encapsulations X-Wing sous lesquelles elles sont scellées dans `audit_log_kem`, une par action ([§20.9](#209-entrées-scellées)). Seules les colonnes nécessaires à la pagination et à la purge sont en clair ; tout le reste est scellé ([§20.9](#209-entrées-scellées)). L'état est suivi par `users.audit_log_enabled` ([CRYPTO §10.1](/fr/CRYPTO.md#101-table-des-utilisateurs)), à `TRUE` par défaut :
 
 ```sql
 -- users.audit_log_enabled BOOLEAN NOT NULL DEFAULT TRUE
 
+CREATE TABLE audit_log_kem (
+    id          UUID PRIMARY KEY DEFAULT uuidv7(),   -- kem_id
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kem_ct      BYTEA NOT NULL,   -- texte chiffré X-Wing, 1120 octets
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE audit_log (
     id          UUID PRIMARY KEY DEFAULT uuidv7(),   -- entry_id
     user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    kem_ct      BYTEA NOT NULL,   -- texte chiffré X-Wing, 1120 octets
+    kem_id      UUID NOT NULL REFERENCES audit_log_kem(id) ON DELETE CASCADE,
     vxal        BYTEA NOT NULL,   -- entrée scellée, voir §20.9
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX audit_log_user_created_idx ON audit_log (user_id, created_at DESC);
+CREATE INDEX audit_log_kem_idx ON audit_log (kem_id);
 ```
 
-Le rôle de **base de données applicative** **NE DOIT PAS** disposer de `UPDATE` sur `audit_log` : une entrée écrite n'est jamais modifiée. L'application garde `INSERT`, `SELECT` et `DELETE`, car l'utilisateur peut effacer son journal ([§20.5](#205-effacement-du-journal-daudit)), la suppression de compte le supprime ([CRYPTO §19.3](/fr/CRYPTO.md#193-suppression-de-compte)) et la purge de rétention retire les anciennes entrées.
+Le rôle de **base de données applicative** **NE DOIT PAS** disposer de `UPDATE` sur `audit_log` et `audit_log_kem` : une entrée écrite n'est jamais modifiée. L'application garde `INSERT`, `SELECT` et `DELETE`, car l'utilisateur peut effacer son journal ([§20.5](#205-effacement-du-journal-daudit)), la suppression de compte le supprime ([CRYPTO §19.3](/fr/CRYPTO.md#193-suppression-de-compte)) et la purge de rétention retire les anciennes entrées.
 
-**Rétention :** **6 mois**. Une tâche planifiée quotidienne supprime les entrées dont `created_at` a plus de 6 mois.
+**Rétention :** **6 mois**. Une tâche planifiée quotidienne supprime les entrées dont `created_at` a plus de 6 mois, puis les encapsulations qu'aucune entrée n'utilise plus. L'effacement du journal et la suppression de compte retirent les deux.
 
 ### 20.4 Activation et désactivation
 
@@ -123,16 +131,17 @@ GET /api/v1/account/audit-log?limit=50&before={cursor}
     "entries": [
       {
         "id": "...",
-        "kem_ct": "<base64url>",
+        "kem_id": "...",
         "vxal": "<base64url>",
         "created_at": "2026-04-30T12:00:00Z"
       }
     ],
+    "kems": { "<kem_id>": "<kem_ct, base64url>" },
     "next_cursor": "..."
    }
 ```
 
-> La réponse utilise une pagination par curseur. Le serveur ne renvoie que des entrées scellées ; le client les ouvre dans le Crypto Worker ([§20.9](#209-entrées-scellées)).
+> La réponse utilise une pagination par curseur. `kems` contient chaque encapsulation de la page une seule fois : le client la décapsule une fois pour toutes ses entrées. Le serveur ne renvoie que des entrées scellées ; le client les ouvre dans le Crypto Worker ([§20.9](#209-entrées-scellées)).
 >
 > `recipient_id` et `sender_id` dans les événements de partage sont des UUIDs à l'intérieur du `metadata` scellé. Le client les résout en noms d'affichage via le point d'accès de recherche d'utilisateurs existant. Le serveur ne stocke ni ne retourne de noms d'utilisateurs ou d'emails dans le journal d'audit.
 
@@ -158,7 +167,7 @@ La table `sessions` stocke l'IP exacte du client en tant que `INET`, puisqu'elle
 | Un client compromis crée des partages à l'insu de l'utilisateur                     | Détectable via les entrées `share_created` dans le journal d'audit, visible à la prochaine connexion (si la journalisation était activée) |
 | Le serveur supprime ou forge des entrées du journal d'audit                         | Non préventable au niveau crypto ; limitation reconnue documentée au [§20.7](#207-limitations)                                            |
 | Un attaquant lit le journal d'audit d'un autre utilisateur                          | Bloqué : le point d'accès du journal est limité à l'utilisateur authentifié; l'accès inter-utilisateurs retourne 403                      |
-| Vol de la base de données                                                           | Journal illisible sans la clé de désencapsulation X-Wing de l'utilisateur ; seuls `id`, `user_id` et `created_at` sont en clair           |
+| Vol de la base de données                                                           | Journal illisible sans la clé de désencapsulation X-Wing de l'utilisateur ; seuls `id`, `user_id`, `kem_id` et `created_at` sont en clair |
 | L'utilisateur ne sait pas que la journalisation était désactivée lors d'un incident | L'événement `audit_log_disabled` marque la limite; les lacunes dans le journal sont visibles par horodatage                               |
 | Un cookie de session volé désactive ou efface le journal                            | Les deux demandent une réauthentification récente de la session ([CRYPTO §9.9](/fr/CRYPTO.md#99-réauthentification))                      |
 
@@ -183,6 +192,8 @@ vxal = XChaCha20-Poly1305(auditKey, nonce, clair, AAD)
 
 Le serveur oublie ensuite `sharedSecret` et `auditKey`. Il ne garde aucun moyen de déchiffrer l'entrée.
 
+Les entrées d'une même action, une action groupée par exemple, partagent une encapsulation : chaque entrée dérive quand même sa propre `auditKey` depuis son `entry_uuid`, avec son propre nonce et son AAD, et toutes référencent le même `kem_id`. Le serveur oublie `sharedSecret` une fois la dernière scellée.
+
 **Blob `VXAL` :**
 
 ```rs
@@ -199,9 +210,9 @@ Décalage  Taille  Champ
 AAD : user_id ‖ entry_id (32 octets, UUIDs bruts)
 ```
 
-Le texte chiffré X-Wing (`kem_ct`, 1120 octets) est stocké à côté du blob, dans sa propre colonne.
+Le texte chiffré X-Wing (`kem_ct`, 1120 octets) est stocké une fois par encapsulation, dans `audit_log_kem`, et chaque entrée le référence par `kem_id`.
 
-**Colonnes en clair :** `id`, `user_id`, `created_at` seulement, pour la pagination et la purge.
+**Colonnes en clair :** `id`, `user_id`, `kem_id`, `created_at` seulement, pour la pagination et la purge.
 
 **Champs scellés**, en CBOR canonique ([RFC 8949 §4.2.1][cbor_rfc]) :
 
@@ -216,7 +227,7 @@ Le texte chiffré X-Wing (`kem_ct`, 1120 octets) est stocké à côté du blob, 
 
 Ordre canonique : `event` < `metadata` < `ip_network` < `user_agent` (longueur d'abord, puis octet par octet).
 
-**Lecture :** le client récupère les entrées ([§20.6](#206-accès-côté-utilisateur)) et les ouvre dans le Crypto Worker : `X-Wing.Decaps` avec la clé de désencapsulation issue de `VXSK`, la même dérivation HKDF, puis le déchiffrement AEAD avec l'AAD ci-dessus. Un déchiffrement en échec est affiché comme une entrée illisible, jamais ignoré en silence.
+**Lecture :** le client récupère les entrées ([§20.6](#206-accès-côté-utilisateur)) et les ouvre dans le Crypto Worker : `X-Wing.Decaps` du `kem_ct` de chaque `kem_id`, une seule fois, avec la clé de désencapsulation issue de `VXSK`, la même dérivation HKDF, puis le déchiffrement AEAD avec l'AAD ci-dessus. Un déchiffrement en échec est affiché comme une entrée illisible, jamais ignoré en silence.
 
 **Séparation de domaine HKDF :** la chaîne d'info `"vexahub:v1:auditLog:"` est distincte de toutes les chaînes d'info du [CRYPTO §4](/fr/CRYPTO.md#4-séparation-de-domaine-hkdf).
 
@@ -342,6 +353,7 @@ La chaîne d'info `"vexahub:v1:childCollectionKeyWrap:"` est distincte de toutes
 
 ## Historique des modifications
 
+- **11 :** les entrées d'une même action partagent une encapsulation, chacune sous sa propre `auditKey`, stockée une fois dans `audit_log_kem` et référencée par `kem_id` (§20.3, §20.9). La page du journal d'audit contient chaque encapsulation une seule fois, dans `kems` (§20.6).
 - **10 :** nouveaux événements journalisés : récupération de compte, 2FA activée et désactivée, lien public créé et révoqué, session révoquée, collection déplacée, version de fichier restaurée et supprimée, toutes les versions supprimées, code de contact régénéré. Une action groupée écrit une entrée par fichier ou collection de la requête (§20.2).
 - **9 :** alignée sur CRYPTO v31 : désactiver ou effacer le journal d'audit demande une réauthentification récente de la session (§20.4, §20.5, §20.8).
 - **8 :** alignée sur CRYPTO v28 : un partage porte ses copies dès sa création, il n'y a plus de grant (§21.3).

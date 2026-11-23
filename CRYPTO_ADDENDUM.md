@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification | **Addendum**
 
-> **Document version:** 10
+> **Document version:** 11
 >
 > **Status:** (Draft) Proposed
 
@@ -79,25 +79,33 @@ record of the periods during which logging was active.
 
 ### 20.3 Storage
 
-**Audit log** entries are stored in a dedicated `audit_log` table. Only the columns needed for pagination and purge are in plaintext; everything else is sealed ([§20.9](#209-sealed-entries)). The state is tracked by `users.audit_log_enabled` ([CRYPTO §10.1](./CRYPTO.md#101-users-table)), `TRUE` by default:
+**Audit log** entries are stored in a dedicated `audit_log` table, and the X-Wing encapsulations they are sealed under in `audit_log_kem`, one per action ([§20.9](#209-sealed-entries)). Only the columns needed for pagination and purge are in plaintext; everything else is sealed ([§20.9](#209-sealed-entries)). The state is tracked by `users.audit_log_enabled` ([CRYPTO §10.1](./CRYPTO.md#101-users-table)), `TRUE` by default:
 
 ```sql
 -- users.audit_log_enabled BOOLEAN NOT NULL DEFAULT TRUE
 
+CREATE TABLE audit_log_kem (
+    id          UUID PRIMARY KEY DEFAULT uuidv7(),   -- kem_id
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kem_ct      BYTEA NOT NULL,   -- X-Wing ciphertext, 1120 bytes
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE audit_log (
     id          UUID PRIMARY KEY DEFAULT uuidv7(),   -- entry_id
     user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    kem_ct      BYTEA NOT NULL,   -- X-Wing ciphertext, 1120 bytes
+    kem_id      UUID NOT NULL REFERENCES audit_log_kem(id) ON DELETE CASCADE,
     vxal        BYTEA NOT NULL,   -- sealed entry, see §20.9
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX audit_log_user_created_idx ON audit_log (user_id, created_at DESC);
+CREATE INDEX audit_log_kem_idx ON audit_log (kem_id);
 ```
 
-The **application database** role **MUST NOT** hold `UPDATE` on `audit_log`: an entry, once written, is never modified. The application keeps `INSERT`, `SELECT` and `DELETE`, because the user can clear their log ([§20.5](#205-clearing-the-audit-log)), account deletion removes it ([CRYPTO §19.3](./CRYPTO.md#193-account-deletion)) and the retention purge removes old entries.
+The **application database** role **MUST NOT** hold `UPDATE` on `audit_log` and `audit_log_kem`: an entry, once written, is never modified. The application keeps `INSERT`, `SELECT` and `DELETE`, because the user can clear their log ([§20.5](#205-clearing-the-audit-log)), account deletion removes it ([CRYPTO §19.3](./CRYPTO.md#193-account-deletion)) and the retention purge removes old entries.
 
-**Retention:** **6 months**. A daily scheduled job deletes entries whose `created_at` is older than 6 months.
+**Retention:** **6 months**. A daily scheduled job deletes entries whose `created_at` is older than 6 months, then the encapsulations no entry uses anymore. Clearing the log and account deletion remove both.
 
 ### 20.4 Enabling and disabling
 
@@ -148,16 +156,17 @@ GET /api/v1/account/audit-log?limit=50&before={cursor}
     "entries": [
       {
         "id": "...",
-        "kem_ct": "<base64url>",
+        "kem_id": "...",
         "vxal": "<base64url>",
         "created_at": "2026-04-30T12:00:00Z"
       }
     ],
+    "kems": { "<kem_id>": "<kem_ct, base64url>" },
     "next_cursor": "..."
    }
 ```
 
-> The response uses cursor-based pagination. The server returns sealed entries only; the client opens them in the Crypto Worker ([§20.9](#209-sealed-entries)).
+> The response uses cursor-based pagination. `kems` holds each encapsulation of the page once, so the client decapsulates it once for all its entries. The server returns sealed entries only; the client opens them in the Crypto Worker ([§20.9](#209-sealed-entries)).
 >
 > `recipient_id` and `sender_id` in share events are UUIDs inside the sealed `metadata`. The client resolves them to display names using the existing user lookup endpoint. The server does not store or return usernames or emails in the audit log.
 
@@ -178,14 +187,14 @@ The `sessions` table stores the exact client IP as `INET`, since it is used for 
 
 ### 20.8 Threat model addition
 
-| Attacker capability                                      | VexaHub response                                                                                                          |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Compromised client creates shares without user knowledge | Detectable via `share_created` entries in the audit log, visible to the user on next login (if audit logging was enabled) |
-| Server suppresses or forges audit log entries            | Not preventable at the crypto layer; acknowledged limitation documented in [§20.7](#207-limitations)                      |
-| Attacker reads another user's audit log                  | Blocked: the audit log endpoint is scoped to the authenticated user; cross-user access returns 403                        |
-| Database theft                                           | Audit log unreadable without the user's X-Wing decapsulation key; only `id`, `user_id` and `created_at` are in plaintext  |
-| User unaware logging was disabled during an incident     | The `audit_log_disabled` event marks the boundary; gaps in the log are visible by timestamp                               |
-| Stolen session cookie disables or clears the log         | Both require a recent reauthentication of the session ([CRYPTO §9.9](./CRYPTO.md#99-reauthentication))                    |
+| Attacker capability                                      | VexaHub response                                                                                                                   |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Compromised client creates shares without user knowledge | Detectable via `share_created` entries in the audit log, visible to the user on next login (if audit logging was enabled)          |
+| Server suppresses or forges audit log entries            | Not preventable at the crypto layer; acknowledged limitation documented in [§20.7](#207-limitations)                               |
+| Attacker reads another user's audit log                  | Blocked: the audit log endpoint is scoped to the authenticated user; cross-user access returns 403                                 |
+| Database theft                                           | Audit log unreadable without the user's X-Wing decapsulation key; only `id`, `user_id`, `kem_id` and `created_at` are in plaintext |
+| User unaware logging was disabled during an incident     | The `audit_log_disabled` event marks the boundary; gaps in the log are visible by timestamp                                        |
+| Stolen session cookie disables or clears the log         | Both require a recent reauthentication of the session ([CRYPTO §9.9](./CRYPTO.md#99-reauthentication))                             |
 
 ### 20.9 Sealed entries
 
@@ -208,6 +217,8 @@ vxal = XChaCha20-Poly1305(auditKey, nonce, plaintext, AAD)
 
 The server then forgets `sharedSecret` and `auditKey`. It keeps no way to decrypt the entry.
 
+The entries of one action, such as a bulk action, share one encapsulation: each entry still derives its own `auditKey` from its `entry_uuid`, with its own nonce and AAD, and every one of them references the same `kem_id`. The server forgets `sharedSecret` once the last of them is sealed.
+
 **Blob `VXAL`:**
 
 ```rs
@@ -224,9 +235,9 @@ Offset  Size  Field
 AAD: user_id ‖ entry_id (32 bytes, both raw UUID)
 ```
 
-The X-Wing ciphertext (`kem_ct`, 1120 bytes) is stored alongside the blob, in its own column.
+The X-Wing ciphertext (`kem_ct`, 1120 bytes) is stored once per encapsulation, in `audit_log_kem`, and each entry references it by `kem_id`.
 
-**Plaintext columns:** `id`, `user_id`, `created_at` only, for pagination and purge.
+**Plaintext columns:** `id`, `user_id`, `kem_id`, `created_at` only, for pagination and purge.
 
 **Sealed fields**, in canonical CBOR ([RFC 8949 §4.2.1][cbor_rfc]):
 
@@ -241,7 +252,7 @@ The X-Wing ciphertext (`kem_ct`, 1120 bytes) is stored alongside the blob, in it
 
 Canonical order: `event` < `metadata` < `ip_network` < `user_agent` (length first, then bytewise).
 
-**Read:** the client fetches entries ([§20.6](#206-user-facing-access)) and opens them in the Crypto Worker: `X-Wing.Decaps` with the decapsulation key from `VXSK`, the same HKDF derivation, then AEAD decryption with the AAD above. A failed decryption is shown as an unreadable entry, never silently dropped.
+**Read:** the client fetches entries ([§20.6](#206-user-facing-access)) and opens them in the Crypto Worker: `X-Wing.Decaps` of the `kem_ct` of each `kem_id`, once, with the decapsulation key from `VXSK`, the same HKDF derivation, then AEAD decryption with the AAD above. A failed decryption is shown as an unreadable entry, never silently dropped.
 
 **HKDF domain separation:** the info string `"vexahub:v1:auditLog:"` is distinct from all info strings in [CRYPTO §4](./CRYPTO.md#4-hkdf-domain-separation).
 
@@ -385,6 +396,7 @@ existing info strings in [§4](./CRYPTO.md#4-hkdf-domain-separation). No protoco
 
 ## Changelog
 
+- **11:** the entries of one action share one encapsulation, each under its own `auditKey`, stored once in `audit_log_kem` and referenced by `kem_id` (§20.3, §20.9). The audit log page holds each encapsulation once, in `kems` (§20.6).
 - **10:** new logged events: account recovery, 2FA enabled and disabled, public link created and revoked, session revoked, collection move, file version restored and deleted, all versions deleted, contact code regenerated. A bulk action logs one entry per file or collection of the request (§20.2).
 - **9:** aligned with CRYPTO v31: disabling or clearing the audit log requires a recent reauthentication of the session (§20.4, §20.5, §20.8).
 - **8:** aligned with CRYPTO v28: a share carries its copies from its creation, there is no grant anymore (§21.3).
