@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-> **Document version:** 29
+> **Document version:** 31
 >
 > **Protocol version:** 1
 >
@@ -1405,7 +1405,7 @@ A device-bound resume mechanism. **NEVER** enabled by default.
 1. Client generates `localKey` (**32 random bytes** _via_ **CSPRNG**) and a `session_id` (UUID v4).
 2. Client encrypts `masterKey` with `localKey` -> `VXPS` blob, AAD `user_id ‖ session_id` (see [§5.6](#56-vxps---persistent-session-blob)).
 3. Client stores `localKey` and `session_id` in **IndexedDB**.
-4. Client sends `POST /api/v1/auth/persistent-session/create { sessionId, vxps, device }`.
+4. Client sends `POST /api/v1/auth/persistent-session/create { sessionId, vxps, device }`. The server accepts it only within 10 minutes of the opening of the session, so right after a login: on the login page, or on an unlock that replays the login. An older session, a stolen cookie for instance, cannot make itself persistent.
 
    > **Implementation note:** If the client **crashes** or **loses** connectivity between **step 3** _and_ **step 4**,
    > `localKey` is left orphaned in `IndexedDB` with no matching server-side session. This is harmless:
@@ -1853,6 +1853,11 @@ Three actions change what protects the account: the password change ([AUTHENTICA
 1. Client -> Server: `POST /api/v1/auth/reauth/start { authRequest }` -> `{ loginResponse }`: an **OPAQUE** login of the signed in account, as in [§8.2](#82-login).
 2. Client -> Server: `POST /api/v1/auth/reauth/finish { authFinish, otp }`. `otp` is a TOTP or recovery code, required when the account has 2FA, absent otherwise.
 3. Server: once the password, and the second factor when there is one, is proven, the sensitive actions of **this session only** open for 10 minutes. The other sessions of the user stay as they were.
+
+The same recent reauthentication is required for actions a stolen cookie could turn against the owner:
+
+- **Enabling 2FA**, setup and verification: the cookie could bind the account to an authenticator of its own and lock the owner out of the login.
+- **Disabling or clearing the audit log** ([Addendum §20.4](CRYPTO_ADDENDUM.md#204-enabling-and-disabling), [§20.5](CRYPTO_ADDENDUM.md#205-clearing-the-audit-log)): it would erase the traces of what the cookie did.
 
 The 2FA elevation of `POST /api/v1/auth/2fa/elevate` is bound to the session the same way ([AUTHENTICATION §4.5](AUTHENTICATION.md#45-two-factor-authentication)), and a reauthentication with a second factor grants it too.
 
@@ -2973,6 +2978,8 @@ isolation model of the **Crypto Worker**.
 
 Logs, breadcrumbs and error reports, on the client and on the server, **MUST** carry identifiers only (UUIDs, codes, counters). An error response of the API carries its code, its `params` and the fields of a validation error, never an internal message. They **MUST NOT** carry a file or collection name, a path, a key or a blob, a password, a link token or a URL fragment. An error message that can hold one of them **MUST** be filtered before it reaches the error tracker. A log that leaves the device is data the server or a third party keeps.
 
+On the server, a request log keeps the method, the path and the status only. It drops the headers, the cookies and the query string, and masks a path segment that is a token, such as the token of a public link.
+
 ## 17. Threat Model Summary
 
 | Attacker capability                                    | VexaHub response                                                                                                                                                                                                                                                                                                                   |
@@ -3170,7 +3177,7 @@ Account deletion happens in two stages: immediate anonymization, then a purge.
    - Stores a hash of the email in a suppression table for 30 days, which blocks re-registration with the same address during that time.
 
 5. All active session cookies for this user become invalid immediately.
-6. **Data purge:** a scheduled job deletes the user's files, file versions, collections, keys, shares, public links and storage objects, then sets `purged_at`.
+6. **Data purge:** a scheduled job deletes the user's files, file versions, collections, keys, shares, public links and storage objects, then sets `purged_at`. While a moderation case about the account or one of its links is not closed, decided or under appeal included, the data purge waits until it is. The anonymization of step 4 still happens at once.
 7. **Row purge:** the anonymized `users` row is kept for the referential integrity of invoices and payments, and is removed at the end of the legal invoice retention period (10 years).
 
 Without `VXWM`, `VXRM` and `registration_record`, the account cannot be logged into or recovered from the moment of step 4, even before the data purge.
@@ -3230,6 +3237,7 @@ The value is capped by the plan's maximum. A scheduled job deletes versions whos
 
 ## Changelog
 
+- **31:** a recent reauthentication of the session is also required to enable 2FA and to disable or clear the audit log (§9.9). A persistent session is created only within 10 minutes of the opening of the session (§9.2). A request log keeps the method, the path and the status, with tokens masked (§16.8). A moderation case not closed holds the data purge of a deleted account (§19.3).
 - **30:** recovery and sensitive actions need more than a session or an email code. Recovery codes are used once, for their flow only, with 5 guesses, at most 3 an hour per address, and only a keyed hash is stored (§12.1). A recovery asks for the second factor of an account with 2FA (`recovery/2fa`). Without it a destructive reset waits 72 hours with a cancel link, a new password cancels it, and a suspended account is not reset (§12.2). The password change, the phrase rotation and the sharing keypair rotation follow a reauthentication of the session, `reauth/start` and `reauth/finish`, which ends the session, then every session of the user, after repeated misses (§9.9, §11.3, §12.3). The 2FA elevation is bound to the session. Logins of an address slow down after repeated failures, and `2fa/verify` checks the account again (§8.2). Logout ends the persistent session of the device (§9.2).
 - **29:** a destructive reset runs in one transaction and creates a new root collection: the route takes `rootCollectionId`, `rootVxck` and `rootVxcm` (§12.2). The data purge deletes the file versions too (§12.2, §19.3). A generation conflict answers with `generation` and `maxGeneration` (§11.5.4). A share holds `view`, and `edit` on top of it, `reshare` is refused (§11.6). An attempt on a password-protected link is a read of the link (§5.11). An error response carries no internal message (§16.8).
 - **28:** an invitation carries the copies of every generation of the shared key (`collectionKeys` or `fileKeys`), checked under the lock of the target and stored with the share in one transaction (§11). The grant routes `POST /api/v1/shares/{shareId}/collections` and `POST /api/v1/shares/{shareId}/files` are gone. A write adding a key generation names it with `keyGeneration`, the latest plus one, and is refused otherwise (§5.8): the rotations of a collection key or a file key, a revocation, a file move, a version with a fresh key and a re-encryption (§6.5.6.1, §11.1, §11.1.1, §11.4). A revocation applies to a share still active (§11.1). The serializable share creations and collection rotations run once more after losing to a concurrent transaction (§11, §11.1).

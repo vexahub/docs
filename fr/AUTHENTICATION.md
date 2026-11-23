@@ -187,7 +187,7 @@ Les connexions échouées d'une adresse sont comptées, qu'elle ait un compte ou
 
 ### 4.7 Réauthentification
 
-Le changement de mot de passe (§6.4), la rotation de la phrase de récupération (§6.3) et la rotation des paires de clés de partage demandent plus qu'une session : une connexion **OPAQUE** récente de la même session, `POST /api/v1/auth/reauth/start` puis `POST /api/v1/auth/reauth/finish`, avec le second facteur quand le compte a la 2FA. Elle ouvre ces actions pour 10 minutes, sur cette session seulement. Des mauvais mots de passe répétés mettent fin à la session, puis à toutes les sessions et sessions persistantes de l'utilisateur, et ne ralentissent jamais les connexions du propriétaire. Les règles complètes sont en [CRYPTO §9.9](/fr/CRYPTO.md#99-réauthentification).
+Le changement de mot de passe (§6.4), la rotation de la phrase de récupération (§6.3), la rotation des paires de clés de partage, l'activation de la 2FA, et la désactivation ou l'effacement du journal d'audit demandent plus qu'une session : une connexion **OPAQUE** récente de la même session, `POST /api/v1/auth/reauth/start` puis `POST /api/v1/auth/reauth/finish`, avec le second facteur quand le compte a la 2FA. Elle ouvre ces actions pour 10 minutes, sur cette session seulement. Des mauvais mots de passe répétés mettent fin à la session, puis à toutes les sessions et sessions persistantes de l'utilisateur, et ne ralentissent jamais les connexions du propriétaire. Les règles complètes sont en [CRYPTO §9.9](/fr/CRYPTO.md#99-réauthentification).
 
 ## 5. Gestion des sessions
 
@@ -225,6 +225,7 @@ Jamais activé par défaut. Lorsqu'il est choisi, un blob lié à l'appareil per
    // fait qu'il est silencieusement ignoré. PEUT être collecté au démarrage.
 5. Le serveur stocke { id: sessionId, userId, vxps, secretHash, device, createdAt, expiresAt }
    // 409 si sessionId existe déjà
+   // refusé au-delà de 10 minutes après l'ouverture de la session
 6. Le serveur émet le cookie PS-AUTH (HttpOnly; Secure; SameSite=Strict; Max-Age=30d)
    // valeur {session_id}.{secret}, secret = 120 bits aléatoires, non renouvelé à l'usage
 ```
@@ -268,6 +269,7 @@ Jamais activé par défaut. Lorsqu'il est choisi, un blob lié à l'appareil per
 **Garde-fous obligatoires :**
 
 - Opt-in strict uniquement. Aucune incitation.
+- Proposé seulement juste après une connexion, sur la page de connexion ou sur un déverrouillage qui la rejoue. Une session plus ancienne ne peut pas se rendre persistante.
 - La page des paramètres liste chaque session persistante avec le label de l'appareil, l'heure de création, la dernière utilisation, et une révocation en un clic.
 - Le changement de mot de passe révoque toutes les sessions persistantes côté serveur.
 - Expiration côté serveur : la session persistante expire côté serveur après 30 jours sans utilisation ; chaque usage repousse l'échéance.

@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique
 
-> **Version du document :** 29
+> **Version du document :** 31
 >
 > **Version du protocole :** 1
 >
@@ -1400,7 +1400,7 @@ Un mécanisme de reprise lié à l'appareil. **JAMAIS** activé par défaut.
 1. Le client génère `localKey` (**32 octets aléatoires** _via_ **CSPRNG**) et un `session_id` (UUID v4).
 2. Le client chiffre `masterKey` avec `localKey` -> blob `VXPS`, AAD `user_id ‖ session_id` (voir [§5.6](#56-vxps---blob-de-session-persistante)).
 3. Le client stocke `localKey` et `session_id` dans l'**IndexedDB**.
-4. Le client envoie `POST /api/v1/auth/persistent-session/create { sessionId, vxps, device }`.
+4. Le client envoie `POST /api/v1/auth/persistent-session/create { sessionId, vxps, device }`. Le serveur ne l'accepte que dans les 10 minutes qui suivent l'ouverture de la session, donc juste après une connexion : sur la page de connexion, ou sur un déverrouillage qui rejoue la connexion. Une session plus ancienne, un cookie volé par exemple, ne peut pas se rendre persistante.
 
    > **Note de mise en oeuvre:** Si le client **crash** ou **perd** la connection entre l'**étape 3** _et_ l'**étape 4**,
    > `localKey` est laissé orpheline dans l'`IndexedDB` sans session côté serveur associée. Cela est sans conséquence :
@@ -1744,6 +1744,11 @@ Trois actions changent ce qui protège le compte : le changement de mot de passe
 1. Client -> Serveur : `POST /api/v1/auth/reauth/start { authRequest }` -> `{ loginResponse }` : une connexion **OPAQUE** du compte connecté, comme en [§8.2](#82-connexion).
 2. Client -> Serveur : `POST /api/v1/auth/reauth/finish { authFinish, otp }`. `otp` est un code TOTP ou un code de secours, exigé quand le compte a la 2FA, absent sinon.
 3. Serveur : une fois le mot de passe prouvé, et le second facteur quand il y en a un, les actions sensibles de **cette session seulement** s'ouvrent pour 10 minutes. Les autres sessions de l'utilisateur restent telles quelles.
+
+La même réauthentification récente est exigée pour les actions qu'un cookie volé pourrait retourner contre le propriétaire :
+
+- **L'activation de la 2FA**, configuration et vérification : le cookie pourrait lier le compte à un authentificateur à lui et empêcher le propriétaire de se connecter.
+- **La désactivation ou l'effacement du journal d'audit** ([Addenda §20.4](/fr/CRYPTO_ADDENDUM.md#204-activation-et-désactivation), [§20.5](/fr/CRYPTO_ADDENDUM.md#205-effacement-du-journal-daudit)) : il effacerait les traces de ce que le cookie a fait.
 
 L'élévation 2FA de `POST /api/v1/auth/2fa/elevate` est liée à la session de la même façon ([AUTHENTICATION §4.5](/fr/AUTHENTICATION.md#45-authentification-à-deux-facteurs)), et une réauthentification avec un second facteur l'accorde aussi.
 
@@ -2825,6 +2830,8 @@ Le matériel de clés traverse les frontières de threads exclusivement via `pos
 
 Les journaux, les breadcrumbs et les rapports d'erreur, côté client comme côté serveur, **DOIVENT** ne contenir que des identifiants (UUID, codes, compteurs). Une réponse d'erreur de l'API porte son code, ses `params` et les champs d'une erreur de validation, jamais un message interne. Ils **NE DOIVENT PAS** contenir de nom de fichier ou de collection, de chemin, de clé ou de blob, de mot de passe, de token de lien ni de fragment d'URL. Un message d'erreur qui peut en contenir un **DOIT** être filtré avant d'arriver au suivi d'erreurs. Un journal qui quitte l'appareil est une donnée que le serveur ou un tiers conserve.
 
+Côté serveur, un journal de requêtes ne garde que la méthode, le chemin et le statut. Il écarte les en-têtes, les cookies et la query string, et masque un segment de chemin qui est un token, comme le token d'un lien public.
+
 ## 17. Résumé du modèle de menace
 
 | Capacité de l'attaquant                                                            | Réponse de VexaHub                                                                                                                                                                                                                                                                                                                                                                              |
@@ -3002,7 +3009,7 @@ La suppression de compte se fait en deux temps : anonymisation immédiate, puis 
    - Enregistre un hash de l'email dans une table de suppression pendant 30 jours, ce qui bloque la réinscription avec la même adresse pendant cette période.
 
 5. Tous les cookies de session actifs pour cet utilisateur deviennent invalides immédiatement.
-6. **Purge des données :** une tâche planifiée supprime les fichiers, versions de fichier, collections, clés, partages, liens publics et objets de stockage de l'utilisateur, puis pose `purged_at`.
+6. **Purge des données :** une tâche planifiée supprime les fichiers, versions de fichier, collections, clés, partages, liens publics et objets de stockage de l'utilisateur, puis pose `purged_at`. Tant qu'une procédure de modération sur le compte ou l'un de ses liens n'est pas close, décision rendue ou appel en cours compris, la purge des données attend sa clôture. L'anonymisation de l'étape 4 a quand même lieu tout de suite.
 7. **Purge de la ligne :** la ligne `users` anonymisée est conservée pour l'intégrité référentielle des factures et paiements, et supprimée à la fin de la durée légale de conservation des factures (10 ans).
 
 Sans `VXWM`, `VXRM` ni `registration_record`, le compte ne peut plus être ouvert ni récupéré dès l'étape 4, avant même la purge des données.
@@ -3062,6 +3069,7 @@ La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée suppri
 
 ## Historique des modifications
 
+- **31 :** une réauthentification récente de la session est aussi exigée pour activer la 2FA et pour désactiver ou effacer le journal d'audit (§9.9). Une session persistante ne se crée que dans les 10 minutes qui suivent l'ouverture de la session (§9.2). Un journal de requêtes garde la méthode, le chemin et le statut, tokens masqués (§16.8). Une procédure de modération non close retient la purge des données d'un compte supprimé (§19.3).
 - **30 :** la récupération et les actions sensibles demandent plus qu'une session ou un code reçu par email. Les codes de récupération servent une fois, pour leur flux seulement, avec 5 essais, au plus 3 par heure et par adresse, et seule une empreinte à clé est stockée (§12.1). Une récupération demande le second facteur d'un compte qui a la 2FA (`recovery/2fa`). Sans lui, une réinitialisation destructive attend 72 heures avec un lien d'annulation, un nouveau mot de passe l'annule, et un compte suspendu n'est pas réinitialisé (§12.2). Le changement de mot de passe, la rotation de la phrase et la rotation des paires de clés de partage suivent une réauthentification de la session, `reauth/start` et `reauth/finish`, qui met fin à la session, puis à toutes les sessions de l'utilisateur, après des échecs répétés (§9.9, §11.3, §12.3). L'élévation 2FA est liée à la session. Les connexions d'une adresse ralentissent après des échecs répétés, et `2fa/verify` revérifie le compte (§8.2). La déconnexion met fin à la session persistante de l'appareil (§9.2).
 - **29 :** une réinitialisation destructive se fait en une transaction et crée une nouvelle collection racine : la route prend `rootCollectionId`, `rootVxck` et `rootVxcm` (§12.2). La purge des données supprime aussi les versions de fichier (§12.2, §19.3). Un conflit de génération répond avec `generation` et `maxGeneration` (§11.5.4). Un partage porte `view`, et `edit` en plus, `reshare` est refusé (§11.6). Une tentative sur un lien protégé par mot de passe est une lecture du lien (§5.11). Une réponse d'erreur ne porte aucun message interne (§16.8).
 - **28 :** une invitation porte les copies de chaque génération de la clé partagée (`collectionKeys` ou `fileKeys`), vérifiées sous le verrou de la cible et stockées avec le partage en une transaction (§11). Les routes de grant `POST /api/v1/shares/{shareId}/collections` et `POST /api/v1/shares/{shareId}/files` disparaissent. Une écriture qui ajoute une génération de clé la nomme avec `keyGeneration`, la dernière plus un, et est refusée sinon (§5.8) : les rotations d'une clé de collection ou d'une clé de fichier, une révocation, un déplacement de fichier, une version avec une clé neuve et un rechiffrement (§6.5.6.1, §11.1, §11.1.1, §11.4). Une révocation ne s'applique qu'à un partage encore actif (§11.1). Les créations de partage et les rotations de collection serializables sont rejouées une fois après avoir perdu contre une transaction concurrente (§11, §11.1).

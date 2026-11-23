@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification | **Addendum**
 
-> **Document version:** 8
+> **Document version:** 9
 >
 > **Status:** (Draft) Proposed
 
@@ -97,7 +97,9 @@ POST /api/v1/account/audit-log/enable
 POST /api/v1/account/audit-log/disable
 ```
 
-Both endpoints require an active authenticated session. On enable, the server
+Both endpoints require an active authenticated session, and disabling also
+requires a recent reauthentication of that session
+([CRYPTO §9.9](./CRYPTO.md#99-reauthentication)). On enable, the server
 sets `audit_log_enabled = TRUE` and writes an **audit log enabled** entry as
 the first event. On disable, the server writes an **audit log disabled** entry
 as the final event, then sets `audit_log_enabled = FALSE`. This ensures the
@@ -115,6 +117,9 @@ Users may explicitly delete all their audit log entries:
 ```sh
 DELETE /api/v1/account/audit-log
 ```
+
+It requires a recent reauthentication of the session
+([CRYPTO §9.9](./CRYPTO.md#99-reauthentication)), like disabling.
 
 This permanently removes all entries for the authenticated user. It does
 **not** disable audit logging. If logging is enabled, new events continue to
@@ -169,6 +174,7 @@ The `sessions` table stores the exact client IP as `INET`, since it is used for 
 | Attacker reads another user's audit log                  | Blocked: the audit log endpoint is scoped to the authenticated user; cross-user access returns 403                        |
 | Database theft                                           | Audit log unreadable without the user's X-Wing decapsulation key; only `id`, `user_id` and `created_at` are in plaintext  |
 | User unaware logging was disabled during an incident     | The `audit_log_disabled` event marks the boundary; gaps in the log are visible by timestamp                               |
+| Stolen session cookie disables or clears the log         | Both require a recent reauthentication of the session ([CRYPTO §9.9](./CRYPTO.md#99-reauthentication))                    |
 
 ### 20.9 Sealed entries
 
@@ -368,6 +374,7 @@ existing info strings in [§4](./CRYPTO.md#4-hkdf-domain-separation). No protoco
 
 ## Changelog
 
+- **9:** aligned with CRYPTO v31: disabling or clearing the audit log requires a recent reauthentication of the session (§20.4, §20.5, §20.8).
 - **8:** aligned with CRYPTO v28: a share carries its copies from its creation, there is no grant anymore (§21.3).
 - **7:** lazy key rotation, aligned with CRYPTO v20. A rotation of the parent leaves the `VXCC` below as they are, the sub-collection waits for its own rotation, by the owner or an editor (§21.4, §21.7). No sub-collection below a parent waiting for its rotation (§21.2).
 - **6:** every sub-collection key is a `VXCC` under its parent, aligned with CRYPTO v19. Access through the tree (§21.3). The owner `VXCK` becomes a SHOULD (§21.3). A move carries a `VXCC` under the new parent, or the owner `VXCK` at the root (§21.4, §21.7).

@@ -187,7 +187,7 @@ The failed logins of an address are counted, whether it has an account or not. P
 
 ### 4.7 Reauthentication
 
-The password change (§6.4), the recovery phrase rotation (§6.3) and the sharing keypair rotation need more than a session: a recent **OPAQUE** login of the same session, `POST /api/v1/auth/reauth/start` then `POST /api/v1/auth/reauth/finish`, with the second factor when the account has 2FA. It opens these actions for 10 minutes, on that session only. Repeated wrong passwords end the session, then every session and persistent session of the user, and never slow down the owner's own logins. The full rules are in [CRYPTO §9.9](./CRYPTO.md#99-reauthentication).
+The password change (§6.4), the recovery phrase rotation (§6.3), the sharing keypair rotation, enabling 2FA, and disabling or clearing the audit log need more than a session: a recent **OPAQUE** login of the same session, `POST /api/v1/auth/reauth/start` then `POST /api/v1/auth/reauth/finish`, with the second factor when the account has 2FA. It opens these actions for 10 minutes, on that session only. Repeated wrong passwords end the session, then every session and persistent session of the user, and never slow down the owner's own logins. The full rules are in [CRYPTO §9.9](./CRYPTO.md#99-reauthentication).
 
 ## 5. Session Management
 
@@ -225,6 +225,7 @@ Never enabled by default. When opted in, a device-bound blob lets the user resum
    // causes it to be silently ignored. MAY be GC'd on startup.
 5. Server stores { id: sessionId, userId, vxps, secretHash, device, createdAt, expiresAt }
    // 409 if sessionId already exists
+   // refused past 10 minutes after the opening of the session
 6. Server issues PS-AUTH cookie (HttpOnly; Secure; SameSite=Strict; Max-Age=30d)
    // value {session_id}.{secret}, secret = 120 random bits, not rotated on use
 ```
@@ -268,6 +269,7 @@ Never enabled by default. When opted in, a device-bound blob lets the user resum
 **Mandatory safeguards:**
 
 - Strict opt-in only. No nudging.
+- Offered only right after a login, on the login page or on an unlock that replays it. An older session cannot make itself persistent.
 - Settings page lists every persistent session with device label, creation time, last use, and one-click revoke.
 - Password change revokes all persistent sessions server-side.
 - Server-side expiry: the persistent session expires server-side after 30 days without use; each use pushes the deadline back.

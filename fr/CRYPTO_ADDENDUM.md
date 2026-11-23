@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique | **Addenda**
 
-> **Version du document :** 8
+> **Version du document :** 9
 >
 > **Statut :** (Brouillon) Proposé
 
@@ -85,7 +85,7 @@ POST /api/v1/account/audit-log/enable
 POST /api/v1/account/audit-log/disable
 ```
 
-Les deux points d'accès requièrent une session authentifiée active. À l'activation, le serveur définit `audit_log_enabled = TRUE` et écrit une entrée **journal d'audit activé** comme premier événement. À la désactivation, le serveur écrit une entrée **journal d'audit désactivé** comme dernier événement, puis définit `audit_log_enabled = FALSE`. Cela garantit que le journal contient toujours un enregistrement clair des périodes pendant lesquelles la journalisation était active.
+Les deux points d'accès requièrent une session authentifiée active, et la désactivation demande aussi une réauthentification récente de cette session ([CRYPTO §9.9](/fr/CRYPTO.md#99-réauthentification)). À l'activation, le serveur définit `audit_log_enabled = TRUE` et écrit une entrée **journal d'audit activé** comme premier événement. À la désactivation, le serveur écrit une entrée **journal d'audit désactivé** comme dernier événement, puis définit `audit_log_enabled = FALSE`. Cela garantit que le journal contient toujours un enregistrement clair des périodes pendant lesquelles la journalisation était active.
 
 La désactivation du journal d'audit ne **supprime pas** les entrées existantes. L'utilisateur conserve l'accès aux événements précédemment collectés jusqu'à ce qu'ils atteignent la rétention de 6 mois. Si l'utilisateur souhaite effacer son journal, il le fait explicitement (voir [§20.5](#205-effacement-du-journal-daudit)).
 
@@ -96,6 +96,8 @@ Les utilisateurs peuvent supprimer explicitement toutes leurs entrées du journa
 ```sh
 DELETE /api/v1/account/audit-log
 ```
+
+Elle demande une réauthentification récente de la session ([CRYPTO §9.9](/fr/CRYPTO.md#99-réauthentification)), comme la désactivation.
 
 Cela supprime définitivement toutes les entrées de l'utilisateur authentifié. Cela ne **désactive pas** la journalisation d'audit. Si la journalisation est activée, les nouveaux événements continuent d'être enregistrés après l'effacement. L'opération d'effacement elle-même n'est **pas** journalisée, puisque le journal est en train d'être vidé.
 
@@ -147,6 +149,7 @@ La table `sessions` stocke l'IP exacte du client en tant que `INET`, puisqu'elle
 | Un attaquant lit le journal d'audit d'un autre utilisateur                          | Bloqué : le point d'accès du journal est limité à l'utilisateur authentifié; l'accès inter-utilisateurs retourne 403                      |
 | Vol de la base de données                                                           | Journal illisible sans la clé de désencapsulation X-Wing de l'utilisateur ; seuls `id`, `user_id` et `created_at` sont en clair           |
 | L'utilisateur ne sait pas que la journalisation était désactivée lors d'un incident | L'événement `audit_log_disabled` marque la limite; les lacunes dans le journal sont visibles par horodatage                               |
+| Un cookie de session volé désactive ou efface le journal                            | Les deux demandent une réauthentification récente de la session ([CRYPTO §9.9](/fr/CRYPTO.md#99-réauthentification))                      |
 
 ### 20.9 Entrées scellées
 
@@ -328,6 +331,7 @@ La chaîne d'info `"vexahub:v1:childCollectionKeyWrap:"` est distincte de toutes
 
 ## Historique des modifications
 
+- **9 :** alignée sur CRYPTO v31 : désactiver ou effacer le journal d'audit demande une réauthentification récente de la session (§20.4, §20.5, §20.8).
 - **8 :** alignée sur CRYPTO v28 : un partage porte ses copies dès sa création, il n'y a plus de grant (§21.3).
 - **7 :** rotation de clé paresseuse, alignée sur CRYPTO v20. Une rotation de la parente laisse les `VXCC` en dessous tels quels, la sous-collection attend sa propre rotation, par le propriétaire ou un éditeur (§21.4, §21.7). Aucune sous-collection sous une parente en attente de rotation (§21.2).
 - **6 :** la clé de chaque sous-collection est un `VXCC` sous sa parente, alignée sur CRYPTO v19. Accès par l'arbre (§21.3). Le `VXCK` du propriétaire devient un DEVRAIT (§21.3). Un déplacement porte un `VXCC` sous la nouvelle parente, ou le `VXCK` du propriétaire à la racine (§21.4, §21.7).
