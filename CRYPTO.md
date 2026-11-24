@@ -1,6 +1,6 @@
 # VexaHub - Cryptography Specification
 
-> **Document version:** 32
+> **Document version:** 33
 >
 > **Protocol version:** 1
 >
@@ -961,28 +961,39 @@ The **plaintext** size is **never** sent to the **server**. The **server** knows
 
 ### 6.5.6 Upload lookup flow
 
-Before **creating** a new tus upload, the **client** queries the **server** to detect a **resumable upload** or an **existing** committed file:
+Before **creating** a new tus upload, the **client** queries the **server** to detect a **resumable upload** or an **existing** committed file, and to learn the storage part size of the upload ([§6.5.7](#657-resume-alignment)):
 
 ```rs
-GET /api/v1/uploads/lookup?content_id={hex}&collection_id={uuid}
+GET /api/v1/uploads/lookup?content_id={hex}&collection_id={uuid}&upload_length={int}
 Accept: application/vnd.vexahub.v1+json
 ```
 
-Server responses:
+`upload_length` is the ciphertext length of the file ([§6.5.5](#655-tus-integration)), the `Upload-Length` the upload will carry.
 
-- **404 Not Found**: No existing upload or committed file matches.
+The server always answers **200 OK** with:
+
+```json
+{
+  "upload": null | { ... },
+  "patchSegments": <int>
+}
+```
+
+`patchSegments` is the number of segments of a storage part for this `upload_length` (`STORAGE_PART_SEGMENTS`, [§6.5.7](#657-resume-alignment)). `upload` is one of:
+
+- **`null`**: no existing upload or committed file matches.
 
   The client **MUST** proceed with a fresh tus `POST /api/v1/cloud` to create a new upload resource (or a direct upload for small files).
 
-- **200 OK** with `{ "kind": "incomplete", "uploadId": "...", "tusId": "...", "uploadOffset": <int>, "generation": <int>, "expiresAt": "..." }`:
+- **`{ "kind": "incomplete", "uploadId": "...", "tusId": "...", "fileId": "...", "vxfk": "...", "uploadOffset": <int>, "generation": <int>, "expiresAt": "..." }`**:
 
-  An incomplete upload exists for this user with this `content_id`. The client SHOULD send a tus `HEAD` to the upload URL (`/api/v1/cloud/{tusId}`) to confirm the offset, then resume with `PATCH` requests.
+  An incomplete upload exists for this user with this `content_id` in this collection. `fileId` and `vxfk` are present when the upload has them (a version names its file, a new file or a stale file carries its `VXFK`). The client SHOULD send a tus `HEAD` to the upload URL (`/api/v1/cloud/{tusId}`) to confirm the offset, then resume with `PATCH` requests.
 
-- **200 OK** with `{ "kind": "committed", "fileId": "...", "generation": <int> }`:
+- **`{ "kind": "committed", "fileId": "...", "generation": <int> }`**:
 
-  The file already exists fully committed in the user's account. The client **MUST** prompt the user to choose between skip, replace (creates generation+1), or duplicate (creates a new `file_id`).
+  The file already exists fully committed in the collection. The client **MUST** prompt the user to choose between skip, replace (creates generation+1), or duplicate (creates a new `file_id`).
 
-The server **MUST** scope the lookup to the authenticated user. Cross-user lookups by `content_id` **MUST** return 404 even if a match exists in another account.
+The server **MUST** scope the lookup to the authenticated user. A match in another account is never returned: the answer is `upload: null`, as for no match.
 
 ### 6.5.6.1 Commit
 
@@ -1019,7 +1030,7 @@ A file is **stale** when one of its file shares was revoked or one of its public
 
 `collectionKeyGeneration` comes with every `vxfk`. The server checks it under the lock of the collection: it **MUST** be the latest generation (HTTP 409 otherwise, with the latest generation: the client reads the collection keys again and wraps again). A collection waiting for its key rotation takes no new file and no new version (HTTP 409, [§11.1](#111-share-revocation)). The tus creation applies the same rules early: `vxfk` in its metadata only for a new file, a stale file or a re-encryption (HTTP 400 otherwise), no upload into a collection waiting for its rotation (HTTP 409). `shareKeys` and `keyGeneration` are sent at commit only.
 
-The lock taken is the one of the collection the file is in, before the file is read: a move or a key rotation of the file cannot run in between. A version **MUST** be refused (HTTP 409) if the file left the collection named by the upload before the lock: the client reads the file again.
+The lock taken is the one of the collection named by the upload, before the file is read: a move or a key rotation of the file cannot run in between. The latest generation of the collection key is read once the lock is held, never before it. A version **MUST** be refused (HTTP 409) if the file is not in that collection, moved before the request or while it waited for the lock: its keys and its `content_id` are for the collection the client read, so the client reads the file again.
 
 The commit endpoint performs the following atomically within a single transaction:
 
@@ -1051,9 +1062,11 @@ The rewind target **MUST** satisfy two alignment constraints:
 
 1. **Segment-aligned**: the offset **MUST** fall on a segment ciphertext boundary (`offset % SEGMENT_CIPHERTEXT_SIZE_FULL == 0`), because `XChaCha20-Poly1305` does not support partial **AEAD** writes. A segment is a single atomic encryption unit.
 
-2. **Storage-part-aligned**: the offset **MUST** fall on a storage part boundary. The storage splits uploads into fixed-size parts for multipart transfer; all non-trailing parts must have identical size. Resuming mid-part produces an undersized part that causes the multipart finalization to fail. The part size is defined as `STORAGE_PART_SIZE = SEGMENT_CIPHERTEXT_SIZE_FULL * STORAGE_PART_SEGMENTS` (currently `STORAGE_PART_SEGMENTS = 8`).
+2. **Storage-part-aligned**: the offset **MUST** fall on a storage part boundary. The storage splits uploads into fixed-size parts for multipart transfer; all non-trailing parts must have identical size. Resuming mid-part produces an undersized part that causes the multipart finalization to fail. The part size is defined as `STORAGE_PART_SIZE = SEGMENT_CIPHERTEXT_SIZE_FULL * STORAGE_PART_SEGMENTS`.
 
-Since `STORAGE_PART_SEGMENTS` is a multiple of 1, aligning to storage parts automatically satisfies segment alignment.
+`STORAGE_PART_SEGMENTS` depends on the ciphertext length of the upload and is fixed for its whole life: larger uploads get larger parts. It is always a multiple of 8. The server gives it with the lookup (`patchSegments`, [§6.5.6](#656-upload-lookup-flow)). The client **MUST** use that value, never a constant or its own computation, and **SHOULD** send each `PATCH` body as whole storage parts, the last one excepted.
+
+A storage part is a whole number of segments, so aligning to storage parts also satisfies segment alignment.
 
 Resume procedure:
 
@@ -2470,7 +2483,7 @@ When a file is moved between collections, its stored `content_id` is **not** rec
 #### Consequences
 
 - **Resume of an in-progress upload that targets the moved file** works normally. The upload was created with the source collection's `content_id` and uses it as the lookup key throughout the upload's lifetime, regardless of which collection the file is currently in.
-- **Future duplicate detection in the destination collection does not match this file.** If the user uploads the same plaintext into the destination collection later, the lookup endpoint ([§6.5.6](#656-upload-lookup-flow)) returns **404** and the client treats it as a new file. The user ends up with two copies. Feature degradation, not security issue.
+- **Future duplicate detection in the destination collection does not match this file.** If the user uploads the same plaintext into the destination collection later, the lookup endpoint ([§6.5.6](#656-upload-lookup-flow)) finds no match (`upload: null`) and the client treats it as a new file. The user ends up with two copies. Feature degradation, not security issue.
 - **Resume of a future re-upload of the moved file's plaintext into the destination collection** does not match either, for the same reason.
 - **Re-encryption still recognizes the file:** `content_id_collection_id` names the source collection, so the client computes the `content_id` it matches against with the source `contentIdKey`. The re-encryption then stores the `content_id` of the destination collection, and duplicate detection works again for that file ([§11.1.1](#1111-content-re-encryption-after-revocation)).
 
@@ -3238,6 +3251,7 @@ The value is capped by the plan's maximum. A scheduled job deletes versions whos
 
 ## Changelog
 
+- **33:** the upload lookup takes the ciphertext length, always answers with the upload found or `null`, and gives the storage part size of the upload (§6.5.6). The storage part size grows with the length of the upload: the client uses the one the lookup gives, never a constant (§6.5.7). A version is refused when the file is not in the collection the upload names, moved before the request or during the wait for the lock, and the collection key generation is read once the lock is held (§6.5.6.1).
 - **32:** account deletion revokes the public links and the shares of the account at once, so nothing of it is served while a moderation case holds its data, and a reversed decision never restores one of its links (§19.3). The session cookie expires 24 hours after the last activity (§9.1).
 - **31:** a recent reauthentication of the session is also required to enable 2FA and to disable or clear the audit log (§9.9). A persistent session is created only within 10 minutes of the opening of the session (§9.2). A request log keeps the method, the path and the status, with tokens masked (§16.8). A moderation case not closed holds the data purge of a deleted account (§19.3).
 - **30:** recovery and sensitive actions need more than a session or an email code. Recovery codes are used once, for their flow only, with 5 guesses, at most 3 an hour per address, and only a keyed hash is stored (§12.1). A recovery asks for the second factor of an account with 2FA (`recovery/2fa`). Without it a destructive reset waits 72 hours with a cancel link, a new password cancels it, and a suspended account is not reset (§12.2). The password change, the phrase rotation and the sharing keypair rotation follow a reauthentication of the session, `reauth/start` and `reauth/finish`, which ends the session, then every session of the user, after repeated misses (§9.9, §11.3, §12.3). The 2FA elevation is bound to the session. Logins of an address slow down after repeated failures, and `2fa/verify` checks the account again (§8.2). Logout ends the persistent session of the device (§9.2).

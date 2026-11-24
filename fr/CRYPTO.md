@@ -1,6 +1,6 @@
 # VexaHub - Spécification cryptographique
 
-> **Version du document :** 32
+> **Version du document :** 33
 >
 > **Version du protocole :** 1
 >
@@ -956,28 +956,39 @@ La taille du **texte clair** n'est **jamais** envoyée au **serveur**. Le **serv
 
 ### 6.5.6 Flux de recherche d'envoi
 
-Avant de **créer** un nouvel envoi tus, le **client** interroge le **serveur** pour détecter un **envoi reprenable** ou un fichier **existant** validé :
+Avant de **créer** un nouvel envoi tus, le **client** interroge le **serveur** pour détecter un **envoi reprenable** ou un fichier **existant** validé, et connaître la taille de part de stockage de l'envoi ([§6.5.7](#657-alignement-de-reprise)) :
 
 ```rs
-GET /api/v1/uploads/lookup?content_id={hex}&collection_id={uuid}
+GET /api/v1/uploads/lookup?content_id={hex}&collection_id={uuid}&upload_length={int}
 Accept: application/vnd.vexahub.v1+json
 ```
 
-Réponses du serveur :
+`upload_length` est la longueur chiffrée du fichier ([§6.5.5](#655-intégration-tus)), l'`Upload-Length` que portera l'envoi.
 
-- **404 Not Found** : Aucun envoi existant ou fichier validé ne correspond.
+Le serveur répond toujours **200 OK** avec :
+
+```json
+{
+  "upload": null | { ... },
+  "patchSegments": <int>
+}
+```
+
+`patchSegments` est le nombre de segments d'une part de stockage pour cet `upload_length` (`STORAGE_PART_SEGMENTS`, [§6.5.7](#657-alignement-de-reprise)). `upload` est l'un de :
+
+- **`null`** : aucun envoi existant ni fichier validé ne correspond.
 
   Le client **DOIT** procéder avec un nouveau tus `POST /api/v1/cloud` pour créer une nouvelle ressource d'envoi (ou un envoi direct pour les petits fichiers).
 
-- **200 OK** avec `{ "kind": "incomplete", "uploadId": "...", "tusId": "...", "uploadOffset": <int>, "generation": <int>, "expiresAt": "..." }` :
+- **`{ "kind": "incomplete", "uploadId": "...", "tusId": "...", "fileId": "...", "vxfk": "...", "uploadOffset": <int>, "generation": <int>, "expiresAt": "..." }`** :
 
-  Un envoi incomplet existe pour cet utilisateur avec ce `content_id`. Le client DEVRAIT envoyer un tus `HEAD` vers `/api/v1/cloud/{tusId}` pour confirmer le décalage, puis reprendre avec des requêtes `PATCH`.
+  Un envoi incomplet existe pour cet utilisateur avec ce `content_id` dans cette collection. `fileId` et `vxfk` sont présents quand l'envoi les a (une version nomme son fichier, un nouveau fichier ou un fichier périmé porte son `VXFK`). Le client DEVRAIT envoyer un tus `HEAD` vers `/api/v1/cloud/{tusId}` pour confirmer le décalage, puis reprendre avec des requêtes `PATCH`.
 
-- **200 OK** avec `{ "kind": "committed", "fileId": "...", "generation": <int> }` :
+- **`{ "kind": "committed", "fileId": "...", "generation": <int> }`** :
 
-  Le fichier existe déjà entièrement validé dans le compte de l'utilisateur. Le client **DOIT** inviter l'utilisateur à choisir entre passer, remplacer (crée generation+1), ou dupliquer (crée un nouveau `file_id`).
+  Le fichier existe déjà entièrement validé dans la collection. Le client **DOIT** inviter l'utilisateur à choisir entre passer, remplacer (crée generation+1), ou dupliquer (crée un nouveau `file_id`).
 
-Le serveur **DOIT** restreindre la recherche à l'utilisateur authentifié. Les recherches inter-utilisateurs par `content_id` **DOIVENT** retourner 404 même si une correspondance existe dans un autre compte.
+Le serveur **DOIT** restreindre la recherche à l'utilisateur authentifié. Une correspondance dans un autre compte n'est jamais renvoyée : la réponse est `upload: null`, comme sans correspondance.
 
 ### 6.5.6.1 Commit
 
@@ -1014,7 +1025,7 @@ Un fichier est **périmé** quand un de ses partages de fichier a été révoqu�
 
 `collectionKeyGeneration` accompagne chaque `vxfk`. Le serveur la vérifie sous le verrou de la collection : elle **DOIT** être la dernière génération (HTTP 409 sinon, avec la dernière génération : le client relit les clés de la collection et réencapsule). Une collection en attente de rotation de clé ne prend ni nouveau fichier ni nouvelle version (HTTP 409, [§11.1](#111-révocation-de-partage)). La création tus applique les mêmes règles en amont : `vxfk` dans ses métadonnées seulement pour un nouveau fichier, un fichier périmé ou un rechiffrement (HTTP 400 sinon), aucun envoi dans une collection en attente de rotation (HTTP 409). `shareKeys` et `keyGeneration` ne sont envoyés qu'au commit.
 
-Le verrou pris est celui de la collection où se trouve le fichier, avant la lecture du fichier : ni déplacement ni rotation de clé du fichier ne peut passer entre les deux. Une version **DOIT** être refusée (HTTP 409) si le fichier a quitté la collection indiquée par l'envoi avant le verrou : le client relit le fichier.
+Le verrou pris est celui de la collection indiquée par l'envoi, avant la lecture du fichier : ni déplacement ni rotation de clé du fichier ne peut passer entre les deux. La dernière génération de la clé de collection est lue une fois le verrou tenu, jamais avant. Une version **DOIT** être refusée (HTTP 409) si le fichier n'est pas dans cette collection, déplacé avant la requête ou pendant l'attente du verrou : ses clés et son `content_id` sont pour la collection que le client a lue, le client relit donc le fichier.
 
 Le endpoint de commit effectue les opérations suivantes de manière atomique au sein d'une seule transaction :
 
@@ -1046,9 +1057,11 @@ La cible de rembobinage **DOIT** satisfaire deux contraintes d'alignement :
 
 1. **Alignement segment** : le décalage **DOIT** tomber sur une limite de segment chiffré (`offset % SEGMENT_CIPHERTEXT_SIZE_FULL == 0`), car `XChaCha20-Poly1305` ne supporte pas les écritures **AEAD** partielles. Un segment est une unité de chiffrement atomique unique.
 
-2. **Alignement part de stockage** : le décalage **DOIT** tomber sur une limite de part de stockage. Le stockage découpe les envois en parts de taille fixe pour le transfert multipart ; toutes les parts non terminales doivent avoir une taille identique. Reprendre au milieu d'une part produit une part sous-dimensionnée qui provoque l'échec de la finalisation multipart. La taille de part est définie comme `STORAGE_PART_SIZE = SEGMENT_CIPHERTEXT_SIZE_FULL * STORAGE_PART_SEGMENTS` (actuellement `STORAGE_PART_SEGMENTS = 8`).
+2. **Alignement part de stockage** : le décalage **DOIT** tomber sur une limite de part de stockage. Le stockage découpe les envois en parts de taille fixe pour le transfert multipart ; toutes les parts non terminales doivent avoir une taille identique. Reprendre au milieu d'une part produit une part sous-dimensionnée qui provoque l'échec de la finalisation multipart. La taille de part est définie comme `STORAGE_PART_SIZE = SEGMENT_CIPHERTEXT_SIZE_FULL * STORAGE_PART_SEGMENTS`.
 
-L'alignement sur les parts de stockage satisfait automatiquement l'alignement sur les segments.
+`STORAGE_PART_SEGMENTS` dépend de la longueur chiffrée de l'envoi et reste fixe toute sa vie : les gros envois ont de plus grandes parts. C'est toujours un multiple de 8. Le serveur le donne avec la recherche (`patchSegments`, [§6.5.6](#656-flux-de-recherche-denvoi)). Le client **DOIT** utiliser cette valeur, jamais une constante ni son propre calcul, et **DEVRAIT** envoyer chaque corps de `PATCH` en parts de stockage entières, la dernière exceptée.
+
+Une part de stockage est un nombre entier de segments : l'alignement sur les parts de stockage satisfait donc aussi l'alignement sur les segments.
 
 Procédure de reprise :
 
@@ -2361,7 +2374,7 @@ Lorsqu'un fichier est déplacé entre collections, son `content_id` stocké **n'
 #### Conséquences
 
 - **La reprise d'un téléversement en cours ciblant le fichier déplacé** fonctionne normalement. Le téléversement a été créé avec le `content_id` de la collection source et l'utilise comme clé de recherche tout au long de la durée de vie du téléversement, quel que soit le collection dans laquelle se trouve actuellement le fichier.
-- **La détection future de doublons dans la collection de destination ne correspond pas à ce fichier.** Si l'utilisateur téléverse le même contenu en clair dans la collection de destination ultérieurement, le point d'accès de recherche ([§6.5.6](#656-flux-de-recherche-denvoi)) retourne **404** et le client le traite comme un nouveau fichier. L'utilisateur se retrouve avec deux copies. Dégradation de fonctionnalité, pas un problème de sécurité.
+- **La détection future de doublons dans la collection de destination ne correspond pas à ce fichier.** Si l'utilisateur téléverse le même contenu en clair dans la collection de destination ultérieurement, le point d'accès de recherche ([§6.5.6](#656-flux-de-recherche-denvoi)) ne trouve aucune correspondance (`upload: null`) et le client le traite comme un nouveau fichier. L'utilisateur se retrouve avec deux copies. Dégradation de fonctionnalité, pas un problème de sécurité.
 - **La reprise d'un futur re-téléversement du contenu en clair du fichier déplacé dans la collection de destination** ne correspond pas non plus, pour la même raison.
 - **Le rechiffrement reconnaît toujours le fichier :** `content_id_collection_id` désigne la collection source, donc le client calcule le `content_id` à comparer avec la `contentIdKey` source. Le rechiffrement enregistre ensuite le `content_id` de la collection de destination, et la détection de doublons fonctionne de nouveau pour ce fichier ([§11.1.1](#1111-rechiffrement-du-contenu-après-révocation)).
 
@@ -3070,6 +3083,7 @@ La valeur est plafonnée par le maximum de l'offre. Une tâche planifiée suppri
 
 ## Historique des modifications
 
+- **33 :** la recherche d'envoi prend la longueur chiffrée, répond toujours avec l'envoi trouvé ou `null`, et donne la taille de part de stockage de l'envoi (§6.5.6). La taille de part grandit avec la longueur de l'envoi : le client utilise celle que donne la recherche, jamais une constante (§6.5.7). Une version est refusée quand le fichier n'est pas dans la collection que nomme l'envoi, déplacé avant la requête ou pendant l'attente du verrou, et la génération de la clé de collection est lue une fois le verrou tenu (§6.5.6.1).
 - **32 :** la suppression de compte révoque d'un coup les liens publics et les partages du compte : plus rien n'en est servi pendant qu'une procédure de modération retient ses données, et une décision annulée ne restaure jamais l'un de ses liens (§19.3). Le cookie de session expire 24 heures après la dernière activité (§9.1).
 - **31 :** une réauthentification récente de la session est aussi exigée pour activer la 2FA et pour désactiver ou effacer le journal d'audit (§9.9). Une session persistante ne se crée que dans les 10 minutes qui suivent l'ouverture de la session (§9.2). Un journal de requêtes garde la méthode, le chemin et le statut, tokens masqués (§16.8). Une procédure de modération non close retient la purge des données d'un compte supprimé (§19.3).
 - **30 :** la récupération et les actions sensibles demandent plus qu'une session ou un code reçu par email. Les codes de récupération servent une fois, pour leur flux seulement, avec 5 essais, au plus 3 par heure et par adresse, et seule une empreinte à clé est stockée (§12.1). Une récupération demande le second facteur d'un compte qui a la 2FA (`recovery/2fa`). Sans lui, une réinitialisation destructive attend 72 heures avec un lien d'annulation, un nouveau mot de passe l'annule, et un compte suspendu n'est pas réinitialisé (§12.2). Le changement de mot de passe, la rotation de la phrase et la rotation des paires de clés de partage suivent une réauthentification de la session, `reauth/start` et `reauth/finish`, qui met fin à la session, puis à toutes les sessions de l'utilisateur, après des échecs répétés (§9.9, §11.3, §12.3). L'élévation 2FA est liée à la session. Les connexions d'une adresse ralentissent après des échecs répétés, et `2fa/verify` revérifie le compte (§8.2). La déconnexion met fin à la session persistante de l'appareil (§9.2).
